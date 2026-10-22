@@ -128,6 +128,107 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
   }
 });
 
+test('真实 Electron 消息流显示阶段回复、按轮次展开活动并移除运行详情', async () => {
+  const runs = join(root, 'acceptance-runs');
+  mkdirSync(runs, { recursive: true });
+  const run = realpathSync(mkdtempSync(join(runs, 'playwright-activity-')));
+  const runId = run.slice(run.lastIndexOf('/') + 1);
+  const profile = join(run, 'profile');
+  mkdirSync(profile);
+  writeFileSync(join(run, 'run.json'), JSON.stringify({
+    schema: 'rambo.acceptance.run.v1',
+    runId,
+    project: root
+  }));
+
+  let app;
+  try {
+    const env = { ...process.env, RAMBO_ACCEPTANCE_RUN: run };
+    delete env.NODE_OPTIONS;
+    delete env.ELECTRON_RUN_AS_NODE;
+    app = await electron.launch({
+      executablePath: resolve(root, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+      args: [root, `--user-data-dir=${profile}`],
+      cwd: root,
+      env
+    });
+    const page = await app.firstWindow();
+    await page.getByLabel('创建 Bot').click();
+    await page.getByLabel('Bot 名称').fill('Activity Pilot');
+    await page.getByRole('dialog', { name: '创建新 Bot' })
+      .getByRole('button', { name: '创建', exact: true }).click();
+    await expect(page.getByPlaceholder('发消息给 Bot')).toBeVisible();
+    const chat = await page.evaluate(async () => {
+      const snapshot = await window.rambo.snapshot();
+      return snapshot.chats.find(item => !item.groupChatId && !item.archived);
+    });
+    await page.evaluate(chatId => window.rambo.send(chatId, '检查项目结构。'), chat.id);
+    await expect(page.getByLabel('正在思考')).toBeVisible();
+    await expect(page.getByText('运行详情', { exact: false })).toHaveCount(0);
+    const activeTurnId = await page.evaluate(chatId =>
+      window.rambo.snapshot().then(snapshot => snapshot.activeTurns[chatId]), chat.id);
+    expect(typeof activeTurnId).toBe('string');
+
+    await page.evaluate(({ chatId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'activity',
+      activity: {
+        id: 'activity-command-1',
+        chatId,
+        turnId,
+        itemId: 'command-1',
+        kind: 'command',
+        status: 'complete',
+        title: 'rg --files src',
+        detail: 'src/App.tsx',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    }), { chatId: chat.id, turnId: activeTurnId });
+    await expect(page.getByLabel('正在运行命令')).toBeVisible();
+    await page.evaluate(({ chatId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'message',
+      message: {
+        id: 'commentary-ui-1',
+        chatId,
+        role: 'assistant',
+        text: '我先检查项目结构。',
+        status: 'complete',
+        itemId: 'commentary-ui-1',
+        createdAt: new Date().toISOString(),
+        turnId,
+        phase: 'commentary'
+      }
+    }), { chatId: chat.id, turnId: activeTurnId });
+    await expect(page.getByText('我先检查项目结构。')).toBeVisible();
+    await expect(page.locator('.message-activities')).toHaveCount(0);
+    await page.evaluate(({ chatId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'message',
+      message: {
+        id: 'final-ui-1',
+        chatId,
+        role: 'assistant',
+        text: '检查已经完成。',
+        status: 'complete',
+        itemId: 'final-ui-1',
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        turnId,
+        phase: 'final_answer'
+      }
+    }), { chatId: chat.id, turnId: activeTurnId });
+    await expect(page.getByText('检查已经完成。')).toBeVisible();
+    const details = page.locator('.message-activities');
+    await expect(details).toHaveCount(1);
+    await expect(details.getByText('思考与操作')).toBeVisible();
+    await details.locator('summary').click();
+    await expect(details.getByText('rg --files src')).toBeVisible();
+    await expect(details.getByText('src/App.tsx')).toBeVisible();
+    await expect(page.getByText('运行详情', { exact: false })).toHaveCount(0);
+  } finally {
+    await app?.close();
+    rmSync(run, { recursive: true, force: true });
+  }
+});
+
 test('账号设置只复用本机 Codex 登录且没有产品注册或同步入口', async () => {
   const runs = join(root, 'acceptance-runs');
   mkdirSync(runs, { recursive: true });

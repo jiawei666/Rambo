@@ -88,7 +88,7 @@ test('migrates saved groups to allow a retained group with no default Bot', asyn
       assert.deepEqual(store.group('group-old').memberIds, ['bot-old']);
       assert.equal(store.group('group-old').defaultBotId, 'bot-old');
       assert.equal(store.db.prepare('PRAGMA table_info(group_chats)').all().find(row => row.name === 'defaultBotId').notnull, 0);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 15);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 16);
       assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { store.close(); }
   });
@@ -115,7 +115,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const migrated = new Store(directory);
     try {
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 15);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 16);
       assert.equal(migrated.chat(currentChatId).threadId, 'thread-current-v12');
       assert.equal(migrated.chat(currentChatId).archived, false);
       assert.equal(migrated.chat('chat-newer-empty').archived, true);
@@ -135,7 +135,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 15);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 16);
       assert.equal(reopened.chat('chat-newer-empty').archived, true);
       assert.deepEqual(reopened.chats().map(chat => chat.id), [currentChatId]);
       assert.deepEqual(reopened.allChats().map(chat => chat.id), [currentChatId]);
@@ -392,7 +392,7 @@ test('routine list is backed by SQLite and remains empty after reopening without
       assert.deepEqual(reopened.routines(), []);
       const table = reopened.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routines'").get();
       assert.equal(table?.name, 'routines');
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 15);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 16);
     } finally { reopened.close(); }
   });
 });
@@ -418,7 +418,7 @@ test('migrates a version 13 routines table that predates scheduling columns', as
       const columns = store.db.prepare('PRAGMA table_info(routines)').all().map(row => row.name);
       assert.equal(columns.includes('nextRunAt'), true);
       assert.equal(columns.includes('lastScheduledFor'), true);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 15);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 16);
     } finally { store.close(); }
   });
 });

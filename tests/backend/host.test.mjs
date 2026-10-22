@@ -1188,6 +1188,89 @@ test('Routine results are associated with the exact completed turn, not an older
   });
 });
 
+test('assistant phases remain visible messages while reasoning and tool activity stay in turn details', async () => {
+  await withHost(async ({ store, runtime, host, events, Store }) => {
+    const { chat } = store.createBot('Activity Bot', 'a');
+    const sending = host.send(chat.id, 'inspect the project');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const start = runtime.requests.find(request => request.method === 'turn/start');
+    start.resolve({ turn: { id: 'activity-turn', status: 'inProgress' } });
+    await sending;
+    const threadId = store.chat(chat.id).threadId;
+
+    runtime.emit('notification', 'item/started', {
+      threadId,
+      turnId: 'activity-turn',
+      item: { id: 'reasoning-1', type: 'reasoning', summary: [], content: [] }
+    });
+    runtime.emit('notification', 'item/reasoning/summaryTextDelta', {
+      threadId,
+      turnId: 'activity-turn',
+      itemId: 'reasoning-1',
+      summaryIndex: 0,
+      delta: 'Check the relevant source first.'
+    });
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'activity-turn',
+      item: {
+        id: 'reasoning-1',
+        type: 'reasoning',
+        summary: ['Check the relevant source first.'],
+        content: []
+      }
+    });
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'activity-turn',
+      item: {
+        id: 'command-1',
+        type: 'commandExecution',
+        command: 'rg --files src',
+        commandActions: [],
+        cwd: '/tmp/activity',
+        status: 'completed',
+        aggregatedOutput: 'src/App.tsx\n',
+        exitCode: 0
+      }
+    });
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'activity-turn',
+      item: { id: 'commentary-1', type: 'agentMessage', phase: 'commentary', text: '我先检查项目结构。' }
+    });
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'activity-turn',
+      item: { id: 'final-1', type: 'agentMessage', phase: 'final_answer', text: '检查已经完成。' }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId,
+      turn: { id: 'activity-turn', status: 'completed' }
+    });
+
+    const messages = store.messages(chat.id);
+    assert.equal(messages.find(message => message.itemId === 'commentary-1').phase, 'commentary');
+    assert.equal(messages.find(message => message.itemId === 'commentary-1').turnId, 'activity-turn');
+    assert.equal(messages.find(message => message.itemId === 'final-1').phase, 'final_answer');
+    const activities = store.activities(chat.id);
+    assert.deepEqual(activities.map(activity => activity.kind), ['reasoning', 'command']);
+    assert.equal(activities[0].detail, 'Check the relevant source first.');
+    assert.match(activities[1].detail, /src\/App\.tsx/);
+    assert.ok(activities.every(activity => activity.turnId === 'activity-turn'));
+    assert.ok(events.some(event => event.type === 'activity' && event.activity.kind === 'reasoning'));
+    assert.ok(events.some(event => event.type === 'activity' && event.activity.kind === 'command'));
+
+    const reopened = new Store(store.directory);
+    try {
+      assert.equal(reopened.messages(chat.id).find(message => message.itemId === 'commentary-1').text, '我先检查项目结构。');
+      assert.deepEqual(reopened.activities(chat.id).map(activity => activity.kind), ['reasoning', 'command']);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
 test('runtime disconnect persists an unknown turn and blocks send until history confirms it', async () => {
   await withHost(async ({ store, runtime, host }) => {
     const { bot } = store.createBot('Assistant', 'a');

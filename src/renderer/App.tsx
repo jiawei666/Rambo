@@ -491,7 +491,15 @@ function App() {
   const loadActivities = useCallback(async (chatId: string) => {
     try {
       const result = await window.rambo.activities(chatId);
-      if (selectedChatRef.current === chatId) setActivities(result);
+      if (selectedChatRef.current === chatId) {
+        setActivities(current => {
+          const merged = new Map(result.map(activity => [activity.id, activity]));
+          for (const activity of current) {
+            if (activity.chatId === chatId) merged.set(activity.id, activity);
+          }
+          return [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        });
+      }
     } catch (error) {
       if (selectedChatRef.current === chatId) setAppError(toError(error));
     }
@@ -912,10 +920,8 @@ function App() {
     selectedChatRef.current = null;
     setSelectedChatId(null);
     setMessages([]);
-    setTurns([]);
-    setTurnsError(null);
+    setActivities([]);
     setLoadingMessages(false);
-    setLoadingTurns(false);
   };
 
   const setBotArchived = async (botId: string, archived: boolean) => {
@@ -1195,7 +1201,7 @@ function App() {
                     const hasFinal = turnMessages.some(item => item.phase === 'final_answer');
                     const ownsTurnDetails = message.role === 'assistant' && !!message.turnId && (
                       message.phase === 'final_answer' ||
-                      (!hasFinal && turnMessages[turnMessages.length - 1]?.id === message.id)
+                      (!hasFinal && message.phase === null && turnMessages[turnMessages.length - 1]?.id === message.id)
                     );
                     return (
                       <MessageRow

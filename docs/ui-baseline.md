@@ -1,4 +1,16 @@
-# Grok Bot UI 基准（0.72.0）
+# Grok Bot UI 基准（0.75.0）
+
+## 2026-10-22 版本更新与聊天运行态证据
+
+当前本机安装的 Grok Bot 已更新为 **0.75.0**。原 0.72.0 的页面、Token、头像和创建弹窗依据继续作为历史证据保留在本页；本轮只补充运行状态差异，不把旧包证据冒充当前版本。
+
+- 当前包：`/Applications/Grok Bot.app/Contents/Resources/app.asar`
+- SHA-256：`1035db7b1f77974c78e6c18a4426a5fe16c639946335f7d57badfd0761971a5e`
+- 当前 renderer 入口：`dist/renderer/assets/index.eager-app-wqHXQRAi.js`、`index.eager-common-DDLNUvWu.js`、`index-CEV-0tKx.css`。
+- 发送消息后，运行状态呈现为 Bot 头像旁的环形 indeterminate 轨迹、扫光文字和轮换活动短语，不是全屏/居中普通 spinner。
+- 当前原版运行参数：`runningSpinDuration=1200ms`、`shimmerDuration=1400ms`、`sweepDuration=2200ms`、`breatheDuration=2400ms`。shimmer 使用 `sand-n9qfrr` 的同色系渐变；Rambo 使用现有主题变量模拟，不引入原版受限字体或业务资源。
+- 已核实活动短语包括 `Thinking it through`、`Searching the web`、`Reading the web`、`Running a few commands`、`Reading the file`、`Drafting the file`、`Working on it` 等。Rambo 按 Codex item 类型映射为对应的中文状态，并随最新活动切换。
+- 本证据来自当前安装包静态分析；尚未用截图完成 0.75.0 的逐像素运行态对照。Rambo 本轮实现和自动化结果不等同 P02/B11 验收通过。
 
 日期：2026-10-20。证据级别：已安装包静态分析；另含主 Agent 通过 CUA 实际观察的运行时记录（1040×760、深色主题）。未将截图或 DOM 文件作为本地证据归档。
 

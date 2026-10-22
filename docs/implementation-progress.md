@@ -1,5 +1,12 @@
 # 实施进度
 
+## 2026-10-22：Grok 式动态运行态与按轮次思考/操作详情
+
+- 按 Q66/P02/B11 已实现聊天内 Grok 式动态运行行：Bot 头像环形轨迹、渐变扫光文字和按最新活动切换的中文状态，不再使用普通居中执行 spinner。Grok Bot 当前安装包已核对为 0.75.0，hash 与运行参数补入 UI 基准；逐像素运行态对照尚未完成。
+- 删除聊天底部“运行详情”；底层 `turns` 继续保留模型审计及 Routine 关联。Agent 的 `commentary`、`partial_answer` 与缺失 phase 的兼容文本继续进入普通消息流，最终回复下方按 `turnId` 展开真实 reasoning/COT、命令、文件、网页、MCP、动态工具、计划和图片活动。
+- Store 升级到 schema 16，新增消息 `turnId/phase` 和 `turn_activities` 持久化。Host 已处理 Codex 的 item started/completed、reasoning delta、command/file output delta、MCP progress 与 plan delta；类型检查和后端 **81/81** 通过，新增 Host 集成测试覆盖阶段消息可见、活动归属、事件发布及重启回读。
+- 新增的真实 Electron 案例已在当前开发构建通过：检查执行中动态行、活动状态切换、阶段消息单独显示、最终消息下过程详情可展开，以及页面不存在“运行详情”。完整 Electron 套件在本次共享契约/schema/Host 改动后为 **15/15**；该局部结果仍不能据此通过 P02/B11 或发布验收。
+
 ## 2026-10-22：当前 dev 局部案例与候选包复验
 
 - 当前开发模式验收 run 为 `acceptance-runs/20261022-acceptance-final-01`，冻结产品决策、验收矩阵和测试目录基线；dev epoch 1 源码指纹为 `1913207f0c5fb826486956c8812509cc06056e46d46bcd0eac60d001196a0ae8`。
