@@ -1,0 +1,6 @@
+interface:
+  display_name: "更新产品决策与验收"
+  short_description: "根据用户新要求或最近代码改动同步更新现行决策与全部验收"
+  default_prompt: "使用 $update-product-decisions，按我提供的新要求或工作区最近改动更新现行产品准则及对应验收。"
+policy:
+  allow_implicit_invocation: false
