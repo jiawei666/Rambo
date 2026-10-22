@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-20",
+  "app_bundle": "/Applications/ChatGPT.app",
+  "app_version": "26.901.41600",
+  "app_build": "7982",
+  "bundle_id": "com.openai.codex",
+  "bundled_codex_version": "0.153.4",
+  "asar_sha256": "077cc65356aeae34c5d8b4de0b4cc383f6fb137ed1d69a9b3dfe69ffafa058ab",
+  "files": [
+    {
+      "path": ".vite/build/main-C5K7o1Hr.js",
+      "size": 3075326,
+      "sha256": "1a12a4625ca931b86befd0c40e3ab1b17355bbb8ef87092b1d239e0439ce0d26",
+      "declared_sha256": "1a12a4625ca931b86befd0c40e3ab1b17355bbb8ef87092b1d239e0439ce0d26",
+      "integrity_match": true
+    },
+    {
+      "path": ".vite/build/src-VqXTPopo.js",
+      "size": 1587549,
+      "sha256": "8d056524ea3f5714e5e0a254afd88f018d58465bc6ea026adee3c80ff7799e29",
+      "declared_sha256": "8d056524ea3f5714e5e0a254afd88f018d58465bc6ea026adee3c80ff7799e29",
+      "integrity_match": true
+    },
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "size": 10301862,
+      "sha256": "fb72076ee44f6596f8dafa9a3effe37a3527a87db21fde8b4042233957b554bb",
+      "declared_sha256": "fb72076ee44f6596f8dafa9a3effe37a3527a87db21fde8b4042233957b554bb",
+      "integrity_match": true
+    }
+  ],
+  "excerpts": [
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "term": "sourceKinds",
+      "offset": 2630895,
+      "context": ";p(i,e),v.add(i),s&&y.add(i)}}if(v.size!==0){for(let e of y)h(e,{includeAnyCallbacks:!1});u&&m()}}var s9t=t((()=>{Kg(),$x()}));async function c9t(e,{modelProviders:t,archived:n=!1,sourceKinds:r=BLt}){let i=[],a=async o=>{let s={limit:100,cursor:o,sortKey:e.recentConversationsSortKey,modelProviders:t,sourceKinds:r,archived:n,useStateDbOnly:e.useStateDbOnly},c=await e.sendRequest(`thread/list`,s,{priority:`background`,source:`thread_list`});i.push(...c.data),c.nextCursor&&await a(c.nextCursor)};return await a(null),i}var l9t=t"
+    },
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "term": "sourceKinds",
+      "offset": 2659681,
+      "context": "arams.requestClient.sendRequest(`thread/search`,{cursor:a,limit:t-r.length,sortKey:this.params.requestClient.getCompatibleThreadSortKey(this.recentConversationSortKey),archived:!1,sourceKinds:BLt,searchTerm:n});r.push(...e.data.filter(({thread:e})=>l5t(e)).slice(0,t-r.length));let o=e.nextCursor;if(o==null||i.has(o))break;i.add(o),a=o}return r.map(({thread:e,snippet:t})=>{let n=(e.recencyAt??e.updatedAt)*1e3;return{hostId:this.params.hostId,threadId:e.id,title:this.getSearchResultTitle(e),cwd:e.cwd,updatedAt:Number.isFinite("
+    },
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "term": "sourceKinds",
+      "offset": 2667804,
+      "context": "or:e,limit:t,background:n=!1}){let r={limit:t,cursor:e,sortKey:this.params.requestClient.getCompatibleThreadSortKey(this.recentConversationSortKey),modelProviders:null,archived:!1,sourceKinds:BLt,useStateDbOnly:this.params.hostId!==q_},i=await this.params.requestClient.sendRequest(`thread/list`,r,n?{priority:`background`,source:`recent_threads`}:{source:`recent_threads`});return{...i,data:i.data.filter(l5t)}}async hydrateThreads(e,{addToRecentConversations:t,archivedPreview:n,includeTurns:r=!1,maxTurns:i,notifyAnyCallbacks:a"
+    },
+    {
+      "path": ".vite/build/main-C5K7o1Hr.js",
+      "term": "sourceKinds",
+      "offset": 2559468,
+      "context": "nd:t,listPage:async({cursor:t,limit:i},a)=>{let o=await r.listThreads({archived:!1,cursor:t,limit:i,modelProviders:[],parentThreadId:null,sortKey:`updated_at`,sortDirection:`desc`,sourceKinds:n.Ni,useStateDbOnly:!0},{...a,source:`thread_catalog`});return{items:o.data.map(t=>({id:t.id,updatedAt:t.updatedAt,entry:Ob(t,e)})),nextCursor:o.nextCursor,onAccepted:e=>e.observeThreads(o.data)}},readItem:async(t,n)=>{let i=await r.readThread(t,{includeTurns:!1},{...n,source:`thread_catalog`});return i==null?null:{id:i.id,updatedAt:i.u"
+    },
+    {
+      "path": ".vite/build/src-VqXTPopo.js",
+      "term": "bO=",
+      "offset": 460990,
+      "context": "ce(0,2)}/`:t.replace(/\\/+$/,``)}function _O(e){let t=Iy(e.trim()).replace(/\\/+/g,`/`);return t===`/`?t:t.replace(/\\/+$/,``)}function vO(e){let t=gO(e);return n.default.posix.basename(t)||t}var yO=6e4,bO=[],xO=`ambient_suggestions`,SO=`pull_request_fix_automation`,CO=new Set([`user`,`agent_created_thread`,`agent_forked_thread`,`ambient_suggestion_task`,`avatar_quick_chat`,`chatgpt_handoff`,`code_review`,`codex_replay`,`conversation_digest`,`implement_todo`,`local_environment_configuration`,`mcp_app_follow_up`,`onboarding_checklist`,`security_remediation`,`security_scan`,`voice_chat`]);function wO(e){return e==null||CO.has(e)}function TO(e){let t=(e.replace(/\\r\\n/g,`\n`).split(`\n`).find(e=>e.trim().length>0)??``).trim();if(t.length===0||(t=t.replace(/^title[:\\s]+/i,``),t=t.replace(/^[`\"'\\u201c\\u201d\\u2018\\u2019]+|[`\"'\\u201c\\u201d\\u2018\\u2019"
+    },
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "term": "BLt=",
+      "offset": 2173728,
+      "context": "ew DOMException(`Startup was disposed`,`AbortError`)),this.listeners.clear())}}})),ILt,LLt,RLt=t((()=>{ILt=5e3,LLt=6e4}));function zLt(e){return e==null||WLt.has(e)}var BLt,VLt,HLt,ULt,WLt,Bv=t((()=>{BLt=[],VLt=[`subAgentThreadSpawn`],HLt=`ambient_suggestions`,ULt=`pull_request_fix_automation`,WLt=new Set([`user`,`agent_created_thread`,`agent_forked_thread`,`ambient_suggestion_task`,`avatar_quick_chat`,`chatgpt_handoff`,`code_review`,`codex_replay`,`conversation_digest`,`implement_todo`,`local_environment_configuration`,`mcp_app_follow_up`,`onboarding_checklist`,`security_remediation`,`security_scan`,`voice_chat`])}));function GLt(e){let t=(e.replace(/\\r\\n/g,`\n`).split(`\n`).find(e=>e.trim().length>0)??``).trim();if(t.length===0||(t=t.replace(/^title[:\\s]+/i,``),t=t.replace(/^[`\"'\\u201c\\u201d\\u2018\\u2019]+|[`\"'\\u201c\\u201d\\u2018\\u2019]+$/g"
+    },
+    {
+      "path": "webview/assets/app-initial-86767c3d23e5.js",
+      "term": "function l5t",
+      "offset": 2605357,
+      "context": "(i);){if(i===t)return!0;r.add(i),i=lC(n.get(i))}return!1}function lC(e){return e==null?null:e.parentThreadId==null?WS(e.source)?.parentThreadId??null:Gg(e.parentThreadId)}var c5t=t((()=>{Kg(),GS()}));function l5t(e){return e.ephemeral!==!0&&e.threadSource!==`ambient_suggestions`}var u5t=t((()=>{Bv()}));function d5t(e){return e.type===`collabAgentToolCall`||e.type===`subAgentActivity`}function f5t(e){return e.type===`dynamicToolCall`&&`namespace`in e&&e.namespace===`codex_app`&&`tool`in e&&e.tool===`create_thread`||!1}function p5t(e){return e.type===`reasoning`}function m5t(e){return e.type===`agentMessage`}var h5t,g5t=t((()=>{h5t=class{access;indexes=new WeakMap;constructor(e){this.access=e}activity(e){return e==null?null:this.get(e).activity}createdThreadCalls(e){return e==null?null:this.get(e).createdThreadCalls}progress(e){return e==nu"
+    }
+  ],
+  "limits": [
+    "Static source excerpts; no runtime UI requests observed",
+    "REA whole-source parsing was heap/time limited; no complete semantic graph",
+    "Other native ASAR members had integrity contradictions; selected JS integrity is reported separately"
+  ]
+}

@@ -1,0 +1,16 @@
+node_modules/
+out/
+dist/
+.DS_Store
+.playwright-mcp/
+runtime/codex/
+*.log
+*.pyc
+__pycache__/
+.env
+.env.*
+!.env.example
+reference/
+acceptance-runs/
+test-results/
+epoch4-B07-current-before-result.ax.yml

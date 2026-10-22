@@ -1,0 +1,223 @@
+{
+  "observed_date": "2026-10-20",
+  "source_root": "/Users/yuanjiawei/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin",
+  "manifest": {
+    "layoutVersion": 1,
+    "version": "0.163.0",
+    "target": "aarch64-apple-darwin",
+    "variant": "codex",
+    "entrypoint": "bin/codex",
+    "resourcesDir": "codex-resources",
+    "pathDir": "codex-path"
+  },
+  "file_count": 41,
+  "logical_size_bytes": 340790099,
+  "scope": "read-only file inventory; not an installed-app-size or redistribution/runtime compatibility claim",
+  "files": [
+    {
+      "relative_path": "bin/codex",
+      "logical_size_bytes": 249952688,
+      "sha256": "8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31"
+    },
+    {
+      "relative_path": "bin/codex-code-mode-host",
+      "logical_size_bytes": 65643072,
+      "sha256": "79f123a85dbc61e8f5d0f0c050dfc3f4b81a8305d33a32b41e008b7f6e035698"
+    },
+    {
+      "relative_path": "codex-package.json",
+      "logical_size_bytes": 200,
+      "sha256": "f64449f0d5760647c5fc5eb16de7794f47746465198da76061261374c0333c9d"
+    },
+    {
+      "relative_path": "codex-path/rg",
+      "logical_size_bytes": 4030432,
+      "sha256": "27d09e29c478fddbfc750a2cb5fd06965bad0ea223e776f8667160a0de63c6e4"
+    },
+    {
+      "relative_path": "codex-resources/voice/NOTICE.md",
+      "logical_size_bytes": 2403,
+      "sha256": "40097a1799441051aa0b6645cdc819cceb19be73cdd265eb602aa2b15e0b1f48"
+    },
+    {
+      "relative_path": "codex-resources/voice/bin/codex-voice-host",
+      "logical_size_bytes": 9572560,
+      "sha256": "5df9baeb50cef23fcd451a6682469f28318ff4a18422da22a6c8d0aa1b2711b0"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libffi.8.dylib",
+      "logical_size_bytes": 136768,
+      "sha256": "7579e686549301db61c75a499a8069778e338ccadc3fd36859d2add955f86499"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgio-2.0.0.dylib",
+      "logical_size_bytes": 1902992,
+      "sha256": "907cecd67b7fa0c117d768c0e36177fa2cf3b6db2e9d5b5b82af11e01be2aa2b"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libglib-2.0.0.dylib",
+      "logical_size_bytes": 1353984,
+      "sha256": "45c5d63922608712e8a2e757d02a84584e2642e2b8441a46747c3121dcbb733e"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgmodule-2.0.0.dylib",
+      "logical_size_bytes": 68720,
+      "sha256": "3a18360b8728a030489e65c08e7761da5d030ca68e85e54b405139103abf913f"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgobject-2.0.0.dylib",
+      "logical_size_bytes": 416896,
+      "sha256": "83151e325aaca0fc3d5e04d136028e8a7bfc7fd94450a0902c5901c984ab4a0f"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstapp-1.0.0.dylib",
+      "logical_size_bytes": 151984,
+      "sha256": "0146f4085fcfe4fd9dfb0c69fb671845acdeea127747ffe71184df160718ef59"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstaudio-1.0.0.dylib",
+      "logical_size_bytes": 560336,
+      "sha256": "f4d177276e786386b264f897380f5a2d31fa2807be1df8115e659ccf5043274f"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstbase-1.0.0.dylib",
+      "logical_size_bytes": 520240,
+      "sha256": "da1541a7bd5edd7b10d6483cb9355d36120ceacb631122e3f4fb2a3db4ca605f"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstnet-1.0.0.dylib",
+      "logical_size_bytes": 115920,
+      "sha256": "f96e5e46e8a9feae9aaaa207cdc4119d0bfa37bcb763fd521ce2b25aa262fd02"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstpbutils-1.0.0.dylib",
+      "logical_size_bytes": 323552,
+      "sha256": "79b0d9deab6cfdafb09cdd6fa43f51d9d6c2ea2d6001a4554b4607059ce67d10"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstreamer-1.0.0.dylib",
+      "logical_size_bytes": 1341328,
+      "sha256": "ac42a918c04a450a4732b8eb1b58bc38d7803f81e542e36207e13904bf9dcbce"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstrtp-1.0.0.dylib",
+      "logical_size_bytes": 222176,
+      "sha256": "a590fee375095ae878c22ea91005340a748af4796dcefec8ed41264a33cf1d0a"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgsttag-1.0.0.dylib",
+      "logical_size_bytes": 283280,
+      "sha256": "65993b372ecbd1a2aba1d781944355bc714d2c1ef829d9c1c3cb4fe4b8912596"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libgstvideo-1.0.0.dylib",
+      "logical_size_bytes": 932496,
+      "sha256": "19fed42d520129f7923801b549432e087bf7110317ac9ba5bcdf75008b4900a0"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libintl.8.dylib",
+      "logical_size_bytes": 50080,
+      "sha256": "d160fc65c4e9aef8dc47dfff61286e686d1a46a23ebc2d60c2c63de46ab9701b"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libopus.0.dylib",
+      "logical_size_bytes": 504080,
+      "sha256": "23aa0b26edad2cae87a3b4c574b3077f2da9395b2b5c54d34afd9439666ae1bc"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libpcre2-8.0.dylib",
+      "logical_size_bytes": 456816,
+      "sha256": "a8eb9aeae3de4061bd55fff97b58285d687023eebdc91c93ac043b7787eaaa33"
+    },
+    {
+      "relative_path": "codex-resources/voice/lib/libz.1.dylib",
+      "logical_size_bytes": 123312,
+      "sha256": "720fb0e310ba1537606f731e19886551794b82e1c88d913a66f7363157681d85"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/LGPL-2.1.txt",
+      "logical_size_bytes": 26431,
+      "sha256": "ad2eec519ebd4b5df86ea84dff24ae3bfa2edea846a703b58902dd221ae375db"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/Opus.txt",
+      "logical_size_bytes": 1945,
+      "sha256": "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/PCRE2.md",
+      "logical_size_bytes": 4011,
+      "sha256": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/libffi.txt",
+      "logical_size_bytes": 1132,
+      "sha256": "17b64dc60f3b6897a60f971e288b973f655c2edcdf08b25f3c3dd5549857881c"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/proxy-libintl.txt",
+      "logical_size_bytes": 25292,
+      "sha256": "d245807f90032872d1438d741ed21e2490e1175dc8aa3afa5ddb6c8e529b58e5"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/sljit.txt",
+      "logical_size_bytes": 1444,
+      "sha256": "5f216505c0f6ea3273caec89e766eef93cdeb7bbb0c429f9360116d7c938feeb"
+    },
+    {
+      "relative_path": "codex-resources/voice/licenses/zlib.txt",
+      "logical_size_bytes": 1002,
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+    },
+    {
+      "relative_path": "codex-resources/voice/manifest.json",
+      "logical_size_bytes": 4637,
+      "sha256": "cbfe09b320c15173f9ce69f19d698ee8ffbd79f10b1f4b528e721f51f5400bd0"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstapp.dylib",
+      "logical_size_bytes": 49872,
+      "sha256": "5759f0bc9718facb06e37dd1e9ce39ecf4f8d940e263a135f938c120d0d4e380"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstaudioconvert.dylib",
+      "logical_size_bytes": 93344,
+      "sha256": "32243ec25c851e9430ed0ad0b6cb3e73331049e59172faa089f20b8370b558bc"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstaudioresample.dylib",
+      "logical_size_bytes": 91696,
+      "sha256": "0b7fd8a74a8ebaa9ab3f88d5af7b82fea92e4b15aa9da06eb9f064d12866cecf"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstcoreelements.dylib",
+      "logical_size_bytes": 458768,
+      "sha256": "69afac4e6a3c074da7a1526c157349d55e83edcce3367379734bd7785607e7e1"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstopus.dylib",
+      "logical_size_bytes": 131120,
+      "sha256": "214778f96cc4f515a93f26b71587163ca5d9f6a9486613babda40ba461bd1438"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstrtp.dylib",
+      "logical_size_bytes": 674896,
+      "sha256": "0ffe1df81e5d42106c1bb091566778f68b44376097723cd4fafc6e0e8cefe0c2"
+    },
+    {
+      "relative_path": "codex-resources/voice/plugins/libgstrtpmanager.dylib",
+      "logical_size_bytes": 538368,
+      "sha256": "b0bfb34da72a0fb6cef388b8b7c8570572dca5502a96097c92f89f57fd25584c"
+    },
+    {
+      "relative_path": "codex-resources/voice/runtime.json",
+      "logical_size_bytes": 14915,
+      "sha256": "ff2f7b67a9c4d769970c6a4c433fb7deccdc03c3734f11291d91f73c3fb508d8"
+    },
+    {
+      "relative_path": "codex-resources/voice/sources.json",
+      "logical_size_bytes": 4911,
+      "sha256": "e2f6b124f6277e7c3c4f5c7cc8830c66190f671ad65e972bb2cc9507dbfcb937"
+    }
+  ]
+}

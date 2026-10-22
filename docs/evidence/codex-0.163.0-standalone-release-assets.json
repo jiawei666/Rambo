@@ -1,0 +1,18 @@
+{
+  "observed_date": "2026-10-20",
+  "tag": "rust-v0.163.0",
+  "source_url": "https://github.com/openai/codex/releases/expanded_assets/rust-v0.163.0",
+  "assets": [
+    {
+      "name": "codex-app-server-aarch64-apple-darwin.tar.gz",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-app-server-aarch64-apple-darwin.tar.gz"
+    },
+    {
+      "name": "codex-app-server-package-aarch64-apple-darwin.tar.gz",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-app-server-package-aarch64-apple-darwin.tar.gz"
+    }
+  ],
+  "scope": "public release asset listing snapshot; later package read-only inspection recorded separately",
+  "api_metadata_attempt": "GitHub API returned 403 rate limit; listing obtained from public expanded-assets HTML",
+  "subsequent_package_inventory": "codex-app-server-0.163.0-darwin-arm64-inventory.json"
+}

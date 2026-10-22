@@ -1,0 +1,43 @@
+{
+  "observed_date": "2026-10-20",
+  "source_url": "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-app-server-package-aarch64-apple-darwin.tar.gz",
+  "archive_path": "/tmp/rambo-app-server-package-0.163.0-aarch64-apple-darwin.tar.gz",
+  "archive_size_bytes": 101989246,
+  "observed_archive_sha256": "c64323d8d51933c3fe50489e841f3a9ebbce971d9e06dc3d734ac2f3c7ddb2cf",
+  "file_count": 4,
+  "logical_size_bytes": 261252590,
+  "manifests": {
+    "codex-package.json": {
+      "layoutVersion": 1,
+      "version": "0.163.0",
+      "target": "aarch64-apple-darwin",
+      "variant": "codex-app-server",
+      "entrypoint": "bin/codex-app-server",
+      "resourcesDir": "codex-resources",
+      "pathDir": "codex-path"
+    }
+  },
+  "files": [
+    {
+      "path": "bin/codex-app-server",
+      "logical_size_bytes": 191578864,
+      "observed_sha256": "da2c29c81ce5c5327d34bbc4986e59ab50a9b7fd51fec7eddf9d8bf5e2e4cd87"
+    },
+    {
+      "path": "bin/codex-code-mode-host",
+      "logical_size_bytes": 65643072,
+      "observed_sha256": "f6f4f8b8afcd7db6a9561a7d1959d3a5605b220cb4d2ae58a65b43967ea85ca4"
+    },
+    {
+      "path": "codex-package.json",
+      "logical_size_bytes": 222,
+      "observed_sha256": "11d280e7dae975cfab52e88139749310b48000d8855a118a3940a81aaaee2245"
+    },
+    {
+      "path": "codex-path/rg",
+      "logical_size_bytes": 4030432,
+      "observed_sha256": "27d09e29c478fddbfc750a2cb5fd06965bad0ea223e776f8667160a0de63c6e4"
+    }
+  ],
+  "scope": "complete tar member read and observed hashes only; no binary extraction/execution or upstream signature attestation validation"
+}

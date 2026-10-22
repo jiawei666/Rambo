@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rambo 分层测试与验收"
+  short_description: "快速规则测试、真实 Electron E2E 与按风险复验，最终审核完整发布"
+  default_prompt: "使用 $rambo-acceptance，先运行快速检查和规则映射；按功能使用单测、Host/SQLite 集成和 Playwright Electron 脚本。真实设备、系统原生和外部副作用按风险独立复验。最终发布审核全部规则、4 条用户旅程和发布套件。"

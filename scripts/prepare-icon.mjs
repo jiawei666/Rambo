@@ -1,0 +1,19 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+if (process.platform !== 'darwin') throw new Error('macOS 图标打包需在 macOS 执行');
+const source = resolve('assets/branding/app-logo-source.png');
+const temporary = await mkdtemp(join(tmpdir(), 'rambo-icon-'));
+try {
+  const set = join(temporary, 'Rambo.iconset');
+  await mkdir(set);
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const scale of [1, 2]) {
+      execFileSync('/usr/bin/sips', ['-z', String(size * scale), String(size * scale), source, '--out', join(set, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`)], { stdio: 'ignore' });
+    }
+  }
+  execFileSync('/usr/bin/iconutil', ['-c', 'icns', set, '-o', resolve('assets/branding/app.icns')]);
+  console.log('已由指定原图生成 macOS 图标尺寸集（无重绘或裁剪）');
+} finally { await rm(temporary, { recursive: true, force: true }); }

@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-20",
+  "scope": "first implementation batch, not full product acceptance",
+  "launchMode": "electron-vite development",
+  "uiObservation": {
+    "method": "Computer Use accessibility state",
+    "windowTitle": "Rambo",
+    "visibleControls": ["收起侧栏", "搜索", "创建 Bot", "设置"],
+    "settingsRuntimeLabel": "Codex 已连接",
+    "runtimeVersion": "0.163.0",
+    "existingAuthenticationRecognized": true,
+    "authenticationType": "chatgpt",
+    "personalIdentifiersRetained": false
+  },
+  "build": {
+    "command": "npm run build",
+    "result": "passed",
+    "electronVersion": "42.11.15",
+    "runtimeArchiveSha256": "c64323d8d51933c3fe50489e841f3a9ebbce971d9e06dc3d734ac2f3c7ddb2cf"
+  },
+  "package": {
+    "command": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run package:mac",
+    "result": "created",
+    "relativePath": "dist/mac-arm64/Rambo.app",
+    "signed": false,
+    "independentLaunchVerified": false
+  },
+  "notExecuted": ["real model turn", "automated test suite", "Voice", "wake detection", "Computer Use integration", "mail sending", "full acceptance matrix"]
+}

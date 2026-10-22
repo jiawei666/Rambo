@@ -1,0 +1,395 @@
+{
+  "target": {
+    "name": "Grok Bot",
+    "version": "0.72.0",
+    "bundle_id": "com.anysphere.sand",
+    "asar_path": "/Applications/Grok Bot.app/Contents/Resources/app.asar",
+    "asar_sha256": "2dd8dde660f466a2f305bbdbff14bf3256fd0489a64b4044da629dbbe0a493bf",
+    "authority": "shipped-artifact",
+    "analysis_mode": "static; target was not launched"
+  },
+  "rea": {
+    "inventory_evidence_id": "ev_7ea1b92f6a00b711b71bc03a8b2ed495447d8c15f28087b150faa26c33ee07f0",
+    "artifact_summary_evidence_id": "ev_36f8847f5381336c593d5ea2def2ac38a094acf70edec2646bfb1d5bd93fa4ef",
+    "renderer_summary_evidence_id": "ev_473c26323b0674de1e878f5251f40bda336b614501ffe28118f3737c6b4a32f4",
+    "renderer_parent_evidence_id": "ev_df121d8545bec00805c1477b72bbaa9e96dec85690364f9d49205ecde3626171",
+    "inventory_nodes": 953,
+    "inventory_files": 875,
+    "integrity_contradictions": 9,
+    "renderer_source_view": "2 JavaScript files selected; 707 files outside app-source view; no runtime observation"
+  },
+  "integrity_notes": {
+    "contradiction_scope": "The 9 mismatches are native .node binaries / native executables. No mismatch was reported for the selected renderer JS/CSS files.",
+    "limitations": [
+      "Static analysis does not establish which theme or window bounds are active at runtime.",
+      "No screenshots or DOM observation were collected.",
+      "Localization chunks are not component implementations and were excluded from component references.",
+      "The creation dialog component is identified statically, but no runtime screenshot or selected UI state was observed."
+    ]
+  },
+  "sources": [
+    {
+      "path": "dist/renderer/index.html",
+      "sha256": "b1195753ef1bd97c6f02d52a75e61b43a303cb6c6997f586044a42ef0acd3a1c",
+      "bytes": 1828,
+      "role": "renderer entry; references hashed JS and CSS assets"
+    },
+    {
+      "path": "dist/renderer/assets/index.eager-app-tQ6jxzlJ.js",
+      "sha256": "2838d061bc91f680d99cb656c9c3a2015edb7f586d831388be3ba88c804949dd",
+      "bytes": 3932515,
+      "role": "main renderer; excerpts in reference/grok-ui/0.72.0"
+    },
+    {
+      "path": "dist/renderer/assets/index.eager-common-BH0hmUYG.js",
+      "sha256": "88f8cc9278279428a253cac372de298adc0ed76b803b526d05b3f4f35c34aa24",
+      "bytes": 143906,
+      "role": "shared renderer primitives"
+    },
+    {
+      "path": "dist/renderer/assets/index-CMR1RvAA.css",
+      "sha256": "633071d4c63d9d067bacb3681ef2a3d4a8145b7c3f5cc898e7d9585535a42dd1",
+      "bytes": 699092,
+      "role": "full renderer CSS; root uses --cursor-font-family-sans; tokens and font declarations transcribed in ui-baseline.md"
+    },
+    {
+      "path": "dist/renderer/assets/chunk-layout-TYnTblYW.js",
+      "sha256": "fb1bfaa3763b91174a7faf6c53ffb1a0f2a6531d9664cc3a6618f7b76f7c0fca",
+      "bytes": 10260,
+      "role": "settings navigation/layout"
+    },
+    {
+      "path": "dist/renderer/assets/chunk-general-pane-BCXPDDYB.js",
+      "sha256": "15c04b0b7cfca37a9bf6c66b888508e40db152c37a7d6d2fca24a39e6185e31f",
+      "bytes": 71749,
+      "role": "settings general pane"
+    },
+    {
+      "path": "dist/renderer/assets/chunk-settings-row-DdAJprQS.js",
+      "sha256": "b9906bfb1f7363bc543e40b41c4b4177fd998285ff1e7f469383041e09af8f26",
+      "bytes": 8445,
+      "role": "settings row/control component"
+    },
+    {
+      "path": "dist/renderer/assets/chunk-bot-configure-dialog-ClR0wVhk.js",
+      "sha256": "462205f53863ac079897ffe939d040c71c13900b5328228333c07b113686ae46",
+      "bytes": 26064,
+      "role": "existing Bot configuration dialog; not the create-Bot dialog"
+    },
+    {
+      "path": "dist/renderer/assets/chunk-agent-avatar-editor-DSPJdm-q.js",
+      "sha256": "f6e31a6093f12779b38d19c36f7db3bf47134ed485f85b654d11c91434d0c04f",
+      "bytes": 22746,
+      "role": "Bot avatar editor"
+    },
+    {
+      "path": "dist/renderer/assets/X-VF-C7NyO54W.woff2",
+      "sha256": "0e287249b246a4fa1b2e87c15a1f95daa831938a44e2c2a0b1a61a0df8b18a43",
+      "bytes": 82620,
+      "role": "XVF variable font declared by CSS; root body family is cursor sans and XVF body use is not established"
+    },
+    {
+      "path": "dist/renderer/assets/XMono-VF-K4lk0ar0.woff2",
+      "sha256": "2a5fda92be2d5288468b6e231ca260135acb6e913e77a37634c145eb4d93e341",
+      "bytes": 24704,
+      "role": "XVF Mono variable font declared by CSS; not established as the body font"
+    },
+    {
+      "path": "dist/renderer/assets/cursor-icons-16-DfKNljMZ.woff2",
+      "sha256": "367c279e7522c97898e44924c428f18ea296e19b5919fce1c0ccce7f06459d29",
+      "bytes": 126432,
+      "role": "cursor-icons font resource; not copied into Rambo"
+    },
+    {
+      "path": "dist/electron-main/main-core.cjs",
+      "sha256": "2ca37a7b314e8a7ef97ec9692db70bf3aa86bc986ab61770de79f3d02034de6b",
+      "bytes": 963157,
+      "role": "static BrowserWindow default/minimum bounds evidence; not copied into reference"
+    },
+    {
+      "path": "dist/renderer/assets/index.eager-platform-BFGuCGzq.js",
+      "sha256": "b9ebccdfb06c077fd51a9b10f336c8c3a732531958e9f8f9f233bcbee2991bf3",
+      "bytes": 892100,
+      "role": "pure avatar geometry definitions and SVG generator source; selected source ranges recorded below; not copied or imported as an app module"
+    }
+  ],
+  "main_bundle_offsets_utf8_characters": {
+    "create_bot_menu_entry": 989315,
+    "avatar_picker_component": 921810,
+    "avatar_picker_definitions": 919910,
+    "avatar_default_shape_color": 176713,
+    "create_bot_dialog_component": 2431138,
+    "create_bot_dialog_root": 2434670,
+    "bot_empty_panel": 1078142,
+    "bot_name_editor": 1227423,
+    "bot_description_editor": 1232731,
+    "no_bot_selected_panel": 1376269,
+    "message_transcript_row": 2106192,
+    "composer_send_stop_state": 2450049,
+    "main_chat_context": 2680638,
+    "appearance_theme_command": 2876881,
+    "avatar_color_token_mapping": 567779
+  },
+  "window_static_values": {
+    "minimum": {
+      "width": 512,
+      "height": 520
+    },
+    "non_persisted_platform_branches": [
+      {
+        "width": 1440,
+        "height": 960
+      },
+      {
+        "width": 1040,
+        "height": 760
+      }
+    ],
+    "active_branch_observed": false
+  },
+  "avatar_reconstruction": {
+    "source_asset": "dist/renderer/assets/index.eager-platform-BFGuCGzq.js",
+    "source_sha256": "b9ebccdfb06c077fd51a9b10f336c8c3a732531958e9f8f9f233bcbee2991bf3",
+    "source_ranges": {
+      "default_pose": "nF 530446-535918",
+      "shape_definitions": "dL 613091-615158",
+      "shape_canonicalization": "RG 694312-694470",
+      "svg_markup": "bG 689090-689141; GG 694894-695335; KG 695335-695406",
+      "app_picker_definitions": "main app JLe/YLe offset 919910",
+      "app_picker_component": "main app Bk offset 921810",
+      "app_picker_base_shapes": "platform oA offset 494235; main app nn imported from platform kt; main app ZLe offset 920832 combines base shapes and limitedShapes",
+      "app_picker_dimensions": "GLe=48, Ik=36, KLe=3, qLe=1; five shapes per row",
+      "create_dialog_component": "main app bEt offset 2431138; vEt initializer offset 2430937; bEt passes limitedShapes to Bk",
+      "create_dialog_avatar_factory": "platform wA offset 495314; UUID hash helpers mA through bA offset 494551-495314",
+      "avatar_color_token_mapping": "main app Bx 567779; Vx resolves the light/dark semantic color value from CSS tokens"
+    },
+    "analysis_boundary": "Only the pure-geometry dependency closure was evaluated in an isolated VM with JavaScript built-ins; no target app/module, telemetry, network, cloud API, or user data was loaded.",
+    "shape_order": [
+      "blob",
+      "pebble",
+      "bean",
+      "egg",
+      "squircle",
+      "tablet",
+      "capsule",
+      "cylinder",
+      "hex",
+      "gem",
+      "crystal",
+      "wedge",
+      "shield",
+      "dome",
+      "arch",
+      "cloud",
+      "teardrop",
+      "leaf",
+      "square",
+      "sparkle",
+      "clover",
+      "flower",
+      "heart",
+      "house",
+      "star",
+      "pumpkin"
+    ],
+    "create_dialog_picker_shapes": [
+      "blob",
+      "cloud",
+      "square",
+      "sparkle",
+      "clover",
+      "heart",
+      "flower",
+      "teardrop",
+      "tablet",
+      "wedge",
+      "house",
+      "star",
+      "hex"
+    ],
+    "create_dialog_picker_shape_labels_zh": [
+      "团块",
+      "云朵",
+      "方形",
+      "星芒",
+      "四叶草",
+      "爱心",
+      "花朵",
+      "水滴",
+      "药片",
+      "楔形",
+      "房子",
+      "星形",
+      "六边形"
+    ],
+    "colors": [
+      {
+        "id": "black",
+        "value": "#000000"
+      },
+      {
+        "id": "brown",
+        "value": "#a06b39"
+      },
+      {
+        "id": "red",
+        "value": "#fb2b3e"
+      },
+      {
+        "id": "orange",
+        "value": "#fd690f"
+      },
+      {
+        "id": "yellow",
+        "value": "#f59312"
+      },
+      {
+        "id": "green",
+        "value": "#14c16f"
+      },
+      {
+        "id": "cyan",
+        "value": "#13b7a2"
+      },
+      {
+        "id": "blue",
+        "value": "#1e86fc"
+      },
+      {
+        "id": "violet",
+        "value": "#8f59f9"
+      },
+      {
+        "id": "magenta",
+        "value": "#f93498"
+      },
+      {
+        "id": "gray",
+        "value": "#959595"
+      }
+    ],
+    "app_level_fallback": {
+      "shape": "blob",
+      "color": "black",
+      "scope": "app-level avatar fallback; create dialog initializes from a new UUID"
+    },
+    "create_dialog_initial_avatar": {
+      "shape": "hash of a new crypto.randomUUID over the 13 base picker shapes",
+      "color": "seeded from the same UUID over the 10 non-black colors",
+      "source": "main app vEt -> platform wA; runtime selection is variable, not a fixed blob/black default"
+    },
+    "stable_bot_avatar_encoding": "grok-avatar:v1:<shape>:<color>",
+    "legacy_values": [
+      "spark",
+      "orbit",
+      "leaf",
+      "sun",
+      "moon",
+      "wave"
+    ],
+    "static_svg_reference": {
+      "path": "reference/grok-ui/0.72.0/source-excerpts/avatar-svg-paths.json",
+      "bytes": 131247,
+      "sha256": "2c044d1ac2f33d7030190a360a5763ecfb6b107a0ec4fc719b8964a2017bcd5b",
+      "shape_count": 26
+    },
+    "renderer_static_data": {
+      "path": "src/renderer/avatar-data.ts",
+      "bytes": 127809,
+      "sha256": "e1098ce24ca7b4c123e6830be45b6b148ab3469d5a28c61d36376dc9e6d160c5"
+    }
+  },
+  "runtime_observation": {
+    "source": "主 Agent 在本工作会话中的 CUA 实际观察记录；未保存截图或 DOM 文件",
+    "authority": "runtime-observation-reported-by-coordinator",
+    "window_css_px": {
+      "width": 1040,
+      "height": 760
+    },
+    "theme_observed": "dark",
+    "sidebar_width_css_px_approx": 280,
+    "observed": [
+      "原生 macOS 红绿灯位于窗口左上；renderer 工具栏右侧有紧凑侧栏、搜索、新建 Bot 三个按钮",
+      "侧栏无 Rambo 品牌横幅和 Bots 标题；Bot 行显示头像、名称及一行最近消息/会话摘要",
+      "侧栏底部左侧是小账号圆点，右侧是连接应用胶囊",
+      "主内容顶部居中显示头像与当前 Bot 名称胶囊；composer 是整条圆角胶囊，左侧加号、原版右侧语音按钮"
+    ],
+    "limitations": [
+      "当前 agent 未独立操作目标应用；观察由主 Agent 转述",
+      "未归档截图、DOM、精确 CSS 像素测量或主题设置值"
+    ]
+  },
+  "theme_tokens": {
+    "static_css": {
+      "path": "dist/renderer/assets/index-CMR1RvAA.css",
+      "sha256": "633071d4c63d9d067bacb3681ef2a3d4a8145b7c3f5cc898e7d9585535a42dd1",
+      "decoded_character_offset_light_root": 423524,
+      "prefers_color_scheme_rule_count": 0,
+      "note": "CSS only contains the light root token group; Sand Dark values are generated from app-bundle theme data."
+    },
+    "dynamic_theme_source": {
+      "path": "dist/renderer/assets/index.eager-app-tQ6jxzlJ.js",
+      "sha256": "2838d061bc91f680d99cb656c9c3a2015edb7f586d831388be3ba88c804949dd",
+      "decoded_character_range": [
+        554971,
+        567780
+      ],
+      "theme_id": "sand-dark",
+      "primitive_palette_start": 557391,
+      "theme_resolver_start": 562268,
+      "semantic_token_builder_start": 567594,
+      "opacity_math": "hex alpha = round(percent * 255 / 100); light/dark opacity tables are distinct"
+    },
+    "derived_dark_semantics": {
+      "--sand-bg-pane": "#161616",
+      "--sand-bg-chrome": "#121212",
+      "--sand-bg-sidebar": "#0e0e0e",
+      "--sand-bg-elevated": "#1f1f1f",
+      "--sand-bg-primary": "#f5f5f5",
+      "--sand-bg-primary-hover": "#dbdbdb",
+      "--sand-bg-hover": "#f5f5f50f",
+      "--sand-bg-active": "#f5f5f514",
+      "--sand-fill-bubble-agent": "#f5f5f50a",
+      "--sand-fill-bubble-user": "#f5f5f52e",
+      "--sand-text-primary": "#f5f5f5",
+      "--sand-text-secondary": "#f5f5f5a8",
+      "--sand-text-tertiary": "#f5f5f58a",
+      "--sand-text-quaternary": "#f5f5f561",
+      "--sand-text-on-primary": "#f5f5f5"
+    },
+    "derived_bubble_composites_over_pane": {
+      "agent_approx": "#1f1f1f",
+      "user_approx": "#3e3e3e",
+      "note": "These are alpha composites of the semantic tokens over #161616, not literal CSS declarations; coordinator CUA note described visible values as approximately #1c1c1c and #404040."
+    },
+    "avatar_color_mapping": {
+      "source_path": "dist/renderer/assets/index.eager-app-tQ6jxzlJ.js",
+      "source_sha256": "2838d061bc91f680d99cb656c9c3a2015edb7f586d831388be3ba88c804949dd",
+      "source_range": [
+        567779,
+        568172
+      ],
+      "mapping": "Bx maps chromatic avatar choices to bg/<color>-bright; Vx/Hx resolve the active light/dark Sand theme token.",
+      "dark": {
+        "black": "#000000",
+        "brown": "#a16b39",
+        "red": "#fc2c3e",
+        "orange": "#f9670e",
+        "yellow": "#f69412",
+        "green": "#14c370",
+        "cyan": "#13b8a3",
+        "blue": "#1884fc",
+        "violet": "#905afb",
+        "magenta": "#fb3499",
+        "gray": "#959595"
+      }
+    }
+  },
+  "typography": {
+    "css_root_family": "var(--cursor-font-family-sans)",
+    "XVF_declared": true,
+    "body_font_verified_as_XVF": false,
+    "XVF_copied_to_assets_fonts": false,
+    "reason": "The CSS declares XVF but the root body family points to cursor sans; no verified evidence selects XVF as the body font."
+  }
+}
