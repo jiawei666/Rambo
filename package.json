@@ -8,6 +8,7 @@
     "dev": "node scripts/desktop.mjs dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
+    "check:changes": "node scripts/change-checks.mjs",
     "test:backend": "node --test tests/backend/*.test.mjs",
     "test:catalog:sync": "node tests/acceptance/generate-catalog.mjs",
     "test:catalog": "node tests/acceptance/validate-catalog.mjs",

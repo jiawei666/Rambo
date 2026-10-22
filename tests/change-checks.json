@@ -1,0 +1,146 @@
+{
+  "schema": "rambo.change-checks.v1",
+  "description": "开发 Agent 的最小检查矩阵。按模块与共享边界选择，文件路径用于细化；合并本轮命中的所有检查并去重。",
+  "checks": {
+    "typecheck": {
+      "label": "TypeScript 类型检查",
+      "command": ["npm", "run", "typecheck"],
+      "cost": 10
+    },
+    "backend-unit": {
+      "label": "相关后端测试",
+      "command": ["node", "--test", "{targets}"],
+      "cost": 20
+    },
+    "acceptance-structure": {
+      "label": "验收目录与台账结构",
+      "command": ["npm", "run", "test:catalog"],
+      "cost": 15
+    },
+    "acceptance-tests": {
+      "label": "验收流程测试",
+      "command": ["npm", "run", "test:acceptance"],
+      "cost": 30
+    },
+    "electron-e2e": {
+      "label": "相关 Electron E2E",
+      "command": ["npm", "run", "test:e2e", "--", "{targets}"],
+      "cost": 100
+    },
+    "build": {
+      "label": "Electron 构建",
+      "command": ["npm", "run", "build"],
+      "cost": 40
+    }
+  },
+  "areas": [
+    {
+      "id": "docs-decisions",
+      "label": "产品决策、验收文档与证据",
+      "paths": ["AGENTS.md", "README.md", "docs/**", ".agents/skills/**"],
+      "checks": ["acceptance-structure"],
+      "reason": "文档或规则结构变化必须保持决策、矩阵、计划和目录一致"
+    },
+    {
+      "id": "acceptance-tests",
+      "label": "验收脚本与规则目录",
+      "paths": [
+        "tests/acceptance/**",
+        "tests/change-checks.json",
+        "scripts/verify.mjs",
+        "scripts/change-checks.mjs"
+      ],
+      "checks": ["acceptance-structure", "acceptance-tests"],
+      "reason": "测试编排或规则映射本身变化"
+    },
+    {
+      "id": "backend-tests",
+      "label": "后端测试文件",
+      "paths": ["tests/backend/**/*.test.mjs"],
+      "checks": ["backend-unit"],
+      "backendTargets": ["{path}"],
+      "reason": "测试文件自身改动只运行该测试，不扩展到全部后端测试"
+    },
+    {
+      "id": "shared-contracts",
+      "label": "跨进程契约与 IPC",
+      "paths": ["src/shared/**", "src/preload/**", "src/main/index.ts"],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": ["tests/backend/host.test.mjs"],
+      "reason": "跨进程边界变化会同时影响宿主和渲染层"
+    },
+    {
+      "id": "main-host-runtime",
+      "label": "主进程、Host、Store、Runtime",
+      "paths": [
+        "src/main/bot-data.ts",
+        "src/main/host.ts",
+        "src/main/login-item.ts",
+        "src/main/routine-schedule.ts",
+        "src/main/routine-scheduler.ts",
+        "src/main/runtime.ts",
+        "src/main/store.ts"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": ["tests/backend/{stem}.test.mjs"],
+      "reason": "本机执行、持久化和宿主行为由后端集成测试覆盖"
+    },
+    {
+      "id": "renderer",
+      "label": "渲染层与样式",
+      "paths": ["src/renderer/**"],
+      "checks": ["typecheck"],
+      "reason": "优先类型检查；只有改变真实用户交互时才追加对应 Electron E2E"
+    },
+    {
+      "id": "build-config",
+      "label": "构建与打包配置",
+      "paths": ["electron.vite.config.ts", "playwright.config.mjs", "package-lock.json"],
+      "checks": ["typecheck", "build"],
+      "reason": "构建配置变化需要验证产物可生成"
+    },
+    {
+      "id": "package-manifest",
+      "label": "package 清单",
+      "paths": ["package.json"],
+      "checks": ["acceptance-structure"],
+      "reason": "先检查清单结构与规则一致性；只有依赖或构建入口变化才额外构建"
+    },
+    {
+      "id": "unregistered-main",
+      "label": "尚未登记的新主进程文件",
+      "paths": ["src/main/**"],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": ["tests/backend/{stem}.test.mjs"],
+      "reason": "新主进程文件需要补充对应测试映射；当前先跑类型检查及已存在的同名测试"
+    },
+    {
+      "id": "unregistered-renderer",
+      "label": "尚未登记的新渲染文件",
+      "paths": ["src/renderer/**"],
+      "checks": ["typecheck"],
+      "reason": "新渲染文件先做类型检查；涉及真实交互时应追加对应 Electron E2E",
+      "fallback": true
+    }
+  ],
+  "escalation": [
+    {
+      "when": "修改了真实 Electron 用户流程、窗口导航或关键交互",
+      "add": ["electron-e2e"],
+      "requiresApproval": false,
+      "targets": ["tests/e2e/private-chat.spec.mjs", "tests/e2e/group-chat.spec.mjs"]
+    },
+    {
+      "when": "用户明确要求完整验收、候选版本或发布验证",
+      "add": ["acceptance-structure", "acceptance-tests", "electron-e2e", "build"],
+      "requiresApproval": false
+    }
+  ],
+  "rules": [
+    "先列出命中的模块、选中检查和未选原因，再执行检查。",
+    "所有命中的检查合并去重，按 cost 从低到高执行。",
+    "模块内必跑项不能省略；不适用时说明具体原因。",
+    "默认不运行全量 verify:fast、verify:candidate 或 accept:release。",
+    "新增模块或测试时补充映射；放宽或删除现有门禁需要用户明确同意。"
+  ]
+}
