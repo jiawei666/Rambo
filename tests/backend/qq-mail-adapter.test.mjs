@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import ts from 'typescript';
 
 const source = readFileSync(new URL('../../src/main/qq-mail-adapter.ts', import.meta.url), 'utf8');
+const baseSource = readFileSync(new URL('../../src/main/imap-smtp-mail-adapter.ts', import.meta.url), 'utf8');
 const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext };
 const mailAdapter = readFileSync(new URL('../../src/main/mail-adapter.ts', import.meta.url), 'utf8');
 const contracts = readFileSync(new URL('../../src/shared/contracts.ts', import.meta.url), 'utf8');
@@ -17,12 +18,15 @@ const stubUrls = Object.fromEntries(Object.entries(stubs).map(([name, code]) => 
 ]));
 const mailAdapterUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(mailAdapter, { compilerOptions }).outputText).toString('base64')}`;
 const contractsUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(contracts, { compilerOptions }).outputText).toString('base64')}`;
-const executable = ts.transpileModule(source, { compilerOptions }).outputText
+const baseExecutable = ts.transpileModule(baseSource, { compilerOptions }).outputText
   .replace("from '../shared/contracts'", `from '${contractsUrl}'`)
   .replace("from './mail-adapter'", `from '${mailAdapterUrl}'`)
   .replace("from 'imapflow'", `from '${stubUrls.imapflow}'`)
   .replace("from 'mailparser'", `from '${stubUrls.mailparser}'`)
   .replace("from 'nodemailer'", `from '${stubUrls.nodemailer}'`);
+const baseUrl = `data:text/javascript;base64,${Buffer.from(baseExecutable).toString('base64')}`;
+const executable = ts.transpileModule(source, { compilerOptions }).outputText
+  .replace("from './imap-smtp-mail-adapter'", `from '${baseUrl}'`);
 const { QQMailAdapter } = await import(`data:text/javascript;base64,${Buffer.from(executable).toString('base64')}`);
 
 const connection = {

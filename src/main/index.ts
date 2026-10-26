@@ -1,6 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, session, shell, Tray, utilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { setGlobalProxyFromEnv } from 'node:http';
 import { basename, dirname, join, resolve } from 'node:path';
 import { closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -18,7 +17,7 @@ import { SecureMailAdapterRegistry } from './mail-adapter';
 import { MailRuntime } from './mail-runtime';
 import { qqMailAdapterFactory } from './qq-mail-adapter';
 import { gmailMailAdapterFactory } from './gmail-adapter';
-import { GmailOAuth, type GmailOAuthConfig } from './gmail-oauth';
+import { gmailImapAdapterFactory } from './gmail-imap-adapter';
 import { CodexRuntime } from './runtime';
 import { Host } from './host';
 import { assertWechatPageDatabasesReadable, SqlCipherWechatReader } from './wechat-adapter';
@@ -89,7 +88,6 @@ let playwrightExtensionVerifier: PlaywrightExtensionVerifier | null = null;
 const wechatAuthControllers = new Map<string, AbortController>();
 let mailRuntime: MailRuntime;
 let directMcpRegistry: DirectMcpRegistry;
-const gmailOAuthFlows = new Map<string, { oauth: GmailOAuth; config: GmailOAuthConfig }>();
 let loginItem: LoginItemController;
 let systemIndicators: SystemIndicators<Electron.NativeImage, Electron.Menu> | null = null;
 const messageAssetGrants = new Map<string, { messageId: string; source: string; expiresAt: number }>();
@@ -241,6 +239,7 @@ const connectorChallenge = (value: unknown): import('../shared/contracts').Conne
   };
 };
 const notifiedReplyItems = new Set<string>();
+const activeSystemNotifications = new Set<Notification>();
 let visibleChatId: string | null = null;
 let windowFocused = false;
 let notificationRuntimeState: NotificationRuntimeState = Notification.isSupported() ? 'authorized' : 'unknown';
@@ -299,7 +298,8 @@ function publishBotTurnFinishedNotification(chatId: string): void {
     chatId: chat.id,
     botId: bot.id,
     preview: (text || '任务执行失败').replace(/\s+/gu, ' ').trim().slice(0, 160),
-    notificationId
+    notificationId,
+    visibleAndFocused: isVisibleAndFocused
   });
 }
 async function refreshNotificationRuntimeState(): Promise<void> {
@@ -315,17 +315,34 @@ function syncNotificationRuntimeState(): void {
 }
 function showBotReplyNotification(event: Extract<AppEvent, { type: 'botReplyNotification' }>): void {
   if (acceptanceRunId || !Notification.isSupported() ||
-      visibleChatId === event.chatId) return;
+      event.visibleAndFocused) return;
+  const notificationId = `rambo-reply-${event.notificationId ?? event.chatId}`;
+  console.info('[Rambo] system notification requested', notificationId);
   const notification = new Notification({
-    id: `rambo-reply-${event.notificationId ?? event.chatId}`,
+    id: notificationId,
     groupId: 'rambo-bot-replies',
     title: event.botId ? store.bot(event.botId).name : 'Rambo',
     body: event.preview,
     silent: false
   });
+  activeSystemNotifications.add(notification);
+  const release = () => {
+    activeSystemNotifications.delete(notification);
+  };
   notification.on('click', () => {
     showWindow();
     window?.webContents.send('rambo:event', { type: 'focusBot', botId: event.botId } satisfies AppEvent);
+  });
+  notification.on('show', () => {
+    console.info('[Rambo] system notification shown', notificationId);
+  });
+  notification.on('failed', (_event, error) => {
+    console.error('[Rambo] system notification failed', notificationId, error);
+    release();
+  });
+  notification.on('close', () => {
+    console.info('[Rambo] system notification closed', notificationId);
+    release();
   });
   notification.show();
 }
@@ -539,7 +556,7 @@ function registerIPC(): void {
     },
     cancelPlaywrightVerification: () => playwrightExtensionVerifier?.cancel(),
     connectorProviders: () => connectorProviders(),
-    beginConnectorAuth: async (providerId, displayName, oauthClientValue) => {
+    beginConnectorAuth: async (providerId, displayName) => {
       const provider = connectorProvider(text(providerId, 80));
       const label = displayName === undefined ? undefined : text(displayName, 120).trim();
       const challenge = beginConnectorAuth(provider.id, label);
@@ -552,17 +569,7 @@ function registerIPC(): void {
           authorizationUrl: null
         };
       }
-      if (provider.id !== 'gmail') return { challenge, authorizationUrl: null };
-      const oauthClient = object(oauthClientValue);
-      const config: GmailOAuthConfig = {
-        clientId: text(oauthClient.clientId, 500).trim(),
-        clientSecret: text(oauthClient.clientSecret, 4_096).trim()
-      };
-      setGlobalProxyFromEnv();
-      const oauth = new GmailOAuth(config, { openExternal: url => shell.openExternal(url) });
-      const started = await oauth.start(challenge);
-      gmailOAuthFlows.set(challenge.connectionId, { oauth, config });
-      return started;
+      return { challenge, authorizationUrl: null };
     },
     openConnectorAuth: async challengeValue => {
       const challenge = connectorChallenge(challengeValue);
@@ -675,47 +682,7 @@ function registerIPC(): void {
           wechatAuthControllers.delete(challenge.connectionId);
         }
       }
-      if (challenge.providerId !== 'gmail') throw new Error('该连接应用不使用浏览器授权');
-      const flow = gmailOAuthFlows.get(challenge.connectionId);
-      if (!flow) throw new Error('Gmail 授权挑战已失效，请重新填写 OAuth 凭据并发起授权');
-      const grant = await flow.oauth.authorize(challenge);
-      const idPart = grant.connectionId.slice('pending:gmail:'.length);
-      if (!/^[a-f0-9-]{36}$/u.test(idPart)) throw new Error('Gmail 授权挑战无效');
-      const credentialRef = connectorCredentials.save(idPart, {
-        kind: 'oauth-token',
-        email: grant.email,
-        accessToken: grant.token.accessToken,
-        refreshToken: grant.token.refreshToken,
-        expiresAt: grant.token.expiresAt,
-        scope: grant.token.scope,
-        tokenType: grant.token.tokenType,
-        oauthClientId: flow.config.clientId,
-        oauthClientSecret: flow.config.clientSecret
-      });
-      let connection: ReturnType<Store['createConnectorConnection']> | null = null;
-      try {
-        connection = store.createConnectorConnection({
-          id: idPart,
-          providerId: 'gmail',
-          displayName: grant.displayName,
-          accountLabel: grant.email,
-          authKind: 'oauth-desktop',
-          credentialRef
-        });
-        await mailRuntime.withAdapter(connection, async current => { await current.verify(connection!); });
-        gmailOAuthFlows.delete(challenge.connectionId);
-        host.changed();
-        return connection;
-      } catch (error) {
-        if (connection) {
-          try { store.deleteConnectorConnection(connection.id); } catch { /* already absent */ }
-        }
-        connectorCredentials.delete(credentialRef);
-        mailRuntime.invalidate(idPart);
-        try { flow.oauth.cancel(challenge); } catch { /* flow already settled */ }
-        gmailOAuthFlows.delete(challenge.connectionId);
-        throw new Error(`Gmail 连接验证失败，未保存连接：${error instanceof Error ? error.message : String(error)}`);
-      }
+      throw new Error('该连接应用不使用浏览器授权');
     },
     finishWechatCapture: challengeValue => {
       const challenge = connectorChallenge(challengeValue);
@@ -744,12 +711,7 @@ function registerIPC(): void {
     },
     cancelConnectorAuth: challengeValue => {
       const challenge = connectorChallenge(challengeValue);
-      if (challenge.providerId === 'gmail') {
-        const flow = gmailOAuthFlows.get(challenge.connectionId);
-        flow?.oauth.cancel(challenge);
-        gmailOAuthFlows.delete(challenge.connectionId);
-      }
-      else if (challenge.providerId === 'wechat') {
+      if (challenge.providerId === 'wechat') {
         wechatAuthControllers.get(challenge.connectionId)?.abort();
         wechatConnectorWizard?.cancel(challenge.connectionId);
         const connectionId = challenge.connectionId.slice('pending:wechat:'.length);
@@ -760,10 +722,12 @@ function registerIPC(): void {
       const input = object(inputValue);
       const challenge = object(input.challenge);
       const provider = connectorProvider(text(input.providerId, 80));
-      const email = text(input.email, 320).trim();
-      const secret = text(input.secret, 16_384).trim();
+      const email = text(input.email, 320).trim().toLowerCase();
+      const rawSecret = text(input.secret, 16_384).trim();
+      const secret = provider.id === 'gmail' ? rawSecret.replace(/\s+/gu, '') : rawSecret;
       const displayName = text(input.displayName, 120).trim();
       if (text(challenge.providerId, 80) !== provider.id) throw new Error('授权挑战与连接应用不匹配');
+      if (text(challenge.authKind, 40) !== provider.authKind) throw new Error('连接授权方式已变化，请重新开始连接');
       const challengeConnectionId = text(challenge.connectionId, 120);
       if (!challengeConnectionId.startsWith(`pending:${provider.id}:`)) {
         throw new Error('授权挑战已失效，请重新开始连接');
@@ -771,13 +735,10 @@ function registerIPC(): void {
       if (!email || !email.includes('@')) throw new Error('请输入有效的邮箱地址');
       if (!secret) throw new Error('授权信息不能为空');
       if (!displayName) throw new Error('连接名称不能为空');
-      if (provider.id === 'gmail') {
-        throw new Error('Gmail 本机 OAuth 回调尚未启用：还不能保存凭据。');
-      }
       if (provider.id === 'wechat') {
         throw new Error('微信不能通过邮箱凭据连接，请使用本机密钥捕获向导');
       }
-      if (provider.id === 'qqmail') {
+      if (provider.id === 'qqmail' || provider.id === 'gmail') {
         const connectionId = challengeConnectionId.slice(`pending:${provider.id}:`.length);
         if (!/^[a-f0-9-]{36}$/.test(connectionId)) throw new Error('授权挑战无效');
         const credentialRef = connectorCredentials.save(connectionId, {
@@ -785,23 +746,29 @@ function registerIPC(): void {
           email,
           password: secret
         });
-        const connection = store.createConnectorConnection({
-          id: connectionId,
-          providerId: provider.id,
-          displayName,
-          accountLabel: email,
-          authKind: provider.authKind,
-          credentialRef
-        });
+        let connection: ReturnType<Store['createConnectorConnection']> | null = null;
         try {
-          await mailRuntime.withAdapter(connection, async current => { await current.verify(connection); });
+          const createdConnection = store.createConnectorConnection({
+            id: connectionId,
+            providerId: provider.id,
+            displayName,
+            accountLabel: email,
+            authKind: provider.authKind,
+            credentialRef
+          });
+          connection = createdConnection;
+          await mailRuntime.withAdapter(createdConnection, async current => { await current.verify(createdConnection); });
         } catch (error) {
+          if (connection) {
+            try { store.deleteConnectorConnection(connection.id); } catch { /* already absent */ }
+          }
           connectorCredentials.delete(credentialRef);
-          store.deleteConnectorConnection(connection.id);
+          mailRuntime.invalidate(connectionId);
           throw new Error(
-            `QQ 邮箱连接验证失败，未保存连接：${error instanceof Error ? error.message : String(error)}`
+            `${provider.name}连接验证失败，未保存连接：${error instanceof Error ? error.message : String(error)}`
           );
         }
+        if (!connection) throw new Error(`${provider.name}连接没有保存`);
         host.changed();
         return connection;
       }
@@ -1029,10 +996,10 @@ function registerIPC(): void {
       return memory;
     },
     deleteMemory: memoryId => { store.deleteMemory(id(memoryId)); host.changed(); },
-    setSetting: (keyValue, value) => {
+    setSetting: async (keyValue, value) => {
       const key = text(keyValue, 100);
       const settingValue = text(value, 20_000);
-      if (key !== 'defaultBotModel' && key !== 'defaultBotPermission') {
+      if (key !== 'defaultBotModel' && key !== 'defaultBotPermission' && key !== 'runtimeProxy') {
         throw new Error('不支持的应用设置');
       }
       if (key === 'defaultBotPermission' &&
@@ -1042,7 +1009,33 @@ function registerIPC(): void {
       if (key === 'defaultBotModel' && !settingValue.trim()) {
         throw new Error('新建 Bot 的模型不能为空');
       }
-      if (key === 'defaultBotModel') store.setExecutionDefaultModel(settingValue);
+      if (key === 'runtimeProxy') {
+        const proxy = settingValue.trim();
+        if (proxy) {
+          let url: URL;
+          try { url = new URL(proxy); }
+          catch { throw new Error('代理地址格式无效'); }
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw new Error('代理地址必须使用 http:// 或 https://');
+          }
+          if (!url.hostname) throw new Error('代理地址缺少主机名');
+        }
+        if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再修改代理');
+        const previous = store.settings().runtimeProxy?.trim() ?? '';
+        store.setSetting(key, proxy);
+        runtime.setProxyUrl(proxy);
+        await runtime.stop();
+        try {
+          await runtime.start();
+          await host.syncMcpMetadata();
+        } catch (error) {
+          store.setSetting(key, previous);
+          runtime.setProxyUrl(previous);
+          await runtime.stop();
+          await runtime.start().catch(() => {});
+          throw error;
+        }
+      } else if (key === 'defaultBotModel') store.setExecutionDefaultModel(settingValue);
       else store.setSetting(key, settingValue);
       host.changed();
     },
@@ -1299,17 +1292,24 @@ else {
       {
         qqmail: qqMailAdapterFactory,
         gmail: (connection, credentials) => {
-          return gmailMailAdapterFactory(connection, credentials, {
-            saveToken: (connectionId, token) => {
-              connectorCredentials.replace(store.connectorCredentialRef(connectionId), token);
-            }
-          });
+          if (credentials.kind === 'imap-password') {
+            return gmailImapAdapterFactory(connection, credentials);
+          }
+          if (credentials.kind === 'oauth-token') {
+            return gmailMailAdapterFactory(connection, credentials, {
+              saveToken: (connectionId, token) => {
+                connectorCredentials.replace(store.connectorCredentialRef(connectionId), token);
+              }
+            });
+          }
+          throw new Error('Gmail 凭证类型无效，请重新连接');
         }
       }
     ));
     const root = app.isPackaged ? process.resourcesPath : app.getAppPath();
     runtime = new CodexRuntime(root, store.directory, undefined, {
-      ownedThreadIds: () => store.ownedCodexThreadIds()
+      ownedThreadIds: () => store.ownedCodexThreadIds(),
+      proxyUrl: initialSettings.runtimeProxy?.trim() || null
     });
     const workerTransport = new ElectronWechatWorkerTransport(
       join(__dirname, 'wechat-worker.js'),
@@ -1458,8 +1458,6 @@ else {
       await wechatConnectorWizard?.cancelAll();
       playwrightExtensionVerifier?.cancel();
       while (wechatAuthControllers.size) await new Promise(resolve => setTimeout(resolve, 25));
-      for (const flow of gmailOAuthFlows.values()) flow.oauth.dispose();
-      gmailOAuthFlows.clear();
       systemIndicators?.dispose();
       systemIndicators = null;
       host?.dispose();

@@ -1653,6 +1653,41 @@ test('Bot credential saving is private-chat-only, verified, persists only refere
     assert.equal(notices[0].text.includes(secret), false);
     assert.ok(events.some(event => event.type === 'message' && event.message.id === notices[0].id));
 
+    const gmailSecret = 'abcd efgh ijkl mnop';
+    const gmailSaved = await host.submitAcceptanceBotCredentialTool({
+      params: {
+        threadId,
+        turnId: 'credential-turn',
+        callId: 'credential-gmail-save-call',
+        namespace: 'rambo_credentials',
+        tool: 'save_credential',
+        arguments: {
+          provider_id: 'gmail',
+          display_name: '个人 Gmail',
+          email: ' Owner@Gmail.com ',
+          secret: gmailSecret
+        }
+      }
+    });
+    assert.equal(gmailSaved.result.success, true, JSON.stringify(gmailSaved.result));
+    assert.equal(store.connectorConnections().length, 2);
+    const gmailConnection = store.connectorConnections().find(item => item.providerId === 'gmail');
+    assert.ok(gmailConnection);
+    assert.equal(gmailConnection.authKind, 'credentials');
+    assert.equal(gmailConnection.accountLabel, 'owner@gmail.com');
+    assert.equal(verified.includes(gmailConnection.id), true);
+    assert.deepEqual(credentials.load(store.connectorCredentialRef(gmailConnection.id)), {
+      kind: 'imap-password', email: 'owner@gmail.com', password: 'abcdefghijklmnop'
+    });
+    assert.equal(JSON.stringify(store.messages(first.chat.id)).includes(gmailSecret), false);
+    assert.equal(JSON.stringify(store.messages(first.chat.id)).includes('abcdefghijklmnop'), false);
+    const gmailNotices = store.messages(first.chat.id).filter(message =>
+      message.role === 'system' && message.text.includes('Gmail')
+    );
+    assert.equal(gmailNotices.length, 1);
+    assert.match(gmailNotices[0].text, /已保存.*owner@gmail\.com.*已验证/u);
+    assert.equal(gmailNotices[0].text.includes(gmailSecret), false);
+
     const rejected = await host.submitAcceptanceBotCredentialTool({
       params: {
         threadId,
@@ -1670,7 +1705,7 @@ test('Bot credential saving is private-chat-only, verified, persists only refere
     });
     assert.equal(rejected.result.success, false);
     assert.match(rejected.result.contentItems[0].text, /只支持保存/u);
-    assert.equal(store.connectorConnections().length, 1);
+    assert.equal(store.connectorConnections().length, 2);
     assert.equal(store.messages(first.chat.id).filter(message =>
       message.role === 'system' && message.text.includes('QQ 邮箱')
     ).length, 1);
@@ -2090,12 +2125,25 @@ test('memory tool saves without approval, keeps Bot and shared scopes separate, 
     assert.match(threadStart.params.developerInstructions, /不能用 NO_REPLY 代替答复/u);
     const threadId = store.chat(first.chat.id).threadId;
     const memoryTool = threadStart.params.dynamicTools.find(namespace => namespace.name === 'rambo_memories').tools[0];
+    const profileTool = threadStart.params.dynamicTools.find(namespace => namespace.name === 'rambo_bot').tools[0];
     assert.match(memoryTool.description, /稳定.*跨 Bot.*aboutMe/u);
     assert.match(memoryTool.description, /只适用于当前 Bot.*scope=bot/u);
+    assert.match(memoryTool.description, /放到你的记忆里.*默认 scope=bot/u);
+    assert.match(memoryTool.description, /行为规则不得保存到这里.*长期指令/u);
+    assert.match(memoryTool.description, /同一信息只保留一个权威位置/u);
     assert.match(memoryTool.description, /success=true.*已保存/u);
     assert.match(memoryTool.inputSchema.properties.scope.description, /默认 bot/u);
-    assert.match(threadStart.params.developerInstructions, /跨 Bot 适用.*aboutMe/u);
-    assert.match(threadStart.params.developerInstructions, /只适用于当前 Bot.*scope=bot/u);
+    assert.match(memoryTool.inputSchema.properties.scope.description, /行为规则不要存记忆/u);
+    assert.match(profileTool.description, /role 只写一句话职责/u);
+    assert.match(profileTool.description, /instructions 写当前 Bot 以后应稳定遵循的行为规则/u);
+    assert.match(profileTool.description, /不要把事实、身份映射或背景资料塞进长期指令/u);
+    assert.match(profileTool.inputSchema.properties.role.description, /只写角色目的/u);
+    assert.match(profileTool.inputSchema.properties.instructions.description, /不写事实、身份映射或背景资料/u);
+    assert.match(threadStart.params.developerInstructions, /关于我（scope=aboutMe）只写明确跨 Bot 通用/u);
+    assert.match(threadStart.params.developerInstructions, /Bot 私有记忆（scope=bot）只写当前 Bot/u);
+    assert.match(threadStart.params.developerInstructions, /长期指令（instructions）只写当前 Bot.*行为规则/u);
+    assert.match(threadStart.params.developerInstructions, /Bot 私有记忆（scope=bot）只写当前 Bot.*事实/u);
+    assert.match(threadStart.params.developerInstructions, /同一信息只保留一个权威位置/u);
     assert.match(threadStart.params.developerInstructions, /success=true.*已保存/u);
 
     const privateMemoryCall = {

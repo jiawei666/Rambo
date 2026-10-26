@@ -107,7 +107,7 @@ async function waitForRuntimeProcess(appPid) {
     const runtime = processes.find(line => {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
       return match?.[2] === String(appPid) &&
-        match[3].includes('/bin/codex-app-server');
+        /(?:^|\s)(?:\S*\/)?codex(?:-app-server)?\s+app-server\s+--listen\s+stdio:\/\//u.test(match[3]);
     })?.trim().match(/^(\d+)/)?.[1];
     if (runtime) return Number(runtime);
     await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
@@ -633,7 +633,7 @@ test('真实 Electron 资源设置可导入本地 Skill、添加直连 MCP 并�
     server.name === 'electron-fixture')?.envKeys).toEqual(['FIXTURE_TOKEN']);
 });
 
-test('Gmail 表单填写用户 OAuth 客户端并提供获取引导', async ({ electron }) => {
+test('Gmail 使用应用专用密码并保持本机凭证连接流程', async ({ electron }) => {
   const page = electron.page;
   await openConnectors(page);
   const gmailCard = page.getByRole('article').filter({ hasText: 'Gmail' });
@@ -641,31 +641,26 @@ test('Gmail 表单填写用户 OAuth 客户端并提供获取引导', async ({ e
   const dialog = page.getByRole('dialog', { name: 'Gmail' });
   await expect(dialog).toBeVisible();
   await expectUnframedConnectorLogo(dialog.locator('.connector-icon-has-logo'));
-  await expect(dialog.getByText('连接你自己的 Google OAuth 客户端')).toBeVisible();
-  await expect(dialog.getByText('如何获取 OAuth 凭据')).toBeVisible();
+  await expect(dialog.getByText('Gmail 应用专用密码')).toBeVisible();
+  await expect(dialog.getByText(/开启两步验证/u)).toBeVisible();
+  await expect(dialog.getByText(/不是.*一次性验证码/u)).toBeVisible();
+  await expect(dialog.getByText(/较不安全应用/u)).toBeVisible();
   await expect(dialog.getByLabel('连接名称')).toHaveValue('Gmail');
-  await expect(dialog.getByLabel('OAuth Client ID')).toBeVisible();
-  await expect(dialog.getByLabel('OAuth Client Secret')).toHaveAttribute('type', 'password');
-  await expect(dialog.getByRole('button', { name: '前往 Google 授权' })).toBeDisabled();
-
-  const started = await page.evaluate(() => window.rambo.beginConnectorAuth('gmail', '验收 Gmail', {
-    clientId: 'fixture-project.apps.googleusercontent.com',
-    clientSecret: 'fixture-client-secret'
-  }));
-  const authorizationUrl = new URL(started.authorizationUrl);
-  expect(authorizationUrl.origin).toBe('https://accounts.google.com');
-  expect(authorizationUrl.searchParams.get('client_id'))
-    .toBe('fixture-project.apps.googleusercontent.com');
-  expect(authorizationUrl.searchParams.has('client_secret')).toBe(false);
-  expect(authorizationUrl.searchParams.get('code_challenge_method')).toBe('S256');
-  const loopback = new URL(started.challenge.url);
-  expect(loopback.hostname).toBe('127.0.0.1');
-  expect(loopback.pathname).toBe('/oauth/callback');
-  await page.evaluate(challenge => window.rambo.cancelConnectorAuth(challenge), started.challenge);
+  await expect(dialog.getByLabel('Gmail 地址')).toBeVisible();
+  await expect(dialog.getByLabel('应用专用密码')).toHaveAttribute('type', 'password');
+  await expect(dialog.getByLabel('OAuth Client ID')).toHaveCount(0);
+  await expect(dialog.getByLabel('OAuth Client Secret')).toHaveCount(0);
+  const saveButton = dialog.getByRole('button', { name: '保存连接' });
+  await expect(saveButton).toBeDisabled();
+  await dialog.getByLabel('Gmail 地址').fill('fixture@gmail.com');
+  await dialog.getByLabel('应用专用密码').fill('abcd efgh ijkl mnop');
+  await expect(saveButton).toBeEnabled();
   const snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.connections.some(connection => connection.providerId === 'gmail')).toBe(false);
 
-  await dialog.locator('.connector-dialog-footer').getByRole('button', { name: '关闭', exact: true }).click();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  const afterCancel = await page.evaluate(() => window.rambo.snapshot());
+  expect(afterCancel.connections.some(connection => connection.providerId === 'gmail')).toBe(false);
 });
 
 test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和永久删除', async ({ electron }) => {
@@ -2980,7 +2975,9 @@ test('真实 Electron 新建 Bot 初值复制后逐 Bot 独立并在重启后保
   };
 });
 
-test('真实 Electron 模型与权限初值独立复制且运行时重建后重载模型目录', async ({ electron }) => {
+test('真实 Electron 模型与权限初值独立复制且运行时重建后重载模型目录', async ({
+  electron, acceptanceRun
+}) => {
   const page = electron.page;
   await page.getByLabel('创建 Bot').click();
   await page.getByLabel('Bot 名称').fill('Readiness Alpha');
@@ -3057,6 +3054,8 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
     defaultBotModel: nextModel.id,
     defaultBotPermission: 'readOnly'
   });
+  acceptanceRun.evidence.model.defaultBotModel = nextModel.id;
+  acceptanceRun.evidence.model.defaultBotPermission = 'readOnly';
   expect(snapshot.bots.find(bot => bot.id === beta.id)).toMatchObject({
     model: nextModel.id,
     permission: 'readOnly'
@@ -3118,7 +3117,8 @@ test('真实 Electron 集中重启后全部写入与主动切换相同私聊状�
     definition: {
       instruction: '只整理 Alpha 自己的工作清单',
       schedule: '每个工作日',
-      triggerTime: '09:00'
+      times: ['09:00'],
+      time: '09:00'
     }
   });
   expect(reopened.routines.find(item => item.botId === alpha.betaId)).toMatchObject({
@@ -3126,7 +3126,8 @@ test('真实 Electron 集中重启后全部写入与主动切换相同私聊状�
     definition: {
       instruction: '只汇总 Beta 的项目进展',
       schedule: '每周五',
-      triggerTime: '18:00'
+      times: ['18:00'],
+      time: '18:00'
     }
   });
   const assertBotRoutineDetails = async (botName, ownTitle, otherTitle, expectedStatus) => {

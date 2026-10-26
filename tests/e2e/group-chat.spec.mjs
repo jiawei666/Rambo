@@ -36,15 +36,7 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
     );
     const memberChat = createdMemberChats[0];
     expect(memberChat).toBeTruthy();
-    const updateError = await page.evaluate(async chatId => {
-      try {
-        await window.rambo.updateChat(chatId, { model: 'group-session-model' });
-        return null;
-      } catch (error) {
-        return String(error?.message ?? error);
-      }
-    }, memberChat.id);
-    expect(updateError).toContain('会话级模型和权限只能在 Bot 的唯一私聊中设置');
+    expect(await page.evaluate(() => typeof window.rambo.updateChat)).toBe('undefined');
     const afterRejectedUpdate = await page.evaluate(
       groupId => window.rambo.groupMemberChats(groupId), createdGroup.id
     );

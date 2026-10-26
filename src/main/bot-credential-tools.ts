@@ -12,7 +12,7 @@ export const BOT_CREDENTIAL_TOOLS = {
   tools: [{
     type: 'function',
     name: 'save_credential',
-    description: '保存 QQ 邮箱 IMAP 授权码，或 Gmail OAuth 访问令牌。仅在用户已在当前对话明确提供凭证并要求保存时调用。省略 connection_id 会新建连接；提供 connection_id 只更新该连接且账号必须一致。保存成功后宿主会验证连接，并在当前 Bot 唯一私聊写入不含秘密的系统提醒；不会自动授权给其他 Bot。',
+    description: '保存 QQ 邮箱 IMAP 授权码，或 Gmail 应用专用密码。仅在用户已在当前对话明确提供凭证并要求保存时调用。省略 connection_id 会新建连接；提供 connection_id 只更新该连接且账号必须一致。保存成功后宿主会验证连接，并在当前 Bot 唯一私聊写入不含秘密的系统提醒；不会自动授权给其他 Bot。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -43,33 +43,7 @@ export const BOT_CREDENTIAL_TOOLS = {
           type: 'string',
           minLength: 1,
           maxLength: 16384,
-          description: '仅 QQ 邮箱使用：用户提供的 IMAP/SMTP 授权码。不要使用登录密码。'
-        },
-        access_token: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 65536,
-          description: '仅 Gmail 使用：用户提供的 OAuth access token。'
-        },
-        refresh_token: {
-          type: 'string',
-          maxLength: 65536,
-          description: '仅 Gmail 使用：可选 refresh token。'
-        },
-        expires_at: {
-          type: 'string',
-          maxLength: 100,
-          description: '仅 Gmail 使用：可选 ISO 8601 过期时间。'
-        },
-        scope: {
-          type: 'string',
-          maxLength: 4096,
-          description: '仅 Gmail 使用：token 对应 scope；省略时按 gmail.modify。'
-        },
-        token_type: {
-          type: 'string',
-          maxLength: 100,
-          description: '仅 Gmail 使用：token 类型；省略时按 Bearer。'
+          description: 'QQ 邮箱填写 IMAP/SMTP 授权码；Gmail 填写 Google 应用专用密码。不要使用账号登录密码。'
         }
       },
       required: ['email'],
@@ -102,8 +76,7 @@ export function normalizeBotCredentialInput(
   }
   const input = value as Record<string, unknown>;
   const allowed = new Set([
-    'connection_id', 'provider_id', 'display_name', 'email', 'secret',
-    'access_token', 'refresh_token', 'expires_at', 'scope', 'token_type'
+    'connection_id', 'provider_id', 'display_name', 'email', 'secret'
   ]);
   for (const key of Object.keys(input)) {
     if (!allowed.has(key)) throw new BotCredentialInputError(`不支持凭证字段：${key}`);
@@ -131,39 +104,16 @@ export function normalizeBotCredentialInput(
     throw new BotCredentialInputError('新建连接时请提供连接名称。');
   }
 
-  if (providerId === 'qqmail') {
-    if (input.access_token !== undefined || input.refresh_token !== undefined ||
-        input.expires_at !== undefined || input.scope !== undefined || input.token_type !== undefined) {
-      throw new BotCredentialInputError('QQ 邮箱凭证不接受 OAuth token 字段。');
-    }
-    const password = boundedText(input.secret, 16_384, 'QQ 邮箱授权码');
-    return {
-      connectionId,
-      providerId,
-      displayName,
-      email,
-      payload: { kind: 'imap-password', email, password }
-    };
-  }
-
-  if (input.secret !== undefined) {
-    throw new BotCredentialInputError('Gmail 凭证不接受 secret 字段。');
-  }
-  const accessToken = boundedText(input.access_token, 65_536, 'Gmail access token');
+  const credentialName = providerId === 'gmail' ? 'Gmail 应用专用密码' : 'QQ 邮箱授权码';
+  const rawPassword = boundedText(input.secret, 16_384, credentialName);
+  const password = providerId === 'gmail' ? rawPassword.replace(/\s+/gu, '') : rawPassword;
+  if (!password) throw new BotCredentialInputError(`${credentialName}不能为空。`);
   return {
     connectionId,
     providerId,
     displayName,
     email,
-    payload: {
-      kind: 'oauth-token',
-      email,
-      accessToken,
-      refreshToken: optionalText(input.refresh_token, 65_536, 'Gmail refresh token'),
-      expiresAt: optionalText(input.expires_at, 100, 'Gmail token 过期时间'),
-      scope: optionalText(input.scope, 4_096, 'Gmail token scope') ?? 'gmail.modify',
-      tokenType: optionalText(input.token_type, 100, 'Gmail token 类型') ?? 'Bearer'
-    }
+    payload: { kind: 'imap-password', email, password }
   };
 }
 

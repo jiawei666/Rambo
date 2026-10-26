@@ -17,8 +17,8 @@ const api: RamboAPI = {
   verifyPlaywrightConnection: () => invoke('verifyPlaywrightConnection'),
   cancelPlaywrightVerification: () => invoke('cancelPlaywrightVerification'),
   connectorProviders: () => invoke('connectorProviders'),
-  beginConnectorAuth: (providerId, displayName, oauthClient) =>
-    invoke('beginConnectorAuth', providerId, displayName, oauthClient),
+  beginConnectorAuth: (providerId, displayName) =>
+    invoke('beginConnectorAuth', providerId, displayName),
   openConnectorAuth: challenge => invoke('openConnectorAuth', challenge),
   finishWechatCapture: challenge => invoke('finishWechatCapture', challenge),
   continueWechatCapture: challenge => invoke('continueWechatCapture', challenge),

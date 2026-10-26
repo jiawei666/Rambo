@@ -13,8 +13,16 @@ function codexChildren(pid) {
     .map(match => ({ pid: Number(match[1]), command: match[3] }));
 }
 
+function processEnvironment(pid) {
+  const output = execFileSync('/bin/ps', ['eww', '-p', String(pid)], { encoding: 'utf8' });
+  return Object.fromEntries(output.split(/\s+/u)
+    .map(value => value.match(/^([^=]+)=(.*)$/u))
+    .filter(Boolean)
+    .map(match => [match[1], match[2]]));
+}
+
 test('Rambo 用本机同一 Codex 二进制启动、读取共享登录态并可重启', async () => {
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   mkdirSync(join(root, 'acceptance-runs'), { recursive: true });
   const run = realpathSync(mkdtempSync(join(root, 'acceptance-runs', 'native-startup-')));
   const runId = run.slice(run.lastIndexOf('/') + 1);
@@ -49,16 +57,40 @@ test('Rambo 用本机同一 Codex 二进制启动、读取共享登录态并可�
     )).toBeLessThanOrEqual(1);
     const homeBox = await page.getByLabel('Codex Home').boundingBox();
     expect(homeBox.y).toBeGreaterThan(connectedBox.y + connectedBox.height);
+    const proxyInput = page.getByLabel('代理地址');
+    await expect(proxyInput).toHaveAttribute('placeholder', 'http://127.0.0.1:10808');
+    await expect(proxyInput).toHaveValue('');
     const children = codexChildren(app.process().pid);
     expect(children).toHaveLength(1);
     expect(children[0].command).toContain(join(native, 'packages/app-server-daemon/releases/'));
     expect(children[0].command).not.toContain('--session-source');
+    const configuredProxy = 'http://127.0.0.1:9/';
+    await proxyInput.fill(configuredProxy);
+    await page.getByRole('button', { name: '保存代理', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '代理已保存，Codex 已重启。' }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('.runtime-card-status')).toContainText('Codex 已连接');
+    await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot())).runtimeProxy)
+      .toBe(configuredProxy);
+    const proxied = codexChildren(app.process().pid);
+    expect(proxied).toHaveLength(1);
+    expect(proxied[0].pid).not.toBe(children[0].pid);
+    const proxiedEnv = processEnvironment(proxied[0].pid);
+    expect(proxiedEnv.HTTPS_PROXY).toBe(configuredProxy);
+    expect(proxiedEnv.HTTP_PROXY).toBe(configuredProxy);
+    expect(proxiedEnv.ALL_PROXY).toBe(configuredProxy);
+    expect(proxiedEnv.NO_PROXY).toBe('127.0.0.1,localhost');
     await restart.click();
     await expect(page.getByText('已请求重启 Codex。', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('.runtime-card-status')).toContainText('Codex 已连接');
     const restarted = codexChildren(app.process().pid);
     expect(restarted).toHaveLength(1);
-    expect(restarted[0].pid).not.toBe(children[0].pid);
+    expect(restarted[0].pid).not.toBe(proxied[0].pid);
+    expect(processEnvironment(restarted[0].pid).HTTPS_PROXY).toBe(configuredProxy);
+    await page.reload();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('tab', { name: '常规', exact: true }).click();
+    await expect(page.getByLabel('代理地址')).toHaveValue(configuredProxy);
   } finally {
     if (app) await app.close();
     rmSync(run, { recursive: true, force: true });

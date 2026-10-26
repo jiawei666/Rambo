@@ -5,7 +5,7 @@ import { extname, isAbsolute, join, sep } from 'node:path';
 import { isMessageContent } from '../shared/contracts';
 import type {
   ActivityKind, ActivityStatus, Bot, Chat, GroupChat, GroupMessage, Memory, Message, MessageContent,
-  ConnectionStatus, ConnectorConnection, ConnectorGrant, MessageStatus, PermissionMode, QuestionMessageContent,
+  ConnectionStatus, ConnectorAuthKind, ConnectorConnection, ConnectorGrant, MessageStatus, PermissionMode, QuestionMessageContent,
   ResultCardMessageContent, RoutineListItem,
   RoutineDefinition, RoutineExecutionMode, RoutineRun, RoutineRunStatus, ThreadModelSource, TurnModelSource,
   TurnActivity, TurnDispatchStatus, TurnPermissionSnapshot, TurnRecord, TurnReroute, TurnStatus
@@ -786,13 +786,14 @@ export class Store {
   updateConnectorConnectionCredential(input: {
     id: string;
     credentialRef: string;
+    authKind?: ConnectorAuthKind;
     displayName?: string;
     status: ConnectionStatus;
   }): ConnectorConnection {
     this.connectorConnection(input.id);
     this.db.prepare(`UPDATE connector_connections SET
-      credentialRef=?,displayName=COALESCE(?,displayName),status=?,updatedAt=? WHERE id=?`)
-      .run(input.credentialRef, input.displayName ?? null, input.status, now(), input.id);
+      credentialRef=?,authKind=COALESCE(?,authKind),displayName=COALESCE(?,displayName),status=?,updatedAt=? WHERE id=?`)
+      .run(input.credentialRef, input.authKind ?? null, input.displayName ?? null, input.status, now(), input.id);
     return this.connectorConnection(input.id);
   }
   connectorGrants(): ConnectorGrant[] {

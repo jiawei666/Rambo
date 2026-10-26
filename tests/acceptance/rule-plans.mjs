@@ -441,6 +441,22 @@ export const RULE_PLANS = [
     ['记忆管理截图', '导航与控件清单', 'O03 证据链接'],
     '现有 UI 文案说明无历史/撤销，但没有 Electron 断言；O03 备份恢复尚未实现。'),
 
+  plan('M09', 'integration',
+    [
+      '在 Bot A 私聊分别保存跨 Bot 通用的个人资料、A 独有的长期事实和 A 的稳定行为规则',
+      '要求 A 把“记住到你的长期记忆”写入私有层，再明确要求把所有 Bot 应知道的个人偏好写入“关于我”',
+      '检查 A 与 B 的 additionalContext、bots.instructions、memories.botId 和设置页入口，确认同一信息没有跨层副本',
+      '重启后核对资料、长期指令和两层记忆的回读；再检查 A 不能删除“关于我”'
+    ],
+    [
+      '短职责只描述角色；长期指令只保存 A 的稳定行为规则；A 私有记忆只保存 A 的事实、身份映射和背景；关于我只保存明确跨 Bot 通用的个人资料',
+      '用户说“你的长期记忆”时默认 scope=bot；只有明确跨 Bot 时才写 aboutMe',
+      '同一信息只保留一个权威位置，更新已有内容而不新增跨层副本；A 不获得删除共享记忆的能力',
+      '各层在重启后持久化并在后续 A/B 上下文中按归属出现'
+    ],
+    ['工具 schema 与 developerInstructions', 'A/B turn/start additionalContext', 'bots.instructions 与 memories.botId 回读', '重启后设置页截图', '跨层去重与拒绝删除证据'],
+    'Host 测试可覆盖分类提示、字段契约和持久化边界；仍需真实 Bot 对话场景与设置页重启回读证明自动分类稳定运行。'),
+
   plan('G01', 'integration',
     [
       '用户创建含 A/B 的群聊；另在 A 的私聊通过 Tool 创建群聊，覆盖当前 Bot 自动加入、成功自动打开新群聊、重复/归档/不存在成员拒绝和不自动发送首条消息',
@@ -644,7 +660,7 @@ export const RULE_PLANS = [
 
   plan('T35', 'integration',
     [
-      '在 A 私聊由用户明确提供 QQ 授权码、OAuth token/API Key 和连接密钥，分别要求 A 用专用凭证 Tool 保存',
+      '在 A 私聊由用户明确提供 QQ 授权码、Gmail 应用专用密码、OAuth token/API Key 和连接密钥，要求 A 用专用凭证 Tool 保存受支持凭证',
       '让 A 主动建议一次凭证变更，分别拒绝和同意；再检查成功结果、连接状态与系统提醒',
       '扫描凭证 SQLite、密钥文件权限、产品 Store、日志、快照、搜索、导出包和会话消息，重启后验证连接有效且秘密没有进入模型或证据'
     ],
@@ -654,7 +670,7 @@ export const RULE_PLANS = [
       '凭证存储不可用、凭证无效或连接未验证时明确失败，不降级明文；凭证保存不自动授予其他 Bot Connection，也不代填系统密码、验证码、Face ID 或 Codex 登录密码'
     ],
     ['专用凭证 Tool 调用与结果', '用户明确要求和 Bot 建议同意/拒绝记录', '凭证数据库与密钥文件权限', '主 Store/日志/快照/导出脱敏扫描', '连接验证与重启回读', '会话系统提醒'],
-    '已实现 QQ 邮箱 IMAP 授权码和 Gmail OAuth token 的 Bot 凭证 Tool、临时凭证连接验证、成功系统提醒和不自动创建 Grant；Host 定向测试覆盖失败回滚、旧凭证保留、群聊拒绝和未知连接拒绝，Electron 已覆盖直连 MCP 秘密不回显。主动建议确认仍由模型指令约束；真实 QQ/Gmail 账号、日志/快照/导出全量脱敏和凭证系统提醒的 UI 展示尚未验收。'),
+    '已实现 QQ 邮箱 IMAP 授权码和 Gmail 应用专用密码的 Bot 凭证 Tool、临时凭证连接验证、成功系统提醒和不自动创建 Grant；Host 定向测试覆盖两类邮箱连接、Gmail 密码规范化、失败回滚、旧凭证保留、群聊拒绝和未知连接拒绝，Electron 已覆盖直连 MCP 秘密不回显。主动建议确认仍由模型指令约束；真实 QQ/Gmail 账号、日志/快照/导出全量脱敏和凭证系统提醒的 UI 展示尚未验收。'),
 
   plan('T03', 'real-service',
     [
@@ -888,19 +904,19 @@ export const RULE_PLANS = [
 
   plan('T20', 'electron-e2e',
     [
-      '在干净 profile 打开 Gmail 连接弹窗，检查连接名称、OAuth Client ID、OAuth Client Secret 和可展开的获取引导',
-      '确认未填完整不能授权；填写测试 Desktop OAuth 客户端后生成授权挑战，检查 URL 使用该 Client ID、PKCE 参数且不携带 Client Secret',
-      '检查返回地址为本机 127.0.0.1 loopback，并取消挑战后确认没有创建 Gmail 连接'
+      '在干净 profile 打开 Gmail 连接弹窗，检查应用专用密码引导、邮箱与密码字段，不出现 OAuth 客户端配置',
+      '确认空字段时不能保存；填写隔离测试值后检查连接挑战只使用本机凭证流程，不启动 OAuth 或打开外部浏览器',
+      '对适配器注入可控 IMAP/SMTP 端点，分别验证成功保存、认证失败回滚、取消不留连接，以及凭证加密和重启回读'
     ],
     [
-      '用户可在表单填写自己的 Desktop OAuth Client ID 与 Client Secret，Secret 使用密码框且不回显',
-      '弹窗提供 Google Cloud 项目、Gmail API、OAuth 同意屏幕与 Desktop client 的获取引导',
-      '源码、环境文件、普通配置和发布包不内置真实 OAuth 凭据',
-      '授权使用 PKCE 和动态 loopback 回调，授权 URL 中不包含 Client Secret',
-      '取消授权不会留下连接；OAuth 客户端配置和成功授权所得令牌均按连接使用应用本地 AES-256-GCM 加密写入独立 SQLite，密钥和数据库权限为 0600'
+      'Gmail 新连接只要求连接名称、Gmail 地址和应用专用密码；界面说明需开启两步验证，并提示它是可重复使用至撤销的凭证、Google 将其视为较不安全的兼容方式，部分组织/安全设置下无法生成',
+      'Gmail 新连接通过 IMAP/SMTP；连接与密码验证成功后才写入，授权密码按连接使用应用本地 AES-256-GCM 加密',
+      '无 OAuth Client ID/Secret 表单、OAuth 授权 URL 或外部浏览器跳转；取消和认证失败不留下 Connection 或凭证',
+      '普通 Store、聊天、日志和快照不出现应用专用密码明文；重启后连接可回读',
+      'Gmail 搜索、读取、附件、草稿、回复和发送继续覆盖 T11；已有 OAuth-token 记录仅作为本地兼容路径'
     ],
-    ['Electron 测试结果', '表单字段与引导 DOM', 'OAuth 授权 URL 参数断言', 'loopback host 与路径', '取消后连接快照', 'AES-GCM 载荷、权限与重启回读测试'],
-    '定向 Electron 用例覆盖表单、获取引导、用户 Client ID 与取消回调挑战；后端覆盖加密载荷和刷新逻辑。本轮没有实际登录 Google、保存真实邮箱 token 或完成真实 Gmail 服务验收。'),
+    ['Electron 测试结果', '表单字段与获取说明 DOM', '无 OAuth 跳转断言', 'IMAP/SMTP 注入端点与请求断言', '失败回滚与取消后连接快照', 'AES-GCM 载荷、权限与重启回读测试'],
+    'Electron 用例覆盖应用专用密码表单、无 OAuth 流程和取消；Adapter 测试覆盖 IMAP/SMTP 端点、验证、搜索、草稿和发送，Bot 凭证 Host 测试覆盖 App Password 规范化、验证与系统提醒，凭证存储测试覆盖 AES-GCM。直接连接表单 IPC 的成功持久化/失败回滚、真实 Google 账号、完整 Gmail 邮件操作和密码撤销恢复仍待验收。'),
 
   plan('T21', 'native',
     [
@@ -1889,6 +1905,20 @@ export const RULE_PLANS = [
     ],
     ['更新状态机', '任务快照', '安装日志', '重启后数据库'],
     '当前没有自动更新或安装等待状态机。'),
+
+  plan('A07', 'electron-e2e',
+    [
+      '从 Finder 启动应用，在系统设置“Codex 运行时”保存本机代理',
+      '检查 Codex 子进程环境、PID 与应用重启或手动重启后的配置回读',
+      '使用该代理完成真实对话，并分别检查留空清除、无效地址、执行中拒绝修改和启动失败回滚'
+    ],
+    [
+      '代理只作用于 Rambo 启动的 Codex 子进程，不修改系统代理；六个代理变量与回环直连符合规则',
+      '保存后 Codex 重启，应用重启和手动重启仍使用同一代理',
+      '非法值不保存，执行中拒绝修改；失败恢复旧代理和运行时；真实对话成功'
+    ],
+    ['系统设置截图', '保存前后进程环境与 PID', '应用重启回读', '真实 turn 结果', '错误与回滚记录'],
+    'Runtime 单测已证明代理环境注入和回环直连，Electron 用例已证明保存、运行中重启、环境更新、重启保留与 reload 回显；尚未在安装版用真实代理完成对话，也未复验应用重启、无效地址、执行中拒绝和启动失败回滚。'),
 
   plan('W01', 'document',
     [

@@ -12,9 +12,9 @@ const seeds: Record<string, ProviderSeed> = {
   gmail: {
     id: 'gmail',
     name: 'Gmail',
-    description: '搜索、阅读、发送和回复 Gmail 邮件。',
+    description: '使用 Google 应用专用密码通过 IMAP/SMTP 搜索、阅读、发送和回复 Gmail 邮件。',
     category: 'email',
-    authKind: 'oauth-desktop',
+    authKind: 'credentials',
     capabilities: ['mail.search', 'mail.read', 'mail.getAttachment', 'mail.draft', 'mail.send', 'mail.reply'],
     brandColor: '#ea4335',
     monogram: 'M'

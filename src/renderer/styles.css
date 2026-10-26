@@ -1855,6 +1855,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .runtime-card-status strong { font-size: 12px; font-weight: 500; }
 .runtime-version { color: var(--text-tertiary); font-size: 10px; }
 .runtime-restart-button { flex: 0 0 auto; margin-left: auto; }
+.runtime-proxy-setting { display: flex; flex: 1 1 100%; flex-direction: column; gap: 10px; padding-top: 13px; border-top: 1px solid var(--border-subtle); }
+.runtime-proxy-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 12px; }
+.runtime-proxy-actions .autosave-indicator:first-child { margin-right: auto; }
 .runtime-notification-status { flex-basis: 100%; color: var(--text-secondary); font-size: 11px; line-height: 17px; }
 .runtime-error { flex-basis: 100%; color: var(--text-error); font-size: 11px; line-height: 17px; overflow-wrap: anywhere; }
 .settings-message { margin-top: 16px; }

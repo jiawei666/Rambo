@@ -103,6 +103,36 @@ test('Runtime launches its own Codex child with the isolated session source and 
   });
 });
 
+test('Runtime forwards a configured proxy only to its Codex child and keeps loopback direct', async () => {
+  await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
+    let call;
+    const resourceRoot = join(directory, 'resource');
+    const workingDirectory = join(directory, 'profile');
+    mkdirSync(workingDirectory);
+    installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.163.0');
+    const runtime = new CodexRuntime(resourceRoot, workingDirectory, (command, args, options) => {
+      call = { command, args, options };
+      return spawn(command, args, options);
+    }, {
+      homeDirectory: join(directory, 'home'),
+      proxyUrl: 'http://127.0.0.1:10808'
+    });
+    try {
+      await runtime.start();
+      assert.equal(call.options.env.HTTPS_PROXY, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.HTTP_PROXY, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.ALL_PROXY, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.https_proxy, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.http_proxy, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.all_proxy, 'http://127.0.0.1:10808');
+      assert.equal(call.options.env.NO_PROXY, '127.0.0.1,localhost');
+      assert.equal(call.options.env.no_proxy, '127.0.0.1,localhost');
+    } finally {
+      await runtime.stop();
+    }
+  });
+});
+
 test('Runtime resolves a locally installed standalone app server before cache or download', async () => {
   await withRuntime(async (_CodexRuntime, resolveRuntimeLayout, directory) => {
     const home = join(directory, 'home');

@@ -61,10 +61,6 @@ export interface ConnectorConnection {
 export interface ConnectorCredentialInput {
   challenge: ConnectorAuthChallenge; providerId: string; displayName: string; email: string; secret: string;
 }
-export interface GmailOAuthClientInput {
-  clientId: string;
-  clientSecret: string;
-}
 export interface ConnectorGrant { id: string; botId: string; connectionId: string; createdAt: string }
 export interface ConnectorAuthChallenge {
   connectionId: string; providerId: string; authKind: ConnectorAuthKind; displayName: string;
@@ -317,6 +313,8 @@ export interface TurnRecord {
 export interface Snapshot {
   /** Dedicated Codex home used by the Rambo-owned App Server process. */
   codexHome: string;
+  /** Manual proxy applied to the Rambo-owned Codex App Server process. */
+  runtimeProxy: string;
   bots: Bot[]; chats: Chat[]; groups: GroupChat[]; archivedGroups: GroupChat[];
   routines: RoutineListItem[]; routineRuns: RoutineRun[]; runtime: RuntimeState;
   connectorProviders: ConnectorProvider[]; connections: ConnectorConnection[]; connectorGrants: ConnectorGrant[];
@@ -359,7 +357,7 @@ export type AppEvent =
   | { type: 'playwrightVerificationProgress'; phase: string; message: string }
   | { type: 'runtime'; state: RuntimeState }
   | { type: 'message'; message: Message }
-  | { type: 'botReplyNotification'; chatId: string; botId: string; preview: string; notificationId?: string }
+  | { type: 'botReplyNotification'; chatId: string; botId: string; preview: string; notificationId?: string; visibleAndFocused?: boolean }
   | { type: 'routineRunFinished'; runId: string }
   | { type: 'routineResultDeliveryStarted'; runId: string; chatId: string }
   | { type: 'routineResultDeliveryFinished'; runId: string; chatId: string }
@@ -398,11 +396,7 @@ export interface RamboAPI {
   verifyPlaywrightConnection(): Promise<PlaywrightVerificationResult>;
   cancelPlaywrightVerification(): Promise<void>;
   connectorProviders(): Promise<ConnectorProvider[]>;
-  beginConnectorAuth(
-    providerId: string,
-    displayName?: string,
-    oauthClient?: GmailOAuthClientInput
-  ): Promise<ConnectorAuthStartResult>;
+  beginConnectorAuth(providerId: string, displayName?: string): Promise<ConnectorAuthStartResult>;
   openConnectorAuth(challenge: ConnectorAuthChallenge): Promise<ConnectorConnection>;
   finishWechatCapture(challenge: ConnectorAuthChallenge): Promise<boolean>;
   continueWechatCapture(challenge: ConnectorAuthChallenge): Promise<boolean>;

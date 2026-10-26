@@ -33,3 +33,10 @@
 ## 首版账号数量
 
 Q36/T13 已确定同一服务只接一个账号：QQ 一个加 Gmail 一个。无需实现同服务多账号；已有逐 Bot 分配、两家基础操作与默认发件规则继续验收。
+
+
+## 2026-10-26 更新：Gmail 采用应用专用密码
+
+按用户后续明确选择，Gmail 新连接不再使用 Gmail API/OAuth，而使用 Google App Password 经 IMAP/SMTP 接入。Gmail API OAuth 研究结论仍保留为历史技术背景；现行产品规则见 T20/Q155。App Password 需要开启两步验证，部分 Google 账号因组织或高级安全策略不可用；它是可重复使用到撤销的专用密码，不是一次性验证码。Google 将此方法作为较不安全客户端的兼容方式，并推荐使用 Google 登录授权。
+
+官方依据：[Google 应用专用密码](https://support.google.com/mail/answer/185833)、[Gmail IMAP/SMTP 客户端设置](https://support.google.com/mail/answer/78892)。模拟 Adapter 测试不能替代真实 Google 账号连接和邮件操作验收。

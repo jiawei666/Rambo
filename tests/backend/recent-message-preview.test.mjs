@@ -190,6 +190,31 @@ test('新消息系统通知以 Bot 名称作为标题，正文显示回复预览
   assert.match(source, /\bbody\s*:/);
 });
 
+test('系统通知使用发送时判定，不因窗口退到后台而再次抑制当前会话', () => {
+  const functionStart = mainSource.indexOf(
+    'function showBotReplyNotification('
+  );
+  assert.notEqual(functionStart, -1, '找不到 showBotReplyNotification');
+  const functionEnd = mainSource.indexOf('\n}\n', functionStart) + 3;
+  const source = mainSource.slice(functionStart, functionEnd);
+  assert.match(source, /\bevent\.visibleAndFocused\b/);
+  assert.doesNotMatch(source, /\bvisibleChatId\s*===\s*event\.chatId\b/);
+});
+
+test('系统通知在显示期间保持引用并记录系统投递失败', () => {
+  const functionStart = mainSource.indexOf(
+    'function showBotReplyNotification('
+  );
+  assert.notEqual(functionStart, -1, '找不到 showBotReplyNotification');
+  const functionEnd = mainSource.indexOf('\n}\n', functionStart) + 3;
+  const source = mainSource.slice(functionStart, functionEnd);
+  assert.match(mainSource, /const activeSystemNotifications = new Set<Notification>\(\)/);
+  assert.match(source, /activeSystemNotifications\.add\(notification\)/);
+  assert.match(source, /activeSystemNotifications\.delete\(notification\)/);
+  assert.match(source, /notification\.on\('failed'/);
+  assert.match(source, /notification\.on\('close'/);
+});
+
 test('Routine 成功默认静默，开启后提醒，失败和待处理提醒', async () => {
   const start = notificationsSource.indexOf('export function decideRoutineFinishedNotification(');
   assert.notEqual(start, -1, '找不到 decideRoutineFinishedNotification');

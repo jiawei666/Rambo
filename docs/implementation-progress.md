@@ -1,5 +1,13 @@
 # 实施进度
 
+## 2026-10-26：Gmail IMAP 本地化文件夹兼容修复
+
+- 真实 Gmail 账号登录和 SMTP 验证成功，但 `mail_search` 报 `Command failed`。只读诊断确认账号把系统文件夹显示为 `[Gmail]/所有邮件` 与 `[Gmail]/草稿`，而 Adapter 写死英文 `[Gmail]/All Mail` / `[Gmail]/Drafts`，实际服务器返回 `[NONEXISTENT] Unknown Mailbox`。
+- Gmail Adapter 现通过 IMAP `LIST` 的 `\All` / `\Drafts` 特殊用途解析邮箱路径，并仅在服务器未声明特殊用途时回退到英文默认路径；搜索、正文读取、附件下载和草稿保存共用该解析逻辑。
+- 验证通过：`npm run typecheck`；Gmail/QQ Adapter、邮件工具和运行时定向后端测试 **12/12**；真实 Electron Gmail 应用专用密码表单与取消流程 **1/1**；`git diff --check`。
+- 真实账号只读验证：已用现有加密凭证连接 `imap.gmail.com:993`，自动解析到 `[Gmail]/所有邮件`，成功读取 6,828 封邮件的计数与最近 5 封摘要；未发送邮件、未保存草稿、未修改服务器状态。未提交秘密，也未把邮箱正文写入证据。
+- 证据边界：自动用例覆盖文件夹特殊用途选择与英文回退，不连接真实 Google；真实账号联调只证明当前账号的列表与读取路径，尚未逐项验证附件、草稿、回复、发送及撤销应用专用密码后的恢复行为。
+
 ## 2026-10-26：微信密钥分轮补抓和品牌图标
 
 - 微信连接向导在一条本机捕获控制通道中管理多轮操作。用户结束一轮后，系统逐库校验 SQLCipher key；若有聊天数据库缺项，UI 显示匹配覆盖与缺项，并给出“继续补抓密钥”。继续时复用同一微信副本、Frida 附加和管理员授权进程；完整覆盖后才结束进程并验证会话/聊天读取。取消仍走显式清理。
@@ -10,7 +18,7 @@
 ## 2026-10-26：Bot 管理全局与本 Bot 资源、凭证并写系统提醒
 
 - 当前 Bot 在唯一私聊可通过 `rambo_resources` 管理全局可选目录、新建 Bot 默认开关和自己的资源开关；本地 Skill 文件夹导入会复制到 Rambo 管理的共享技能库，直连 MCP 支持显式 stdio/http 定义和秘密字段加密存储。两者加入全局目录时已有 Bot 默认关闭，不替其他 Bot 打开。
-- `rambo_credentials` 支持 QQ 邮箱授权码与 Gmail OAuth token 的新建、更新和验证；凭证正文使用应用本地 AES-256-GCM 加密写入独立 SQLite，不进入产品主 Store、聊天、系统提醒、快照或工具结果。每次成功资源或凭证写入都会在当前 Bot 唯一私聊追加一条真实持久化的 `role=system` 提醒。
+- `rambo_credentials` 支持 QQ 邮箱授权码与 Gmail 应用专用密码的连接新建、更新和验证；凭证正文使用应用本地 AES-256-GCM 加密写入独立 SQLite，不进入产品主 Store、聊天、系统提醒、快照或工具结果。每次成功资源或凭证写入都会在当前 Bot 唯一私聊追加一条真实持久化的 `role=system` 提醒。
 - Skill 导入后会立即失效资源发现缓存并解析 `SKILL.md` frontmatter 的 `name`/`description`；Host 启动 thread 前统一注册 `<profile>/skill-library` 为 Codex extra root，再按全局目录和当前 Bot 开关生成 `skills.config`。
 - 定向验证通过：`npm run typecheck`；Host 与资源发现 **98/98**；资源工具、凭证工具、Skill 库、直连 MCP、加密凭证 **17/17**；合并资源域后端回归 **115/115**；验收结构 **16/16**；`npm run build`；真实 Electron 验证系统设置导入后列表立即出现、直连 MCP 表单、秘密不回显、明暗主题和 760px 窄窗口 **1/1**，以及 Bot 私聊 Tool 导入并开启当前 Bot、两条持久化系统提醒和其他 Bot 未启用 **1/1**。
 - 证据边界：未让真实 Codex 自主选择并执行导入 Skill 的脚本，未启动真实 MCP Server 完成握手/调用，未用真实 QQ/Gmail 账号验证，也未完成日志/导出全量扫描。主动建议全局变更前的用户同意目前由模型指令约束，尚无宿主确认状态机证据。
@@ -408,3 +416,11 @@
 - 按用户截图优化语音错误胶囊：连接异常与结束失败都显示完整标题、短原因及胶囊外独立 `34px` 圆形“重新拨号”按钮；错误胶囊不再被外层 `320px` 上限和 `overflow:hidden` 裁成半句。Realtime/媒体协商失败现在也会进入该错误胶囊，而不是只显示通用错误通知；成功结束仍清理错误态。定向 Electron 用例同时覆盖“语音结束失败：服务暂不可用”和“语音连接异常：语音连接已关闭：transport_closed”，检查标题/原因不裁切、重试按钮尺寸、位置和视口内可见；头像颜色断言改为直接比较实际解析值，消除随机头像色造成的用例抖动。本轮 `npm run build` 通过，包含错误胶囊检查的宽幅实时频谱定向用例 5/5 通过；Host 全套 74/74 通过；验收目录同步后 `test:catalog` 与 `test:acceptance` 通过。真实 Live 音频首次结束语音是否不再漏 delegation、真实麦克风与监听恢复仍未复验，不能据此宣称 V07 或完整发布已通过。
 - Q143 用户实测发现自然说“结束”时 Live 仍只口头回应，而明确说“调用工具结束”才触发流程。本轮扩展 `VOICE_START_INSTRUCTIONS` 与 `VOICE_PROMPT`：示例包含“结束通话”“你可以结束了”“退下吧”，要求不等用户提到工具、先委派当前 thread 并点名 `rambo_voice.end_current_voice_session` 与 `{}`；隔离 Host 意图判定提示同步扩展口语、委婉说法且继续按语义而非关键词判断。更新 V07 决策、验收矩阵和规则计划。Host 87/87、`npm run typecheck`、`npm run build`、`npm run test:catalog`（224 案例）、`npm run test:acceptance`（16/16）和 `git diff --check` 通过。回归仅证明启动参数注入和模拟 Host 判定；新提示只对下一次启动的 Live 生效，真实 Live 音频是否首次可靠挂断仍需复验。
 - Q143 真实 Live 复验：会话 `a822d180-ddf8-4bbd-be5c-c942a26e0c1b` 已在启动时加载更新后的结束提示。同一 thread 更早的一次 `rambo_voice.end_current_voice_session({})` 正常回复；之后用户分别说“呃。退出语音吧”“好，OK。那你退下吧”，两回都成功调用结束工具、Realtime 进入 `ended`，但同一 turn 的后续回复均收到 `unsupported_persisted_item_context` / `previous_response_id` / HTTP 400，原始错误 JSON 被 Host 发给 UI。两次失败 rollout 均为 `cli_version=0.163.0`。当前源码默认目标是 `0.164.0`，但本地运行目录当时只有 `0.163.0`，所以新提示生效并不代表新 App Server 已运行。准确原因仍无法从报错区分 hosted-tool、compaction 或隐藏 reasoning 状态；0.164 发布说明也没有列出这条明确修复。需让应用实际运行 0.164 后再做真实 Live 复验；若仍失败，需要 App Server/Responses 续接层修复。V07 仍是部分证据。
+
+## 2026-10-26：Q155 Gmail 新连接改用应用专用密码
+
+- Gmail 新连接改为填写邮箱地址和 Google App Password，经 `imap.gmail.com:993` 与 `smtp.gmail.com:465` 验证；不再展示 OAuth Client ID/Secret，也不启动 Google OAuth。App Password 经 IMAP/SMTP 适配器提供搜索、读取、附件、草稿、回复和发送映射。QQ 与 Gmail 共用协议适配核心，分别保留各自服务器、邮箱和 ID 前缀。已有 OAuth-token Gmail 连接仍由旧 Adapter 兼容读取。
+- 连接说明写明两步验证要求、账号限制、密码可重复使用至撤销、不是一次性验证码，以及 Google 对这种较不安全兼容方式的提示。Bot 凭证工具接受 Gmail App Password；成功保存会在当前 Bot 唯一私聊产生不含凭证的系统提醒。
+- 决策、研究、验收矩阵、规则计划和目录已同步 Q155/T20 与 M09；Catalog 最新校验为 **144 条规则、229 个案例、112 个已实现局部案例、117 个缺口案例、50 条已有局部证据的规则**。`node scripts/change-checks.mjs` 命中构建、连接器、Host/Store/Runtime、跨进程契约、renderer 和验收模块；`.env.example` 与临时目录未匹配并保持原样。
+- 检查通过：`npm run typecheck`；完整后端串行 **305/305**；`npm run test:catalog`；`npm run test:acceptance` **16/16**；`npm run build`；`git diff --check`。相关 Electron 联合回归 **31 通过、1 跳过**，覆盖 Gmail App Password 表单、群聊、多时刻/集中重启、后台运行和 Codex 运行时重启。完整后端默认并发运行时曾出现 Host 文件测试结束后的 SQLite 异步活动，单文件和串行完整回归均通过，测试收尾隔离风险仍保留。
+- 证据边界：本地 Adapter 与 Electron 用例没有连接真实 Google 账号；真实 App Password 生成、Gmail 账号策略、完整邮件操作和撤销恢复仍待真实账号验收。相关 Electron 联合回归通过不等于全部 E2E、真实模型或 P08 全量验收通过。

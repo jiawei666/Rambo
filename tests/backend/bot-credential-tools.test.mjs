@@ -25,7 +25,7 @@ const qqConnection = {
   updatedAt: '2026-10-26T00:00:00.000Z'
 };
 
-test('credential input normalizes only supported QQ and Gmail new-connection payloads', () => {
+test('credential input normalizes QQ authorization codes and Gmail app passwords', () => {
   assert.deepEqual(normalizeBotCredentialInput({
     provider_id: 'qqmail',
     display_name: ' 工作 QQ ',
@@ -47,23 +47,13 @@ test('credential input normalizes only supported QQ and Gmail new-connection pay
     provider_id: 'gmail',
     display_name: 'Gmail',
     email: 'person@gmail.com',
-    access_token: 'access',
-    refresh_token: 'refresh',
-    expires_at: '2026-10-27T00:00:00.000Z'
+    secret: ' abcd efgh ijkl mnop '
   }), {
     connectionId: null,
     providerId: 'gmail',
     displayName: 'Gmail',
     email: 'person@gmail.com',
-    payload: {
-      kind: 'oauth-token',
-      email: 'person@gmail.com',
-      accessToken: 'access',
-      refreshToken: 'refresh',
-      expiresAt: '2026-10-27T00:00:00.000Z',
-      scope: 'gmail.modify',
-      tokenType: 'Bearer'
-    }
+    payload: { kind: 'imap-password', email: 'person@gmail.com', password: 'abcdefghijklmnop' }
   });
 });
 
@@ -71,8 +61,8 @@ test('credential input rejects malformed, mixed, and cross-account updates', () 
   const cases = [
     [{ provider_id: 'qqmail', display_name: 'QQ', email: 'not-an-email', secret: 'code' }, /有效的邮箱/u],
     [{ provider_id: 'unsupported', display_name: 'X', email: 'x@example.com', secret: 'code' }, /只支持/u],
-    [{ provider_id: 'qqmail', display_name: 'QQ', email: 'x@qq.com', secret: 'code', access_token: 'token' }, /不接受 OAuth/u],
-    [{ provider_id: 'gmail', display_name: 'Gmail', email: 'x@gmail.com', access_token: 'token', secret: 'code' }, /不接受 secret/u],
+    [{ provider_id: 'qqmail', display_name: 'QQ', email: 'x@qq.com', secret: 'code', access_token: 'token' }, /不支持凭证字段/u],
+    [{ provider_id: 'gmail', display_name: 'Gmail', email: 'x@gmail.com', access_token: 'token' }, /不支持凭证字段/u],
     [{ provider_id: 'qqmail', display_name: 'QQ', email: 'x@qq.com', secret: 'code', extra: 'value' }, /不支持凭证字段/u],
     [{ provider_id: 'qqmail', display_name: 'QQ', email: 'x@qq.com', secret: '   ' }, /QQ 邮箱授权码/u]
   ];
@@ -115,6 +105,11 @@ test('credential updates retain the existing account and never infer a replaceme
       email: 'person@qq.com',
       password: 'replacement'
     }
+  });
+  assert.deepEqual(normalizeBotCredentialInput({
+    provider_id: 'gmail', display_name: 'Gmail', email: 'owner@gmail.com', secret: 'abcd efgh ijkl mnop'
+  }).payload, {
+    kind: 'imap-password', email: 'owner@gmail.com', password: 'abcdefghijklmnop'
   });
 });
 

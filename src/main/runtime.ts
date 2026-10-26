@@ -47,6 +47,8 @@ export type RuntimeResolverDeps = {
   now?: () => number;
   nativeCodexHome?: string;
   ownedThreadIds?: () => readonly string[];
+  /** Manual proxy supplied by the app; applied only to the Codex child process. */
+  proxyUrl?: string | null;
 };
 
 const DEFAULT_RUNTIME_VERSION = '0.164.0';
@@ -191,6 +193,20 @@ function responseError(error: any): Error {
   return new Error(error?.message ?? 'Codex 请求失败');
 }
 
+function runtimeProxyEnv(proxyUrl: string | null | undefined): Record<string, string> {
+  if (!proxyUrl) return {};
+  return {
+    HTTPS_PROXY: proxyUrl,
+    HTTP_PROXY: proxyUrl,
+    ALL_PROXY: proxyUrl,
+    https_proxy: proxyUrl,
+    http_proxy: proxyUrl,
+    all_proxy: proxyUrl,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  };
+}
+
 export class CodexRuntime extends EventEmitter {
   state: RuntimeState = { status: 'stopped', version: '', error: null };
   private process: ChildProcessWithoutNullStreams | null = null;
@@ -206,6 +222,10 @@ export class CodexRuntime extends EventEmitter {
     private readonly spawnProcess: RuntimeProcessSpawner = spawn,
     private readonly resolverDeps: RuntimeResolverDeps = {}
   ) { super(); }
+
+  setProxyUrl(proxyUrl: string | null | undefined): void {
+    this.resolverDeps.proxyUrl = proxyUrl?.trim() || null;
+  }
 
   private setState(status: RuntimeState['status'], error: string | null = null): void {
     this.state = { ...this.state, status, error };
@@ -259,7 +279,13 @@ export class CodexRuntime extends EventEmitter {
     args.push('-c', 'cli_auth_credentials_store="file"', '-c', `sqlite_home=${JSON.stringify(codexHome)}`);
     const child = this.spawnProcess(layout.binary, args, {
       cwd: this.workingDirectory,
-      env: { ...process.env, CODEX_HOME: codexHome, CODEX_SQLITE_HOME: codexHome, PATH: `${layout.pathDirectory}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+      env: {
+        ...process.env,
+        ...runtimeProxyEnv(this.resolverDeps.proxyUrl),
+        CODEX_HOME: codexHome,
+        CODEX_SQLITE_HOME: codexHome,
+        PATH: `${layout.pathDirectory}:${process.env.PATH ?? '/usr/bin:/bin'}`
+      },
       stdio: ['pipe', 'pipe', 'pipe']
     });
     this.process = child;

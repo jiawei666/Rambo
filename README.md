@@ -5,7 +5,7 @@
 用户已授权开始开发，当前处于分批实现阶段。先阅读 [产品决策记录](docs/product-decisions.md)；需要核对原话、确认回复或方案变化时，查阅 [完整问答摘录](docs/conversation-evidence.md)。当前实际进度见 [实施记录](docs/implementation-progress.md)。
 
 
-全部已确认功能的操作步骤、预期结果与交付判定见 [全量验收矩阵](docs/acceptance-matrix.md)。当前正在按冻结基线逐项验收；局部案例不代表 142 条规则或发布套件通过。最新进度、缺口和证据入口见[当前验收任务](docs/active-acceptance-run.md)。
+全部已确认功能的操作步骤、预期结果与交付判定见 [全量验收矩阵](docs/acceptance-matrix.md)。当前正在按冻结基线逐项验收；局部案例不代表 144 条规则或发布套件通过。最新进度、缺口和证据入口见[当前验收任务](docs/active-acceptance-run.md)。
 
 技术方案见 [技术设计](docs/technical-design.md)，Codex 0.163.0 协议与证据边界见 [App Server 本机核对](docs/app-server-evidence.md)。采用 Electron / React / TypeScript 和本机 SQLite 开始实现；Voice、Computer Use、历史隔离等仍待实际验证。
 
@@ -26,7 +26,7 @@ npm run dev
 
 本机已有独立运行时时可直接 `npm run dev`；需要预置缓存时可显式运行 `npm run runtime:prepare`。`npm run build` 生成桌面代码，`npm run package:mac` 生成本机未签名应用目录。运行时下载或校验失败时界面如实显示错误，不退回公用 CLI 进程。认证沿本机 Codex 配置，产品数据保存在 Electron 的 Rambo 用户数据目录。
 
-当前实现不等于完整交付；当前规则通过为 0/142，J1–J4 和七个发布套件均未通过。尚未接通的功能和验收状态见实施记录，不使用演示回复代替真实 Codex。
+当前实现不等于完整交付；当前规则通过为 0/144，J1–J4 和七个发布套件均未通过。尚未接通的功能和验收状态见实施记录，不使用演示回复代替真实 Codex。
 
 ## 全量验收 Skill
 

@@ -197,15 +197,15 @@ test('the catalog keeps the current implementation boundary explicit', () => {
     .concat(catalog.releaseSuites.flatMap(item => item.rules))
     .filter(rule => !implementedRules.has(rule)));
 
-  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 109);
+  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 112);
   assert.ok(catalog.cases.filter(item => item.status === 'not_implemented').length >=
     new Set(catalog.cases.filter(item => item.status === 'not_implemented').flatMap(item => item.rules)).size);
-  assert.equal(implementedRules.size, 49);
+  assert.equal(implementedRules.size, 50);
   assert.ok([...uncoveredRules].every(rule => anyGapRules.has(rule)),
     'Every rule without implemented evidence must have an explicit gap case');
   assert.deepEqual(
     [...implementedRules].filter(rule => anyGapRules.has(rule)).sort(),
-    ['A01', 'A02', 'A04', 'A05', 'B05', 'B06', 'B08', 'B09', 'B10', 'B12', 'B13', 'G01', 'O01', 'P03', 'R11', 'R13', 'R16', 'R17', 'S02', 'V01', 'V07'].sort(),
+    ['A01', 'A02', 'A04', 'A05', 'A07', 'B05', 'B06', 'B08', 'B09', 'B10', 'B12', 'B13', 'G01', 'O01', 'P03', 'R11', 'R13', 'R16', 'R17', 'S02', 'V01', 'V07'].sort(),
     '只有部分证据的规则必须同时保留显式缺口'
   );
   assert.deepEqual(

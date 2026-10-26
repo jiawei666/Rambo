@@ -81,6 +81,7 @@ type VoiceErrorPresentation = {
 
 const EMPTY_SNAPSHOT: Snapshot = {
   codexHome: '',
+  runtimeProxy: '',
   bots: [],
   chats: [],
   connectorProviders: [],
@@ -1646,6 +1647,7 @@ function App() {
             onTabChange={setSystemSettingsTab}
             runtime={currentSnapshot.runtime}
             codexHome={currentSnapshot.codexHome}
+            runtimeProxy={currentSnapshot.runtimeProxy}
             notificationUnavailable={currentSnapshot.notifications.unavailableMessage}
             launchAtLogin={currentSnapshot.settings.launchAtLogin !== 'false'}
             globalModel={currentSnapshot.settings.defaultBotModel ?? ''}
@@ -1714,6 +1716,10 @@ function App() {
                 });
                 throw error;
               }
+            }}
+            onSetRuntimeProxy={async value => {
+              await window.rambo.setSetting('runtimeProxy', value);
+              setSnapshot(await window.rambo.snapshot());
             }}
             onSetRoutineStatus={async (routineId, status) => {
               await window.rambo.setRoutineStatus(routineId, status);
@@ -2300,8 +2306,6 @@ function ConnectorDialog({
   const [displayName, setDisplayName] = useState(connection?.displayName ?? provider.name);
   const [email, setEmail] = useState(connection?.accountLabel ?? '');
   const [secret, setSecret] = useState('');
-  const [gmailClientId, setGmailClientId] = useState('');
-  const [gmailClientSecret, setGmailClientSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [oauthWaiting, setOauthWaiting] = useState(false);
   const [connectorProgress, setConnectorProgress] = useState<string | null>(null);
@@ -2332,7 +2336,7 @@ function ConnectorDialog({
   }, [busy, oauthWaiting, onClose]);
 
   useEffect(() => () => {
-    if (challenge?.providerId === 'gmail' || challenge?.providerId === 'wechat') {
+    if (challenge?.providerId === 'wechat') {
       void window.rambo.cancelConnectorAuth(challenge).catch(() => {});
     }
   }, [challenge?.connectionId]);
@@ -2373,7 +2377,7 @@ function ConnectorDialog({
   }, [oauthWaiting, provider.id]);
 
   useEffect(() => {
-    if (mode !== 'connect' || provider.id === 'gmail') return;
+    if (mode !== 'connect') return;
     let alive = true;
     setBusy(true);
     window.rambo.beginConnectorAuth(provider.id, displayName.trim() || provider.name)
@@ -2403,38 +2407,6 @@ function ConnectorDialog({
       setError(toError(issue));
     } finally {
       setBusy(false);
-    }
-  };
-
-  const startGmailOAuth = async () => {
-    cancelledRef.current = false;
-    setBusy(true);
-    setError(null);
-    try {
-      const started = await window.rambo.beginConnectorAuth(
-        provider.id,
-        displayName.trim() || provider.name,
-        {
-          clientId: gmailClientId.trim(),
-          clientSecret: gmailClientSecret.trim()
-        }
-      );
-      setChallenge(started.challenge);
-      setOauthWaiting(true);
-      setBusy(false);
-      const connection = await window.rambo.openConnectorAuth(started.challenge);
-      if (cancelledRef.current) return;
-      setOauthWaiting(false);
-      setBusy(true);
-      setGmailClientSecret('');
-      await onOAuthComplete(connection);
-    } catch (issue) {
-      if (cancelledRef.current) return;
-      setOauthWaiting(false);
-      setChallenge(null);
-      setError(toError(issue));
-    } finally {
-      if (!cancelledRef.current) setBusy(false);
     }
   };
 
@@ -2567,7 +2539,7 @@ function ConnectorDialog({
       message: '已取消微信连接。',
       timestamp: cancelledAt
     }));
-    if (challenge?.providerId === 'gmail' || challenge?.providerId === 'wechat') {
+    if (challenge?.providerId === 'wechat') {
       await window.rambo.cancelConnectorAuth(challenge).catch(() => {});
     }
     setChallenge(null);
@@ -2589,7 +2561,7 @@ function ConnectorDialog({
             <h2 id={titleId}>{provider.name}</h2>
             <p>{isManage
               ? '管理连接账号与 Bot 访问权限。'
-              : provider.id === 'gmail' ? '授权 Google 账号以连接 Gmail。' : provider.description}</p>
+              : provider.description}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭" disabled={busy && !oauthWaiting}
             onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
@@ -2670,72 +2642,6 @@ function ConnectorDialog({
               <button type="button" className="primary-button" disabled={busy} onClick={onClose}>完成</button>
             </footer>
           </>
-        ) : provider.id === 'gmail' ? (
-          <>
-            <div className="connector-auth-note">
-              <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
-              <div>
-                <strong>连接你自己的 Google OAuth 客户端</strong>
-                <p>Rambo 不内置 OAuth 凭据。这里填写 Desktop App 的 Client ID 与 Client Secret，凭据会使用应用本地密钥加密保存。</p>
-              </div>
-            </div>
-            <details className="connector-oauth-guide">
-              <summary>如何获取 OAuth 凭据</summary>
-              <ol>
-                <li>
-                  打开 <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com"
-                    target="_blank" rel="noopener noreferrer">Google Cloud Console</a>，创建或选择一个项目，并启用 Gmail API。
-                </li>
-                <li>配置 OAuth 同意屏幕。个人使用可选择 External，并把当前 Gmail 加入测试用户。</li>
-                <li>
-                  进入 <a href="https://console.cloud.google.com/apis/credentials"
-                    target="_blank" rel="noopener noreferrer">Credentials</a>，选择 Create credentials → OAuth client ID。
-                </li>
-                <li>Application type 选择 Desktop app，创建后复制 Client ID 与 Client secret。</li>
-                <li>回到这里粘贴两项凭据，然后前往 Google 授权。Rambo 会自动使用临时本机回调，不需要手工配置回调端口。</li>
-              </ol>
-            </details>
-            <label className="settings-field">
-              <span>连接名称</span>
-              <input className="text-input" value={displayName} maxLength={120} disabled={busy || oauthWaiting}
-                placeholder="例如：个人 Gmail"
-                onChange={event => setDisplayName(event.target.value)} />
-            </label>
-            <label className="settings-field">
-              <span>OAuth Client ID</span>
-              <input className="text-input" value={gmailClientId} maxLength={500} disabled={busy || oauthWaiting}
-                autoComplete="off" spellCheck={false}
-                placeholder="xxxxxxxx.apps.googleusercontent.com"
-                onChange={event => setGmailClientId(event.target.value)} />
-            </label>
-            <label className="settings-field">
-              <span>OAuth Client Secret</span>
-              <input className="text-input" type="password" value={gmailClientSecret} maxLength={4096}
-                disabled={busy || oauthWaiting} autoComplete="new-password" spellCheck={false}
-                placeholder="输入 Google Desktop App 的 Client secret"
-                onChange={event => setGmailClientSecret(event.target.value)} />
-              <small className="field-hint">创建 OAuth 客户端时只会完整显示一次；两项凭据仅用于此连接及后续刷新令牌。</small>
-            </label>
-            {error && <div className="form-error" role="alert">{error}</div>}
-            {oauthWaiting && (
-              <p className="connector-auth-challenge" role="status">
-                已打开 Google 授权页，完成后会自动返回 Rambo。
-              </p>
-            )}
-            <footer className="connector-dialog-footer">
-              <button type="button" className="secondary-button" disabled={busy && !oauthWaiting}
-                onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
-                {oauthWaiting ? '取消授权' : '关闭'}
-              </button>
-              <span className="connector-dialog-footer-spacer" />
-              <button type="button" className="primary-button"
-                disabled={busy || oauthWaiting || !displayName.trim() ||
-                  !gmailClientId.trim() || !gmailClientSecret.trim()}
-                onClick={() => void startGmailOAuth()}>
-                {oauthWaiting ? '等待 Google 授权…' : '前往 Google 授权'}
-              </button>
-            </footer>
-          </>
         ) : provider.id === 'wechat' ? (
           <>
             <div className="connector-auth-note">
@@ -2809,29 +2715,41 @@ function ConnectorDialog({
             <div className="connector-auth-note">
               <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
               <div>
-                <strong>QQ 邮箱连接说明</strong>
-                <p>需要先在 QQ 邮箱网页版生成授权码：<a href="https://mail.qq.com" target="_blank" rel="noopener noreferrer">打开 QQ 邮箱 → 设置 → 账户 → 开启 IMAP/SMTP → 生成授权码</a>。</p>
-                <small>注意：这不是 QQ 登录密码；授权码会使用应用本地密钥加密保存，不进入聊天上下文或日志。</small>
+                {provider.id === 'gmail' ? (
+                  <>
+                    <strong>Gmail 应用专用密码</strong>
+                    <p>先为 Google 账号开启两步验证，再<a href="https://myaccount.google.com/apppasswords"
+                      target="_blank" rel="noopener noreferrer">创建应用专用密码</a>并粘贴到这里。Rambo 使用 Gmail IMAP/SMTP 连接邮箱，不会打开 OAuth 授权页。</p>
+                    <small>它不是 Google 登录密码或一次性验证码，而是可重复使用至撤销的专用密码。Google 将此方式定位为兼容较不安全应用的方案，并建议优先使用“使用 Google 账号登录”；部分工作/学校账号、安全密钥专用账号或高级保护账号可能无法创建。Google 账号主密码变更后，此密码会被撤销。凭证仅在本机加密保存。<a href="https://support.google.com/mail/answer/185833" target="_blank" rel="noopener noreferrer">Google 官方说明</a></small>
+                  </>
+                ) : (
+                  <>
+                    <strong>QQ 邮箱连接说明</strong>
+                    <p>需要先在 QQ 邮箱网页版生成授权码：<a href="https://mail.qq.com" target="_blank" rel="noopener noreferrer">打开 QQ 邮箱 → 设置 → 账户 → 开启 IMAP/SMTP → 生成授权码</a>。</p>
+                    <small>注意：这不是 QQ 登录密码；授权码会使用应用本地密钥加密保存，不进入聊天上下文或日志。</small>
+                  </>
+                )}
               </div>
             </div>
             <label className="settings-field">
               <span>连接名称</span>
               <input className="text-input" value={displayName} maxLength={120} disabled={busy}
-                placeholder="例如：工作邮箱"
+                placeholder={provider.id === 'gmail' ? '例如：个人 Gmail' : '例如：工作邮箱'}
                 onChange={event => setDisplayName(event.target.value)} />
             </label>
             <label className="settings-field">
-              <span>QQ 邮箱地址</span>
+              <span>{provider.id === 'gmail' ? 'Gmail 地址' : 'QQ 邮箱地址'}</span>
               <input className="text-input" type="email" value={email} maxLength={320} disabled={busy}
-                autoComplete="email" placeholder="name@qq.com"
+                autoComplete="email" placeholder={provider.id === 'gmail' ? 'name@gmail.com' : 'name@qq.com'}
                 onChange={event => setEmail(event.target.value)} />
             </label>
             <label className="settings-field">
-              <span>邮箱授权码</span>
+              <span>{provider.id === 'gmail' ? '应用专用密码' : '邮箱授权码'}</span>
               <input className="text-input" type="password" value={secret} maxLength={512} disabled={busy}
-                autoComplete="new-password" placeholder="输入 QQ 邮箱生成的授权码"
+                autoComplete="new-password"
+                placeholder={provider.id === 'gmail' ? '输入 Google 生成的应用专用密码' : '输入 QQ 邮箱生成的授权码'}
                 onChange={event => setSecret(event.target.value)} />
-              <small className="field-hint">保存前会验证 QQ 邮箱 IMAP 与 SMTP；授权码会使用应用本地密钥加密保存。</small>
+              <small className="field-hint">保存前会验证邮箱 IMAP 与 SMTP；凭证会使用应用本地密钥加密保存。</small>
             </label>
             {error && <div className="form-error" role="alert">{error}</div>}
             <footer className="connector-dialog-footer">
@@ -4112,6 +4030,80 @@ function AutoSaveIndicator({ state, error }: { state: AutoSaveState; error?: str
   return <span className={'autosave-indicator' + (state === 'saved' ? ' autosave-complete' : '')} role="status">{label}</span>;
 }
 
+function RuntimeProxySetting({
+  value,
+  busy,
+  onChange
+}: {
+  value: string;
+  busy: boolean;
+  onChange: (value: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!saving) setDraft(value);
+  }, [value, saving]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const save = async () => {
+    const proxy = draft.trim();
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await onChange(proxy);
+      setDraft(proxy);
+      setNotice(proxy ? '代理已保存，Codex 已重启。' : '代理已清除，Codex 已重启。');
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="runtime-proxy-setting">
+      <label className="settings-field" htmlFor="runtime-proxy">
+        <span>代理地址</span>
+        <input
+          id="runtime-proxy"
+          className="text-input"
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="http://127.0.0.1:10808"
+          value={draft}
+          disabled={busy || saving}
+          onChange={event => setDraft(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void save();
+            }
+          }}
+        />
+        <span className="field-hint">可留空；填写后仅传给 Rambo 启动的 Codex，不影响系统代理。保存时会重启运行时。</span>
+      </label>
+      <div className="runtime-proxy-actions">
+        <AutoSaveIndicator state={saving ? 'saving' : error ? 'error' : notice ? 'saved' : 'idle'} error={error} />
+        {notice && !error && <span className="autosave-indicator autosave-complete" role="status">{notice}</span>}
+        <button type="button" className="secondary-button" disabled={busy || saving || draft.trim() === value.trim()}
+          onClick={() => void save()}>{saving ? '保存并重启…' : '保存代理'}</button>
+      </div>
+    </div>
+  );
+}
+
 const RESOURCE_KIND_LABELS: Record<BotResource['kind'], string> = {
   skill: 'Skill',
   mcp: 'MCP',
@@ -4794,6 +4786,7 @@ function AccountSettingsPage({
   onTabChange,
   runtime,
   codexHome,
+  runtimeProxy,
   notificationUnavailable,
   launchAtLogin,
   globalModel,
@@ -4821,6 +4814,7 @@ function AccountSettingsPage({
   onVerifyPlaywrightConnection,
   onCancelPlaywrightVerification,
   onSetLaunchAtLogin,
+  onSetRuntimeProxy,
   onSetRoutineStatus,
   onRunRoutineNow,
   onStopRoutineRun
@@ -4829,6 +4823,7 @@ function AccountSettingsPage({
   onTabChange: (tab: SystemSettingsTab) => void;
   runtime: RuntimeState;
   codexHome: string;
+  runtimeProxy: string;
   notificationUnavailable: string | null;
   launchAtLogin: boolean;
   globalModel: string;
@@ -4860,6 +4855,7 @@ function AccountSettingsPage({
   onVerifyPlaywrightConnection: () => Promise<PlaywrightVerificationResult>;
   onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
+  onSetRuntimeProxy: (value: string) => Promise<void>;
   onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
   onRunRoutineNow: (id: string) => Promise<RoutineRun>;
   onStopRoutineRun: (id: string) => Promise<RoutineRun>;
@@ -5191,6 +5187,11 @@ function AccountSettingsPage({
                 <span className="runtime-home-label">Codex Home</span>
                 <code className="runtime-home-path" title={codexHome}>{codexHome || '未知'}</code>
               </div>
+              <RuntimeProxySetting
+                value={runtimeProxy}
+                busy={busy || runtime.status === 'starting'}
+                onChange={onSetRuntimeProxy}
+              />
               {notificationUnavailable && (
                 <div className="runtime-notification-status" role="status">{notificationUnavailable}</div>
               )}

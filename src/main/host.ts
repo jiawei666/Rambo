@@ -288,20 +288,31 @@ const VOICE_INTENT_INSTRUCTIONS = [
   '结束语音不等于取消正在执行的普通任务。不要根据助手单方面声称“已挂断”来判断用户意图。',
   '只输出符合给定 schema 的 JSON。'
 ].join('\n');
+const MEMORY_CLASSIFICATION_GUIDANCE = [
+  '写入前必须先分类，不能把同一信息同时写到多个层：',
+  '短职责（role）只写一句话说明当前 Bot 负责什么，不写事实或详细行为规则。',
+  '长期指令（instructions）只写当前 Bot 以后应稳定执行或避免的行为规则，包括只在本 Bot 场景生效的提醒、过滤、格式和操作偏好。',
+  'Bot 私有记忆（scope=bot）只写当前 Bot 工作所需、可长期复用的事实、背景、身份映射和判断依据；不要写“以后都要/不要”这类行为规则。',
+  '关于我（scope=aboutMe）只写明确跨 Bot 通用、且用户愿意让所有 Bot 知道的个人资料或跨场景偏好；单个 Bot 的业务规则、消息过滤和连接操作规则不得写入。',
+  '用户说“记住到你的长期记忆”时默认写 scope=bot，除非明确要求所有 Bot 都应知道。无法确定时也默认写当前 Bot，不写 aboutMe。',
+  '写入前检查已有 aboutMe、当前 Bot 记忆和长期指令，避免重复。行为规则应更新长期指令，不应再新建同类记忆；同一信息只保留一个权威位置。',
+  '保存新记忆前必须检查所有层；如果同一信息已经存在于 aboutMe、当前 Bot 记忆或长期指令，更新原有位置，不新增副本，也不跨层重复。',
+  'Bot 不能删除共用“关于我”；发现误写时保留并请用户在系统设置中删除。'
+].join('\n');
 const MEMORY_MANAGEMENT_TOOL = {
   type: 'namespace',
   name: MEMORY_TOOL_NAMESPACE,
-  description: 'Bot 自动整理、保存、编辑和删除长期记忆，不需要用户逐项批准。共享资料与 Bot 私有记忆严格区分。',
+  description: `Bot 自动整理、保存、编辑和删除长期记忆，不需要用户逐项批准。共享资料与 Bot 私有记忆严格区分。\n\n${MEMORY_CLASSIFICATION_GUIDANCE}`,
   tools: [{
     type: 'function',
     name: 'save_memory',
-    description: '用户明确要求记住或修订时立即保存；日常交流告一段落后，稳定且有后续价值的内容由 Bot 自动整理保存。稳定且跨 Bot 适用的用户偏好或个人资料，即使先在一个 Bot 私聊中听到，也必须用 scope=aboutMe；只适用于当前 Bot 的事实用 scope=bot。scope 省略时仍默认为 bot。只有收到本工具 success=true 的成功结果后才能告诉用户已保存；调用失败、没有成功结果或没有调用工具时不得声称已保存。只操作当前 Bot 专属记忆或共用“关于我”，绝不读取或修改其他 Bot 的专属记忆。',
+    description: `保存当前 Bot 的事实记忆或所有 Bot 通用的个人资料。用户明确要求记住或修订时立即保存；日常交流告一段落后，稳定且有后续价值的内容由 Bot 自动整理保存。只适用于当前 Bot 的事实用 scope=bot；稳定且跨 Bot 适用的用户偏好或个人资料才用 scope=aboutMe。用户说“放到你的记忆里”时默认 scope=bot。行为规则不得保存到这里，应更新当前 Bot 的长期指令。scope 省略时默认为 bot。只有收到本工具 success=true 的成功结果后才能告诉用户已保存；调用失败、没有成功结果或没有调用工具时不得声称已保存。只操作当前 Bot 专属记忆或共用“关于我”，绝不读取或修改其他 Bot 的专属记忆。\n\n${MEMORY_CLASSIFICATION_GUIDANCE}`,
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: '更新现有记忆时使用已提供的记忆 ID；新增时省略。' },
-        scope: { type: 'string', enum: ['bot', 'aboutMe'], description: '稳定且跨 Bot 适用的用户偏好或个人资料用 aboutMe；仅当前 Bot 适用的事实用 bot。省略时默认 bot。' },
-        text: { type: 'string', description: '一条简洁、可长期使用的记忆内容。' }
+        scope: { type: 'string', enum: ['bot', 'aboutMe'], description: '仅当前 Bot 长期需要知道的事实用 bot；明确跨 Bot 通用的个人资料或偏好才用 aboutMe。行为规则不要存记忆。省略时默认 bot。' },
+        text: { type: 'string', description: '一条简洁、可长期复用的事实、背景、身份映射或判断依据；不得写成当前 Bot 的行为规则。' }
       },
       required: ['text'],
       additionalProperties: false
@@ -328,14 +339,14 @@ const BOT_PROFILE_TOOL = {
   tools: [{
     type: 'function',
     name: 'update_profile',
-    description: '修改当前 Bot 自己的名称、头像、短职责或长期指令。用户明确要求，或你根据对话确认需要更新时直接调用；不要处理其他 Bot。',
+    description: `修改当前 Bot 自己的名称、头像、短职责或长期指令。用户明确要求，或你根据对话确认需要更新时直接调用；不要处理其他 Bot。role 只写一句话职责；instructions 写当前 Bot 以后应稳定遵循的行为规则，不要把事实、身份映射或背景资料塞进长期指令。跨 Bot 个人资料和当前 Bot 事实应使用 rambo_memories.save_memory 的对应 scope。更新 instructions 时必须传入完整的新版本，不能只传新增片段。\n\n${MEMORY_CLASSIFICATION_GUIDANCE}`,
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: '新的 Bot 名称；省略表示不修改。' },
         avatar: { type: 'string', description: '新的头像标识或受支持的数据 URI；省略表示不修改。' },
-        role: { type: 'string', description: '当前 Bot 的短职责；省略表示不修改。' },
-        instructions: { type: 'string', description: '当前 Bot 的完整长期指令；省略表示不修改。' }
+        role: { type: 'string', description: '一句话说明当前 Bot 负责什么；只写角色目的，不写事实或详细规则；省略表示不修改。' },
+        instructions: { type: 'string', description: '当前 Bot 以后应稳定执行或避免的行为规则的完整新版本；每条规则单独成行；不写事实、身份映射或背景资料；省略表示不修改。' }
       },
       additionalProperties: false
     }
@@ -958,6 +969,7 @@ export class Host {
       .filter(id => globalResourceIds.includes(id));
     return {
       codexHome: join(resolve(this.store.directory), 'codex-home'),
+      runtimeProxy: settings.runtimeProxy?.trim() ?? '',
       bots: this.store.bots(), chats: this.store.chats(),
       connectorProviders: connectorProviders(), connections: this.store.connectorConnections(),
       connectorGrants: this.store.connectorGrants(),
@@ -1625,8 +1637,8 @@ export class Host {
     context['rambo.profile-rules'] = {
       kind: 'application',
       value: memoryToolsEnabled
-        ? 'Bot 的短期职责和长期行为规则保存在当前 Bot 资料中，与事实、偏好记忆分开。你可以通过 rambo_bot.update_profile 自主修改自己的名称、头像、短职责和长期指令，无需用户逐次批准。只有在收到工具 success=true 后才能声称已保存；不能操作其他 Bot，也不能归档、永久删除自身或清空聊天。'
-        : 'Bot 的短期职责和长期行为规则保存在当前 Bot 资料中，与事实、偏好记忆分开。当前上下文没有自管理写入工具，不要声称已经保存，应引导用户在对应 Bot 设置中完成。'
+        ? 'Bot 的资料与记忆分成四个用途：短职责回答“这个 Bot 做什么”；长期指令保存“这个 Bot 以后都该怎么做/不要怎么做”的稳定行为规则；Bot 专属记忆保存当前 Bot 工作长期需要的事实、身份映射、背景和判断依据；关于我保存明确跨 Bot 通用的用户个人资料或跨场景偏好。你可以在当前唯一单聊中自行写入，但同一信息只放一个权威位置，不把同一句同时写成记忆和全局资料。用户说“记住到你的长期记忆”时默认 scope=bot；行为规则用 rambo_bot.update_profile 更新长期指令；只有明确跨 Bot 通用的个人资料才用 scope=aboutMe。写前检查已有条目并去重，规则变化优先更新现有长期指令。只有在收到工具 success=true 后才能声称已保存；不能操作其他 Bot，不能删除共享关于我，也不能归档、永久删除自身或清空聊天。'
+        : 'Bot 的短职责只说明角色，长期指令保存稳定行为规则，Bot 专属记忆保存事实和背景，关于我只保存跨 Bot 通用的用户资料。当前上下文没有自管理写入工具，不要声称已经保存，应引导用户在对应 Bot 设置中完成。'
     };
     const mailConnections = this.mailConnections(bot.id);
     if (mailConnections.length) {
@@ -1696,13 +1708,13 @@ export class Host {
         ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接也可引用当前 Bot 工作区内的相对或绝对路径。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S) 或当前 Bot 工作区内的文件路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
         : '',
       memoryToolsEnabled
-        ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型和权限，这两项会同时用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail OAuth token 并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
+        ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型和权限，这两项会同时用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail 应用专用密码并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
         : '当前上下文没有自管理写入工具；不要声称已修改自身资料、运行配置、记忆或 Routine，应引导用户在对应 Bot 私聊或设置中完成。',
       routineToolsEnabled
         ? '长期记忆和职责变更按各自规则处理。只要从当前对话判断用户希望未来执行或重复执行某项工作，即使没说“创建定时任务”，也应主动整理创建 Routine。先结合对话、近期上下文、当前时间和当前 Bot 已保存的职责与记忆推断标题、执行内容、计划、触发时间、一次性或周期属性以及执行方式，不要逐项向用户索取已有或可可靠推断的信息。用户以“几分钟后”等相对时间委托时，先结合当前时间和用户时区换算成明确日期与 HH:mm，换算不含歧义时直接创建，不要要求用户重复提供本来能算出的时间。用户要一天内多个任意时刻时，只创建一条 Routine 并把全部 HH:mm 填入 triggerTimes，例如 00:00、01:30、04:50；不得拆成多条任务，也不得把“每 30 分钟”静默改成每天一次。先判断任务性质与执行约束，再自主选择执行方式：需要持续理解、沟通或开放判断时选 chat；目标确定、结果可计算或可核验、适合命令或脚本稳定复现时选 script；先理解判断、再执行确定性步骤时选 hybrid。确定性计算、日期换算、批量变换和重复命令通常满足 script 的条件，但不要仅因任务简单而默认 chat，也不要忽略交互、外部副作用、权限和结果核验要求。script/hybrid 要写清可复用模板。只有实际缺失关键信息，且该缺失会在安全或不可逆操作中造成实质歧义时，才向用户提出最短的必要问题；收到答复后再创建。Bot 自己想到的自动化建议仍先征求用户同意。Routine 创建成功后的本轮回复只确认任务名称、计划、执行方式和执行内容；这是登记未来工作，不要提前计算或回答未来结果。未来结果由实际 Routine 完成后按交接规则返回。一次性定义仅在结果成功交回 Bot 私聊后自动清理，失败或中断也按同样规则清理；不要要求用户或 Bot 再调用 delete_routine，已有运行记录、聊天结果和成果继续保留。任务由本机后台服务执行；窗口关闭不影响，Mac 真正睡眠或关机时不保证按时执行。工具成功返回后，以真实结果为准直接告知用户完成状态；不要继续声称“正在创建”或“稍等”，也不得调用 rambo_voice.end_current_voice_session，除非当前确实存在用户正在使用的 Live 语音会话。'
         : '没有提供定时任务创建工具时，不要声称已保存周期任务定义。',
       memoryToolsEnabled
-        ? '你自行整理并保存长期记忆，不需用户逐项批准。用户明确要求记住或修订时立即保存；日常交流告一段落后，也应把稳定且有后续价值的内容整理保存。稳定且跨 Bot 适用的用户偏好/个人资料应通过 rambo_memories.save_memory 的 scope=aboutMe 保存；只适用于当前 Bot 的事实用 scope=bot。自管理工具的 delete_memory 只作用于当前 Bot 私有记忆，不能删除共享“关于我”或其他 Bot 记忆。只有收到工具 success=true 后才能告诉用户“已保存”或“已删除”；失败、没有结果或没有调用时必须如实说明未完成。'
+        ? `你自行整理并保存长期记忆，不需用户逐项批准。用户明确要求记住或修订时立即保存；日常交流告一段落后，也应把稳定且有后续价值的内容整理保存。\n\n${MEMORY_CLASSIFICATION_GUIDANCE}\n\n自管理工具的 delete_memory 只作用于当前 Bot 私有记忆，不能删除共享“关于我”或其他 Bot 记忆。只有收到工具 success=true 后才能告诉用户“已保存”或“已删除”；失败、没有结果或没有调用时必须如实说明未完成。`
         : '当前上下文没有长期记忆写入工具；不要声称已保存或删除长期记忆。群聊中的记忆请求请引导用户在对应 Bot 私聊处理。'
     ].filter(Boolean).join('\n\n');
   }
@@ -2248,6 +2260,7 @@ export class Host {
           connection = this.store.updateConnectorConnectionCredential({
             id: existing.id,
             credentialRef: previousCredentialRef!,
+            authKind: 'credentials',
             displayName: normalized.displayName ?? undefined,
             status: 'ready'
           });
@@ -2259,7 +2272,7 @@ export class Host {
             providerId: normalized.providerId,
             displayName: normalized.displayName!,
             accountLabel: normalized.email,
-            authKind: normalized.providerId === 'gmail' ? 'oauth-desktop' : 'credentials',
+            authKind: 'credentials',
             credentialRef: newCredentialRef
           });
           await this.mailRuntime.withCredentialAdapter(
