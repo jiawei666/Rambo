@@ -16,6 +16,7 @@
 - 上传格式：`Rambo-v<version>-macOS-arm64.zip`。
 - 校验文件：`Rambo-v<version>-macOS-arm64.zip.sha256`。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。
+- GitHub Release 资产上传默认使用直连：执行 `gh release create` 或 `gh release upload` 时清除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式。用户明确指定代理时除外。
 
 ## 产品边界
 

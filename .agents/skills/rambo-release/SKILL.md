@@ -60,7 +60,21 @@ git tag -a v<version> -m "Rambo v<version>"
 git push origin v<version>
 ```
 
-6. 用 `gh release create` 创建标准 Release，上传 zip 和 `.sha256`。不要添加 `--prerelease`；已确认的首版按最新正式 Release 发布。Release notes 至少包含：目标 commit、构建平台、应用架构、运行时获取方式、未签名/未公证状态与首次启动步骤、SHA-256、已知验收边界和下载文件说明。
+6. 用 `gh` 创建标准 Release，上传 zip 和 `.sha256`。上传 GitHub Release 资产时必须绕过 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式，直接连接 GitHub；用户明确指定代理时除外。当前环境中的代理曾将上传降至约 28 KB/s 并触发 `408`，直连则可稳定完成。使用下面的方式执行创建、查看或上传命令：
+
+```sh
+env -u http_proxy -u https_proxy \
+  -u HTTP_PROXY -u HTTPS_PROXY \
+  -u ALL_PROXY -u all_proxy \
+  -u no_proxy -u NO_PROXY \
+  gh release create v<version> \
+  dist/release/v<version>/Rambo-v<version>-macOS-arm64.zip \
+  dist/release/v<version>/Rambo-v<version>-macOS-arm64.zip.sha256 \
+  --title "Rambo v<version>" \
+  --notes-file <release-notes-file>
+```
+
+如果 Release 已创建但资产上传中断，使用同一组 `env -u ...` 清理代理变量后分别执行 `gh release upload v<version> <asset> --clobber`，并在重试后核对远端资产大小与状态。不要添加 `--prerelease`；已确认的首版按最新正式 Release 发布。Release notes 至少包含：目标 commit、构建平台、应用架构、运行时获取方式、未签名/未公证状态与首次启动步骤、SHA-256、已知验收边界和下载文件说明。
 
 7. 发布后回查真实远端结果：
 
@@ -76,5 +90,5 @@ git ls-remote --tags origin v<version>
 - 构建失败：停止，保留日志，不创建 tag/Release。
 - 测试失败：报告规则和失败原因；除非用户明确接受预发布风险，不继续外部发布。
 - 远端已有同名 tag/Release：停止，不覆盖、不移动已发布 tag。
-- 推送或上传失败：保留本地提交和产物，报告远端实际状态；不要重复创建 Release。
+- 推送或上传失败：保留本地提交和产物，报告远端实际状态；不要重复创建 Release。Release 资产上传失败时，先确认 Release 是否已存在，再用清除代理变量的直连命令继续未完成的资产上传。
 - 未签名/未公证：这是所有版本的长期发布前提，不是失败或降级条件；必须写入 Release 说明，最终报告不能省略。
