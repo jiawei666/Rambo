@@ -1,16 +1,55 @@
-# Grok Bot UI 基准（0.75.0）
+# Grok Bot UI 基准（0.72.0、0.75.0 与 0.75.5）
 
 ## 2026-10-22 版本更新与聊天运行态证据
 
-当前本机安装的 Grok Bot 已更新为 **0.75.0**。原 0.72.0 的页面、Token、头像和创建弹窗依据继续作为历史证据保留在本页；本轮只补充运行状态差异，不把旧包证据冒充当前版本。
+本节记录 2026-10-22 当时安装的 **0.75.0**。原 0.72.0 的页面、Token、头像和创建弹窗依据继续作为历史证据保留在本页；文件查看器的后续证据见 0.75.5 专节。
 
 - 当前包：`/Applications/Grok Bot.app/Contents/Resources/app.asar`
 - SHA-256：`1035db7b1f77974c78e6c18a4426a5fe16c639946335f7d57badfd0761971a5e`
 - 当前 renderer 入口：`dist/renderer/assets/index.eager-app-wqHXQRAi.js`、`index.eager-common-DDLNUvWu.js`、`index-CEV-0tKx.css`。
-- 发送消息后，运行状态呈现为 Bot 头像旁的环形 indeterminate 轨迹、扫光文字和轮换活动短语，不是全屏/居中普通 spinner。
-- 当前原版运行参数：`runningSpinDuration=1200ms`、`shimmerDuration=1400ms`、`sweepDuration=2200ms`、`breatheDuration=2400ms`。shimmer 使用 `sand-n9qfrr` 的同色系渐变；Rambo 使用现有主题变量模拟，不引入原版受限字体或业务资源。
+- 发送消息后，Grok Bot 聊天运行态呈现动态 mark、三个青色动态圆点和从左向右扫光的活动文字。用户最新要求改为单聊与群聊复用同一动态运行组件：组件位于聊天 transcript 内，内部左侧显示 Bot 头像组、右侧显示随最新活动更新的统一状态；单聊一个头像，群聊显示仍在思考或执行的成员，最多并排 3 个并显示 `+N`，有头像时不显示三点；整轮全部结束后整条状态隐藏。该组件是原版运行结构上的扩展，不宣称逐像素复刻；左侧会话栏运行头像动效继续保留。
+- 目标位置与当前实现边界：Q68 明确运行行留在 transcript 内；Q69 又要求新气泡在稳定运行行上方自然增长、运行行本身不随新气泡移动。当前 `src/renderer/App.tsx` 的 `AgentRunningRow` 位于 `.chat-bottom-dock`，而该 dock 在 `.transcript-scroll` 外，属于 B11 未完成项。现有“运行态出现/退出时 dock 锚点不移动”的 Electron 断言只证明当前 dock 稳定，不能证明运行行已进入 transcript。
+- 0.72.0 静态 CSS 精确证据：三点使用 `sand-message-typing__dot`，6px、4px 间距、`1.4s ease-in-out infinite`，延迟为 -0.32s/-0.16s，关键帧 `sand-cqmojk-B` 在 30% 时透明度 1、上移 2px；working 呼吸变体 `sand-1tmrjwl-B` 为 2.4s、透明度 .3 到 .9。文字使用 `sand-shimmer-text`/`sand-n9qfrr`，2.2s `steps(60,end)`，背景位置从 200% 到 -200%。`shimmerDuration=1400ms` 是常量表定义，不是实际扫光时长；Rambo 不使用头像外圈轨迹。
+- 当前包内可见的时长参数包括 `runningSpinDuration=1200ms`、`shimmerDuration=1400ms`、`sweepDuration=2200ms`、`breatheDuration=2400ms`；前三者不能直接解释为运行行头像环轨、文字扫光或 working 头像动画。文字与三点按上方 0.72.0 精确 CSS 证据实现；Rambo 使用现有主题变量模拟，不引入原版受限字体或业务资源。
 - 已核实活动短语包括 `Thinking it through`、`Searching the web`、`Reading the web`、`Running a few commands`、`Reading the file`、`Drafting the file`、`Working on it` 等。Rambo 按 Codex item 类型映射为对应的中文状态，并随最新活动切换。
 - 本证据来自当前安装包静态分析；尚未用截图完成 0.75.0 的逐像素运行态对照。Rambo 本轮实现和自动化结果不等同 P02/B11 验收通过。
+
+<a id="grok-0755-file-attachments"></a>
+
+## 2026-10-24 文件附件卡片与查看器（0.75.5）
+
+- 取证对象：`/Applications/Grok Bot.app/Contents/Resources/app.asar`，`CFBundleShortVersionString=0.75.5`，ASAR SHA-256 `12bba50ba6cf12b35132518788610677a3fdc65de4ad849628d757bc7b780e5a`。REA 静态证据 ID：`ev_3245453f7de9bad7fc0a173d481d841091778609be5e6a8fa7b0daeaf95cad49`；选取 renderer 依赖图解析，未运行原版应用代码。完整性差异在 native 文件；本节结论限于所选 renderer JS/CSS，分析图不是完整包语义图。
+- 关键资源及 SHA-256：`chunk-file-stage-mU_GEQrA.js` `aa2bcb1c73b1331bc6560c153a5c6c5c8041896b9cb0a1f8bf1b7b7c56168d3c`；`chunk-fullscreen-file-viewer-body-CBmdYO3G.js` `aa5ee1e5175bd06f652613eec150c1685e184a6dc6f023ebc9f1580ef8d19f21`；`chunk-text-viewer-CSwZgF4y.js` `265e4bb6ad74e9bade9d3e6f16b2be800ba6c19b7b869c6d98551e783781d1ce`；`fullscreen-file-viewer-body-222A7KEi.css` `f191e369c6a4b39cbacb0476c1285d4b3a7d11d5fdbe4a90187275928e770032`。通用主题与原子样式来自 `index.eager-app-uZS5Ltig.js`（`2d39bd8661b7329abb8a470d9e0df12191fe164679c1ee4566324576839bedf3`）和 `index-CFSAhbDS.css`（`f427579fa76c117aaea459e52ef2340b2bb674b8ed3e02d292bad87cdd671a43`）。
+- 聊天附件卡使用带 `data-attachment-card` 的 elevated surface，统一显示图标、标题、补充说明和附加内容。原子样式证据为 22px 圆角、16px 内边距、36px 图标、10px 项目间距与 40px 信息区高度；卡片背景取附件卡主题色，阴影组合为 0.5px 附件边线、1px/4px 次级阴影及 6px/12px 卡片阴影。悬停/键盘聚焦时显示尾部动作。
+- 共享查看器由 `FullscreenFileViewerBody` 和 `sand-file-viewer__stage-chrome` 等组件组成；外壳有文件说明、工具栏/动作槽和内容区。静态分支包括图片/视频、PDF、Markdown/文本、HTML、JSON、DOCX 等。`FileStage` 中 Markdown 和表格走原生 stage，其余多种类型经 viewer seam 渲染。
+- Rambo 按 Q101 复用附件卡片结构与核心尺寸；F05 范围内的图片、PDF、文本/Markdown、CSV 预览使用同一查看器外壳，音视频保留卡片内播放器。Word/Excel/PowerPoint 使用同款卡片，但仍交给本机应用，不引入 Grok 静态代码中的 DOCX 阅读器或其他 Office 内置预览。
+- 以上是静态 JS/CSS 证据；本次没有取得 Grok 0.75.5 同尺寸运行截图。因此 Rambo 的对应 Electron 用例只证明实现可见和关键计算样式，不等于 P02 的逐像素视觉验收。
+
+## 2026-10-24 连接应用市场
+
+- 取证对象仍为上方记录的 Grok Bot 0.75.0 安装包（ASAR SHA-256 `1035db7b1f77974c78e6c18a4426a5fe16c639946335f7d57badfd0761971a5e`）。REA 静态分析证据 **ev_0464ce080dc88d965f5cd351231a746b20747afb79d6f1421ace2805666ffa3f** 覆盖市场页面、浏览模型、条目组件与 CSS 的选定依赖图；包内另有 9 项完整性差异，位于 native 二进制/可执行文件。本节结论只来自选定的 renderer 静态代码，不代表运行时观察。
+- 关键原始文件 SHA-256：`chunk-view-vrpva6BS.js` `deed0dfedc9248384b47004cefa9fb47914a48eb5f93392bd1abef62a7a30e08`；`chunk-marketplace-browse-model-DANn5Th0.js` `7c734fb74b981b072d80c06a700bde8c0d9ee9a076587220988151b6e2308a41`；`chunk-plugins-rows-CWS6HPoT.js` `612910201cebb9d9c2ac8394a74d94bfaefed4c87b009fd44dad7fd2bd004323`；`chunk-connector-card-view-DwL1EWhR.js` `be2a3e79ae05083df766913a5361eadabd08d5bec0c89d6c3c9d4da5b764385e`；`chunk-connector-card-9IEFjdko.js` `1826efdb568ebaf35b1616b92fcb5d04d9bd2e74960a767eac0e515b7fca3f91`；`index-CEV-0tKx.css` `6684c20fc9dd98128c59b8daf69cf5ff8c272da03d77588e21c3b9462a1e8787`。
+- 页面结构：顶部搜索和分类 chips；常用分类直接显示，更多分类收进下拉菜单；首页以分组展示条目，每组预览最多 6 项，超出才显示“查看全部”。条目为自适应双列列表，列间距 8px、行间距 2px；单项使用 40px 图标、名称/说明和尾部操作，12px 内边距、16px 圆角、默认无边框，悬停显示约 5% 主文字色底。Communication 下的 Email 分类优先显示。
+- Rambo 的连接市场按此结构实现：搜索和分类筛选保留，首页把 Gmail 与 QQ 邮箱列在“推荐”，日历和 GitHub 列在“所有应用”并显示“即将推出”；其他 Provider 不进入目录。条目操作负责连接或进入管理，Bot Grant 在管理弹窗里调整。Provider 数量少于 6 的分组不显示空的“查看全部”。
+- 四个保留 Provider 均使用官方图标资源。Gmail 来自 `https://www.gstatic.com/images/branding/product/1x/gmail_48dp.png`（SHA-256 `40694e42ed3dcfe16a0c5e6b6dec25f3446bf6fd7b7e2c60e3795513f33c9d98`）；QQ 邮箱来自 QQ 邮箱官网引用的 `https://res.wx.qq.com/t/webmail/webmail/res/images/qqmail_favicon_96h.8d124a7.png`（SHA-256 `ea5718ce82f326c827ac6de52bc2e759864650956062faa61fcaf61694d0ab6e`）；macOS「日历」图标由 `/System/Applications/Calendar.app/Contents/Resources/AppIcon.icns` 使用 `sips` 导出为 256×256 RGBA PNG（SHA-256 `ae592fb7654c4936a6b87b99a4deae52054e2beb7668df846bc87f18d0ae5565`）；GitHub Invertocat 来自 [GitHub Brand Toolkit](https://brand.github.com/foundations/logo) 的官方 `GitHub_Logos.zip`（SHA-256 `2a2f5cbcc74c7fa83c40127dd8b0e42c23f1157131aebe28492aa1ac27bbdc6d`）。本地副本位于 `assets/connectors/`。
+- 四项图标均直接以固定 40×40 尺寸绘制；图标容器透明，无边框、圆角底框或阴影。
+- 原版依赖图为部分静态视图，其余未选模块与原版运行时界面没有在本次取证中复核。Rambo 当前样式仍需后续通过同尺寸运行截图完成 P02 视觉验收。
+
+## 2026-10-23 输入框、运行头像与发送过渡
+
+- 私聊和群聊输入框移除模型下拉。全局模型与权限在系统设置管理；Bot 设置“会话配置”只管理该 Bot 唯一私聊的覆盖，群聊与 Routine 使用全局值；该入口调整属于 Q81，不改变 Grok 原版输入框的整体胶囊布局。
+- 输入框保持同一聊天容器内的悬浮胶囊结构，补充聚焦层、圆角、内边距、阴影和按钮状态。私聊 Placeholder 为当前 Bot 名称的动态文案，群聊仍使用固定群聊文案。
+- Loading 运行行内部头像自动播放，不跟随鼠标；左侧会话栏头像继续保留悬停跟随。两者是不同展示场景，不能因为“反跟随”而移除侧栏动效。
+- 用户消息提交后、真实 `turn/start` 回包前，同一运行行显示“正在读消息”；收到回包或 `turn/started` 后切换为真实思考/判断/活动。该文案表达 Bot 已经收到消息并准备回应，不使用工程术语“启动本轮”，也不改变发送后立即清空的行为。
+- 发送后输入框立即清空，用户与 Bot 新气泡在私聊、群聊中统一使用约 220ms 的淡入、轻微上浮与缩放恢复入场，不从输入框跨区飞入，也不创建动画克隆。历史加载、重新打开、流式 token 和状态更新不重播；Bot 阶段内容替换仍使用独立约 160ms 过渡。Host 在真实用户消息持久化后解除发送态，不等待模型回复；提交前失败恢复原文，提交后启动失败显示错误。该效果不改变原版消息结构。
+- 以上实现曾通过定向类型、构建、后端和真实 Electron 发送/设置用例的旧基线；Q88 修改后的结果需按本轮检查重新登记。尚未完成逐帧、长文本、语音与停止按钮同场、窄窗口下的完整视觉对照，不能据此声明 P02/B11/S01 验收通过。
+
+## 2026-10-22 菜单栏运行指示与 Dock 气泡移除
+
+- Grok Bot 0.75.0 ASAR 的 `dist/electron-main/menubar-tray/assets/` 含 `brand.png`、`working.png` 及 `bot-<shape>-face.png`。脸图在 1x 下为 `522×18`、2x 下为 `1044×36`，主进程按 `18×18` 切帧；`main-app.cjs` 的 `startMenubarTray` 用 `Tray.setImage` 循环显示这些帧，空闲时随机生成眨眼和向左/右/上瞟视序列，忙碌 Bot 菜单项使用 `working.png`，并为有未读的 Bot 加标题计数。这是原生 macOS 菜单栏状态项，不是 renderer 内的仿菜单。
+- Grok 的 Dock 状态代码可从 `qK`/`dockBadge` 与 `app.setBadgeCount` 确认，用于未读数量；静态包未证明 Dock 图标本身有逐帧脸部动画。Rambo 不伪造 Dock 图标帧动画，也按 Q74 不再显示 Dock 红色运行气泡。
+- Rambo 的菜单栏资源在 `assets/branding/tray-frames/`：采用应用内原本的机器人圆头轮廓，配合用户参考图中的斜眼；源文件为 SVG，输出 18×18 PNG 与 36×36 `@2x` PNG，运行时按 18×18 pt 的 template 图像加载。眼睛必须透明镂空，系统才能按明暗菜单栏统一染色。空闲播放 `rest → 多次眨眼 → 随机左右瞟视 → rest`，运行态播放 `working-0..3` 四帧；菜单项中的运行 Bot 使用 working 图标。该实现参考 Grok 的 `Tray.setImage` 播放机制，按公开静态证据作本地资源等价模拟，不宣称为逐帧复制 Grok 的 Bot 脸。
+- 菜单栏动画需要真实 macOS 运行目测确认；本轮只做了可注入状态机单测和构建检查。菜单栏在深浅色菜单栏下的可读性仍待真机复验；Dock 红色运行气泡已按用户要求移除。
 
 日期：2026-10-20。证据级别：已安装包静态分析；另含主 Agent 通过 CUA 实际观察的运行时记录（1040×760、深色主题）。未将截图或 DOM 文件作为本地证据归档。
 

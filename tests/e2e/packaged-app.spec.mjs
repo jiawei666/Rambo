@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -8,13 +8,42 @@ const candidate = process.env.RAMBO_APP_PATH
   ? resolve(process.env.RAMBO_APP_PATH)
   : join(root, 'dist/mac-arm64/Rambo.app');
 
-test('候选应用从包内启动并运行自己的 Codex App Server', async () => {
+test('候选应用在无本机入口时从缓存启动自己的 Codex App Server', async () => {
   const runs = join(root, 'acceptance-runs');
   mkdirSync(runs, { recursive: true });
   const run = realpathSync(mkdtempSync(join(runs, 'playwright-packaged-')));
   const runId = run.slice(run.lastIndexOf('/') + 1);
   const profile = join(run, 'profile');
   mkdirSync(profile);
+  const nativeHome = join(run, 'native-codex');
+  mkdirSync(nativeHome);
+  const cachedRuntime = join(profile, 'runtime/codex/0.163.0');
+  mkdirSync(join(cachedRuntime, 'bin'), { recursive: true });
+  mkdirSync(join(cachedRuntime, 'codex-path'), { recursive: true });
+  const fixtureServer = join(cachedRuntime, 'bin/codex-app-server');
+  writeFileSync(fixtureServer, `#!/usr/bin/env node
+const readline = require('node:readline');
+const input = readline.createInterface({ input: process.stdin });
+input.on('line', line => {
+  const message = JSON.parse(line);
+  if (message.id === undefined || !message.method) return;
+  process.stdout.write(JSON.stringify({
+    id: message.id,
+    result: { userAgent: 'codex_cli_rs/0.163.0', platformFamily: 'unix', platformOs: 'macos' }
+  }) + '\\n');
+});
+setInterval(() => {}, 1 << 30);
+`, { mode: 0o755 });
+  chmodSync(fixtureServer, 0o755);
+  writeFileSync(join(cachedRuntime, 'codex-package.json'), JSON.stringify({
+    layoutVersion: 1,
+    version: '0.163.0',
+    target: 'aarch64-apple-darwin',
+    variant: 'codex-app-server',
+    entrypoint: 'bin/codex-app-server',
+    resourcesDir: 'codex-resources',
+    pathDir: 'codex-path'
+  }));
   writeFileSync(join(run, 'run.json'), JSON.stringify({
     schema: 'rambo.acceptance.run.v1',
     runId,
@@ -23,7 +52,11 @@ test('候选应用从包内启动并运行自己的 Codex App Server', async () 
 
   let app;
   try {
-    const env = { ...process.env, RAMBO_ACCEPTANCE_RUN: run };
+    const env = {
+      ...process.env,
+      CODEX_HOME: nativeHome,
+      RAMBO_ACCEPTANCE_RUN: run
+    };
     delete env.NODE_OPTIONS;
     delete env.ELECTRON_RUN_AS_NODE;
     app = await electron.launch({
@@ -43,23 +76,21 @@ test('候选应用从包内启动并运行自己的 Codex App Server', async () 
     await expect(page.getByLabel('创建 Bot')).toBeVisible();
 
     const appPid = app.process().pid;
-    let runtimeCommand = '';
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      const processes = execFileSync(
-        '/bin/ps',
-        ['-axo', 'ppid=,command='],
-        { encoding: 'utf8' }
-      ).split('\n');
-      runtimeCommand = processes
-        .map(line => line.trim().match(/^(\d+)\s+(.*)$/))
-        .find(match => match?.[1] === String(appPid) &&
-          match[2].includes('/bin/codex-app-server'))?.[2] ?? '';
-      if (runtimeCommand) break;
+    let runtimeSnapshot = null;
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      runtimeSnapshot = await page.evaluate(() => window.rambo.snapshot().then(snapshot => snapshot.runtime));
+      if (runtimeSnapshot.status === 'ready' || runtimeSnapshot.status === 'error') break;
       await page.waitForTimeout(100);
     }
-    expect(runtimeCommand).toContain(
-      join(candidate, 'Contents/Resources/runtime/codex/0.163.0/bin/codex-app-server')
-    );
+    expect(runtimeSnapshot, JSON.stringify(runtimeSnapshot)).not.toBeNull();
+    expect(runtimeSnapshot.status, JSON.stringify(runtimeSnapshot)).toBe('ready');
+    const processes = execFileSync('/bin/ps', ['-axo', 'ppid=,command='], { encoding: 'utf8' }).split('\n');
+    const runtimeCommand = processes
+      .map(line => line.trim().match(/^(\d+)\s+(.*)$/))
+      .find(match => match?.[1] === String(appPid) &&
+        match[2].includes('/bin/codex-app-server'))?.[2] ?? '';
+    expect(runtimeCommand).toContain(join(cachedRuntime, 'bin/codex-app-server'));
+    expect(runtimeCommand).not.toContain(join(candidate, 'Contents/Resources/runtime/codex'));
     expect(runtimeCommand).toContain('--session-source app-server');
   } finally {
     await app?.close();

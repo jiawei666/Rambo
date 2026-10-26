@@ -3,8 +3,15 @@ import type { Host } from './host';
 import type { Store } from './store';
 
 const CATCH_UP_WINDOW_MS = 12 * 60 * 60 * 1000;
-const ACTIVE_RUN_STATUSES = new Set<string>(['pending', 'running']);
+const EXECUTING_RUN_STATUSES = new Set<string>(['pending', 'running']);
+const BLOCKING_RUN_STATUSES = new Set<string>(['pending', 'running', 'needs_user']);
 const LAST_RESULT_LIMIT = 2_000;
+
+export type RoutineRecoveryResolution =
+  | { state: 'retry' }
+  | { state: 'running' }
+  | { state: 'completed'; text: string }
+  | { state: 'needs_user'; reason: string };
 
 export interface RoutineSchedulerOptions {
   now?: () => Date;
@@ -14,6 +21,9 @@ export interface RoutineSchedulerOptions {
 
 export interface RoutineDispatcher {
   run(runId: string, routine: RoutineListItem, prompt: string): Promise<void>;
+  recover?(run: RoutineRun): Promise<RoutineRecoveryResolution>;
+  /** Resolve only after the source chat has completed its result handoff. */
+  deliverResult?(runId: string): Promise<void> | void;
 }
 
 export class RoutineScheduler {
@@ -24,6 +34,7 @@ export class RoutineScheduler {
   private readonly now: () => Date;
   private readonly intervalMs: number;
   private readonly publish: (event: AppEvent) => void;
+  private readonly deliveryTasks = new Set<Promise<void>>();
 
   constructor(
     private readonly store: Store,
@@ -34,7 +45,7 @@ export class RoutineScheduler {
     this.intervalMs = options.intervalMs ?? 15_000;
     this.publish = publish;
     for (const run of store.routineRuns()) {
-      if (run.turnId && run.chatId && ACTIVE_RUN_STATUSES.has(run.status)) {
+      if (run.turnId && run.chatId && EXECUTING_RUN_STATUSES.has(run.status)) {
         this.runsByTurn.set(`${run.chatId}:${run.turnId}`, run.id);
       }
     }
@@ -68,7 +79,59 @@ export class RoutineScheduler {
 
   private activeRunFor(routineId: string): RoutineRun | null {
     return this.store.routineRuns(routineId)
-      .find(run => ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
+      .find(run => BLOCKING_RUN_STATUSES.has(run.status)) ?? null;
+  }
+
+  async recoverAfterRestart(): Promise<void> {
+    if (!this.dispatcher) return;
+    let changed = false;
+    for (const run of this.store.routineRuns()) {
+      if (!EXECUTING_RUN_STATUSES.has(run.status)) continue;
+      let resolution: RoutineRecoveryResolution = run.status === 'pending'
+        ? { state: 'retry' }
+        : { state: 'needs_user', reason: '上次运行已经开始，但无法确认外部操作是否完成；请检查执行记录后再决定是否重新运行。' };
+      if (run.status === 'running' && this.dispatcher.recover) {
+        try {
+          resolution = await this.dispatcher.recover(run);
+        } catch (error) {
+          resolution = {
+            state: 'needs_user',
+            reason: `无法核对上次运行状态：${error instanceof Error ? error.message : String(error)}`
+          };
+        }
+      }
+      if (resolution.state === 'running') continue;
+      if (resolution.state === 'completed') {
+        this.completeRun(run.id, 'completed', resolution.text);
+        changed = true;
+        continue;
+      }
+      if (resolution.state === 'needs_user') {
+        this.markNeedsUser(run.id, resolution.reason);
+        changed = true;
+        continue;
+      }
+      const recovered = this.store.claimRoutineRunRecovery(run.id);
+      if (!recovered) {
+        this.markNeedsUser(
+          run.id,
+          '本次运行已达到一次自动恢复上限；请检查执行记录后再决定是否重新运行。'
+        );
+        changed = true;
+        continue;
+      }
+      try {
+        await this.execute(recovered, this.store.routine(recovered.routineId));
+      } catch (error) {
+        this.markNeedsUser(
+          recovered.id,
+          `自动恢复未能确认结果：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      changed = true;
+    }
+    const disabledLegacyIds = this.store.disableUnsupportedLegacyRoutines();
+    if (changed || disabledLegacyIds.length) this.publish({ type: 'changed' });
   }
 
   private advancePastDue(routine: RoutineListItem, at: Date): RoutineListItem {
@@ -123,12 +186,22 @@ export class RoutineScheduler {
         continue;
       }
 
+      const trigger = age > 60_000 ? 'catchUp' : 'schedule';
+      const dedupeKey = `routine:${routine.id}:scheduled:${scheduledFor}`;
+      let run: RoutineRun;
+      try {
+        run = this.store.createRoutineRun({
+          routineId: routine.id, scheduledFor, trigger,
+          status: 'running', process: '本机后台调度已开始', dedupeKey
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !/UNIQUE|constraint/i.test(error.message)) throw error;
+        // Another scheduler instance already claimed this occurrence. Never
+        // convert a stored run into success just because its insert collided.
+        this.store.markRoutineScheduled(routine.id, scheduledFor, at);
+        continue;
+      }
       this.store.markRoutineScheduled(routine.id, scheduledFor, at);
-      const run = this.store.createRoutineRun({
-        routineId: routine.id, scheduledFor,
-        trigger: age > 60_000 ? 'catchUp' : 'schedule',
-        status: 'running', process: '本机后台调度已开始'
-      });
       this.store.updateRoutineRun(run.id, { startedAt: at.toISOString() });
       this.publish({ type: 'changed' });
       await this.execute(run, routine);
@@ -143,6 +216,9 @@ export class RoutineScheduler {
       routineId, scheduledFor: this.now().toISOString(), trigger: 'manual',
       status: 'running', process: '用户手动立即运行'
     });
+    if (routine.definition.kind === 'once' && routine.nextRunAt) {
+      this.store.clearRoutineNextRun(routine.id);
+    }
     const started = this.store.updateRoutineRun(run.id, { startedAt: this.now().toISOString() });
     this.publish({ type: 'changed' });
     await this.execute(started, routine);
@@ -159,8 +235,14 @@ export class RoutineScheduler {
     } catch (error) {
       const current = this.store.routineRun(run.id);
       if (current.status === 'running') {
-        this.completeRun(run.id, 'failed', undefined,
-          error instanceof Error ? error.message : String(error));
+        const detail = error instanceof Error ? error.message : String(error);
+        if (error && typeof error === 'object' && 'outcomeUnknown' in error &&
+            (error as { outcomeUnknown?: unknown }).outcomeUnknown === true) {
+          this.markNeedsUser(run.id, `执行结果尚未确认：${detail}`);
+          this.publish({ type: 'changed' });
+        } else {
+          this.completeRun(run.id, 'failed', undefined, detail);
+        }
       }
       this.publish({ type: 'changed' });
     }
@@ -181,26 +263,38 @@ export class RoutineScheduler {
 
   completeRun(runId: string, status: TurnStatus, text?: string, error?: string): void {
     const run = this.store.routineRun(runId);
-    if (!ACTIVE_RUN_STATUSES.has(run.status)) return;
-    const summary = status === 'completed'
-      ? (text ?? run.summary ?? run.routineTitle).trim().slice(0, 500)
-      : null;
+    if (!EXECUTING_RUN_STATUSES.has(run.status)) return;
+    const summary = (text ?? run.summary ?? (status === 'completed' ? run.routineTitle : '')).trim() || null;
     this.store.updateRoutineRun(runId, {
       status: status === 'completed' ? 'succeeded' : status === 'interrupted' ? 'interrupted' : 'failed',
       summary,
       error: status === 'completed' ? null : error ?? '任务执行未完成',
       completedAt: this.now().toISOString()
     });
-    if (run.sourceChatId) {
-      const label = status === 'completed' ? '已完成' : status === 'interrupted' ? '已中断' : '失败';
-      try {
-        this.store.addMessage(
-          run.sourceChatId, 'system',
-          `定时任务「${run.routineTitle}」${label}。${summary ? `结果：${summary.slice(0, 240)}` : ''}`,
-          status === 'completed' ? 'complete' : status === 'interrupted' ? 'interrupted' : 'failed'
-        );
-      } catch { /* the source chat may have been permanently removed */ }
+    this.publish({ type: 'changed' });
+    this.publish({ type: 'routineRunFinished', runId });
+    if (run.sourceChatId && this.dispatcher?.deliverResult) {
+      const delivery = Promise.resolve()
+        .then(() => this.dispatcher?.deliverResult?.(runId))
+        .then(() => {})
+        .catch(() => {
+          // The terminal run remains persisted; delivery failure must not rewrite its result.
+        })
+        .finally(() => { this.deliveryTasks.delete(delivery); });
+      this.deliveryTasks.add(delivery);
     }
+  }
+
+  async waitForDeliveries(): Promise<void> {
+    while (this.deliveryTasks.size) await Promise.all([...this.deliveryTasks]);
+  }
+
+  consumeOneTimeDefinition(runId: string): void {
+    const run = this.store.routineRun(runId);
+    if (run.status !== 'succeeded' && run.status !== 'failed' && run.status !== 'interrupted') return;
+    const routine = this.store.routines().find(item => item.id === run.routineId);
+    if (routine?.definition.kind !== 'once') return;
+    this.store.deleteRoutine(routine.id);
     this.publish({ type: 'changed' });
   }
 
@@ -218,10 +312,21 @@ export class RoutineScheduler {
     if (chatId) this.store.updateRoutineRun(runId, { chatId });
     this.completeRun(runId, 'failed', undefined, reason);
   }
+
+  private markNeedsUser(runId: string, reason: string): void {
+    const before = this.store.routineRun(runId).status;
+    const run = this.store.markRoutineRunNeedsUser(runId, reason);
+    if (before !== 'needs_user' && run.status === 'needs_user') {
+      this.publish({ type: 'routineRunFinished', runId });
+    }
+  }
 }
 
 export function createRoutineDispatcher(host: Host, scheduler: RoutineScheduler): RoutineDispatcher {
   return {
+    recover(run) {
+      return host.recoverRoutineRun(run);
+    },
     async run(runId, routine, prompt) {
       const chat = host.store.createRoutineExecutionChat(
         runId,
@@ -235,6 +340,23 @@ export function createRoutineDispatcher(host: Host, scheduler: RoutineScheduler)
       const routineContext = [
         `这是 Routine「${routine.title}」的独立后台运行。`,
         '使用当前 Bot 的长期职责、长期指令、配置和已保存记忆；不要把本次完整内部过程写回来源私聊。',
+        routine.definition.execution.mode === 'script'
+          ? [
+              '本次要求以脚本方式执行。先根据任务内容和执行模板编写可在当前工作区运行的脚本，再运行并核验结果。',
+              '不得绕过当前 Codex 权限、审批或系统限制；需要审批时按正常工具流程处理。',
+              routine.definition.execution.template
+                ? `脚本执行模板：\n${routine.definition.execution.template}`
+                : ''
+            ].filter(Boolean).join('\n')
+          : routine.definition.execution.mode === 'hybrid'
+            ? [
+                '本次要求结合对话判断与脚本执行：先完成需要模型判断或上下文处理的部分，再把适合确定执行的部分落实为脚本并运行。',
+                '不得绕过当前 Codex 权限、审批或系统限制。',
+                routine.definition.execution.template
+                  ? `脚本执行模板：\n${routine.definition.execution.template}`
+                  : ''
+              ].filter(Boolean).join('\n')
+            : '',
         prefix ? prefix.trim() : ''
       ].filter(Boolean).join('\n\n');
       await host.runRoutineConversation(
@@ -249,6 +371,12 @@ export function createRoutineDispatcher(host: Host, scheduler: RoutineScheduler)
         return;
       }
       scheduler.attachTurn(runId, chatId, activeTurnId);
+    },
+    async deliverResult(runId) {
+      await host.deliverRoutineResult(runId);
+      // Consume a one-time definition only after its result handoff succeeds.
+      // Run history, source-chat messages and generated artifacts remain.
+      scheduler.consumeOneTimeDefinition(runId);
     }
   };
 }

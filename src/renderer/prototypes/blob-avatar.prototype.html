@@ -1,0 +1,1202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rambo · 手绘泡泡头像方向稿</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f2efe7;
+      --paper-deep: #e6e1d6;
+      --ink: #191713;
+      --muted: #746f65;
+      --line: #1a1815;
+      --yellow: #f4c61b;
+      --cyan: #10b9e4;
+      --coral: #f46961;
+      --orange: #e78a3d;
+      --green: #a6c86f;
+      --mint: #c7e7d8;
+      --white: #fffdf8;
+      font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-synthesis: none;
+      text-rendering: geometricPrecision;
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-width: 320px; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at 11% 4%, #f8d98c6e, transparent 25%),
+        radial-gradient(circle at 91% 9%, #b8dfdc4d, transparent 26%),
+        linear-gradient(135deg, #f6f3eb 0%, var(--paper) 42%, #ece8dd 100%);
+    }
+
+    body::before {
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      background-image: radial-gradient(#514a3b 0.55px, transparent 0.55px);
+      background-size: 8px 8px;
+      content: "";
+      opacity: .08;
+      pointer-events: none;
+    }
+
+    button {
+      color: inherit;
+      font: inherit;
+    }
+
+    button:focus-visible {
+      outline: 3px solid var(--cyan);
+      outline-offset: 3px;
+    }
+
+    .page {
+      width: min(1380px, 100%);
+      margin: 0 auto;
+      padding: 26px clamp(20px, 4vw, 58px) 56px;
+    }
+
+    .topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding-bottom: 22px;
+      border-bottom: 1.5px solid #1a181522;
+    }
+
+    .wordmark {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+
+    .wordmark-mark {
+      display: grid;
+      width: 31px;
+      height: 31px;
+      place-items: center;
+      border: 1.5px solid var(--line);
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 2px 2px 0 var(--ink);
+      font-family: "Songti SC", "STSong", serif;
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .draft-meta {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--coral);
+      box-shadow: 0 0 0 4px #f4696122;
+      animation: live-pulse 2.2s ease-in-out infinite;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 390px);
+      gap: clamp(30px, 7vw, 100px);
+      align-items: end;
+      padding: clamp(42px, 7vw, 88px) 0 clamp(30px, 5vw, 58px);
+    }
+
+    .kicker {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    .kicker::before {
+      width: 34px;
+      height: 2px;
+      background: var(--ink);
+      content: "";
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-family: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+      font-size: clamp(46px, 7.1vw, 94px);
+      font-weight: 750;
+      letter-spacing: -.072em;
+      line-height: .98;
+    }
+
+    h1 em {
+      position: relative;
+      color: var(--coral);
+      font-style: normal;
+      white-space: nowrap;
+    }
+
+    h1 em::after {
+      position: absolute;
+      right: 0;
+      bottom: -.06em;
+      left: .06em;
+      height: .07em;
+      border-radius: 50%;
+      background: currentColor;
+      content: "";
+      transform: rotate(-1.2deg);
+    }
+
+    .intro-copy {
+      padding-bottom: 9px;
+    }
+
+    .intro-copy p {
+      margin: 0 0 24px;
+      color: #48443c;
+      font-size: clamp(14px, 1.25vw, 17px);
+      line-height: 1.75;
+    }
+
+    .intro-copy strong {
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .motion-note {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+    }
+
+    .motion-note svg {
+      flex: 0 0 auto;
+    }
+
+    .stage-shell {
+      position: relative;
+      overflow: hidden;
+      border: 2px solid var(--line);
+      border-radius: 30px;
+      background:
+        linear-gradient(180deg, #fffdf9 0%, #fbf7ed 100%);
+      box-shadow: 0 18px 0 #1a18150a, 0 38px 80px #5b4b3420;
+      isolation: isolate;
+      cursor: crosshair;
+    }
+
+    .stage-shell::before {
+      position: absolute;
+      z-index: 0;
+      inset: 0;
+      background:
+        radial-gradient(ellipse at 18% 80%, #f3cd2820, transparent 24%),
+        radial-gradient(ellipse at 78% 4%, #0cb9e42b, transparent 28%),
+        linear-gradient(90deg, #1a18150a 1px, transparent 1px),
+        linear-gradient(#1a18150a 1px, transparent 1px);
+      background-size: auto, auto, 32px 32px, 32px 32px;
+      content: "";
+      opacity: .8;
+      pointer-events: none;
+    }
+
+    .stage-bar {
+      position: absolute;
+      z-index: 6;
+      top: 18px;
+      right: 20px;
+      left: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      pointer-events: none;
+    }
+
+    .stage-label,
+    .gaze-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+      padding: 0 11px;
+      border: 1px solid #1a18151a;
+      border-radius: 999px;
+      background: #fffdf9c7;
+      backdrop-filter: blur(8px);
+      color: #4a463e;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    .gaze-label {
+      letter-spacing: .05em;
+      text-transform: none;
+    }
+
+    .gaze-label i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #10b9e4;
+      box-shadow: 0 0 0 3px #10b9e41c;
+    }
+
+    .stage {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: clamp(410px, 45vw, 620px);
+      overflow: hidden;
+    }
+
+    #crowd {
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      touch-action: none;
+    }
+
+    .crowd-face {
+      cursor: pointer;
+      transform-box: fill-box;
+      transform-origin: 50% 50%;
+      filter: drop-shadow(0 12px 0 #1a181509);
+      transition: filter .18s ease;
+    }
+
+    .crowd-face:hover {
+      filter: drop-shadow(0 18px 0 #1a18150d);
+    }
+
+    .face-shape {
+      stroke: var(--ink);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 4.4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .face-feature {
+      fill: var(--ink);
+      stroke: var(--ink);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 4.2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .face-feature.open {
+      fill: none;
+    }
+
+    .face-feature.mouth-fill {
+      fill: var(--ink);
+      stroke-width: 0;
+    }
+
+    .face-feature.blush {
+      fill: #f28b8a4d;
+      stroke: none;
+      opacity: .9;
+    }
+
+    .stage-caption {
+      position: absolute;
+      z-index: 7;
+      right: 27px;
+      bottom: 22px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 7px 8px 7px 14px;
+      border: 1.5px solid var(--ink);
+      border-radius: 999px;
+      background: var(--white);
+      box-shadow: 3px 3px 0 var(--ink);
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 650;
+      pointer-events: none;
+      transform: rotate(-1deg);
+    }
+
+    .stage-caption b {
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--yellow);
+      font-size: 14px;
+    }
+
+    .details {
+      display: grid;
+      grid-template-columns: 1.03fr .97fr;
+      gap: 22px;
+      margin-top: 24px;
+    }
+
+    .detail-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 320px;
+      padding: 24px;
+      border: 1.5px solid #1a181529;
+      border-radius: 22px;
+      background: #fffdf8b8;
+    }
+
+    .card-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    .card-heading h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 750;
+      letter-spacing: -.015em;
+    }
+
+    .card-heading span {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .size-row {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 176px;
+      padding: 8px 8px 4px;
+    }
+
+    .size-sample {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .size-sample svg {
+      display: block;
+      filter: drop-shadow(0 3px 0 #1a18150b);
+    }
+
+    .size-sample span {
+      color: var(--muted);
+      font-family: "SFMono-Regular", "Menlo", monospace;
+      font-size: 9px;
+    }
+
+    .mini-note {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .app-mock {
+      display: grid;
+      min-height: 237px;
+      overflow: hidden;
+      grid-template-columns: 178px minmax(0, 1fr);
+      border: 1.5px solid var(--ink);
+      border-radius: 15px;
+      background: var(--white);
+      box-shadow: 4px 4px 0 #1a18150f;
+    }
+
+    .mock-sidebar {
+      padding: 12px 9px;
+      border-right: 1px solid #1a18151a;
+      background: #f0ece3;
+    }
+
+    .mock-brand {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 2px 5px 11px;
+      font-size: 10px;
+      font-weight: 750;
+    }
+
+    .mock-brand span {
+      display: grid;
+      width: 20px;
+      height: 20px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--ink);
+      color: var(--white);
+      font-family: "Songti SC", serif;
+      font-size: 11px;
+    }
+
+    .mock-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 3px 6px;
+      border-radius: 9px;
+      color: #3e3a32;
+      font-size: 9px;
+    }
+
+    .mock-row.active {
+      background: #fffdf8;
+      box-shadow: 0 1px 4px #1a18150d;
+    }
+
+    .mock-row svg {
+      flex: 0 0 auto;
+    }
+
+    .mock-copy {
+      min-width: 0;
+    }
+
+    .mock-copy strong {
+      display: block;
+      overflow: hidden;
+      font-size: 9px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mock-copy small {
+      display: block;
+      overflow: hidden;
+      margin-top: 2px;
+      color: #777168;
+      font-size: 7px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mock-chat {
+      position: relative;
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      padding: 12px 15px 13px;
+      background:
+        radial-gradient(circle at 82% 17%, #f4c61b16, transparent 32%),
+        #fffdf8;
+    }
+
+    .mock-chat-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #1a181510;
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .mock-messages {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 7px;
+      padding: 11px 0 12px;
+    }
+
+    .mock-bubble {
+      width: fit-content;
+      max-width: 88%;
+      padding: 7px 9px;
+      border-radius: 10px 10px 10px 3px;
+      background: #f1ede4;
+      color: #413d35;
+      font-size: 8px;
+      line-height: 1.45;
+    }
+
+    .mock-bubble.user {
+      align-self: flex-end;
+      border-radius: 10px 10px 3px;
+      background: var(--ink);
+      color: var(--white);
+    }
+
+    .mock-composer {
+      height: 29px;
+      border: 1px solid #1a181522;
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .palette {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-top: 23px;
+      padding: 19px 24px;
+      border: 1.5px solid #1a181522;
+      border-radius: 18px;
+      background: #f9f6ef9e;
+    }
+
+    .palette-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .palette-title small {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .swatches {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .swatch {
+      width: 20px;
+      height: 20px;
+      border: 1.5px solid var(--ink);
+      border-radius: 50%;
+    }
+
+    .closing {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-top: 36px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .closing p { margin: 0; }
+
+    .closing strong { color: var(--ink); }
+
+    .controls {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 8px;
+    }
+
+    .control {
+      min-height: 34px;
+      padding: 0 13px;
+      border: 1.5px solid var(--ink);
+      border-radius: 999px;
+      background: var(--white);
+      box-shadow: 2px 2px 0 var(--ink);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 650;
+      transition: transform .16s ease, box-shadow .16s ease;
+    }
+
+    .control:hover {
+      box-shadow: 1px 1px 0 var(--ink);
+      transform: translate(1px, 1px);
+    }
+
+    .control:active {
+      box-shadow: 0 0 0 var(--ink);
+      transform: translate(2px, 2px);
+    }
+
+    .control.primary {
+      background: var(--yellow);
+    }
+
+    @keyframes live-pulse {
+      0%, 100% { transform: scale(1); opacity: .8; }
+      50% { transform: scale(1.3); opacity: 1; }
+    }
+
+    @media (max-width: 900px) {
+      .intro {
+        grid-template-columns: 1fr;
+        gap: 26px;
+      }
+
+      .intro-copy {
+        max-width: 600px;
+      }
+
+      .details {
+        grid-template-columns: 1fr;
+      }
+
+      .stage {
+        height: clamp(390px, 66vw, 580px);
+      }
+    }
+
+    @media (max-width: 620px) {
+      .page {
+        padding: 17px 12px 36px;
+      }
+
+      .topline {
+        padding: 0 3px 16px;
+      }
+
+      .draft-meta span:last-child {
+        display: none;
+      }
+
+      .intro {
+        padding: 34px 5px 28px;
+      }
+
+      h1 {
+        font-size: clamp(43px, 14vw, 66px);
+      }
+
+      .stage-shell {
+        border-radius: 22px;
+      }
+
+      .stage {
+        height: 470px;
+      }
+
+      .stage-bar {
+        top: 14px;
+        right: 14px;
+        left: 14px;
+      }
+
+      .stage-label {
+        display: none;
+      }
+
+      .stage-caption {
+        right: 15px;
+        bottom: 15px;
+      }
+
+      .details {
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .detail-card {
+        min-height: 0;
+        padding: 19px 16px;
+        border-radius: 18px;
+      }
+
+      .size-row {
+        gap: 8px;
+        min-height: 132px;
+        padding-right: 0;
+        padding-left: 0;
+      }
+
+      .size-sample {
+        gap: 8px;
+      }
+
+      .size-sample svg {
+        max-width: 100%;
+      }
+
+      .app-mock {
+        grid-template-columns: 126px minmax(0, 1fr);
+      }
+
+      .palette {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 16px 17px;
+      }
+
+      .closing {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .controls {
+        width: 100%;
+      }
+
+      .control {
+        flex: 1;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topline">
+      <div class="wordmark">
+        <span class="wordmark-mark">R</span>
+        <span>Rambo / Bot identities</span>
+      </div>
+      <div class="draft-meta">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span>Direction study 01</span>
+        <span>·</span>
+        <span>不写入 Bot 配置</span>
+      </div>
+    </header>
+
+    <section class="intro">
+      <div>
+        <div class="kicker">A little crowd of helpers</div>
+        <h1>让每个 Bot<br>都有自己的<em>小脾气</em>。</h1>
+      </div>
+      <div class="intro-copy">
+        <p>保留黑色手绘边线、纯色身体和有点笨拙的表情。轮廓不再只有圆脸，每只 Bot 可以有自己的形状、颜色和一张会看人的脸。</p>
+        <p><strong>移动鼠标试试。</strong>他们会一起偏头、转动眼睛；悬停某一位，他会先看你一下。</p>
+        <div class="motion-note">
+          <svg width="27" height="27" viewBox="0 0 27 27" fill="none" aria-hidden="true">
+            <path d="M9 4.5v9l-2.1-2.2a2 2 0 0 0-2.9 2.8l5.6 6.4c1 1.1 2.4 1.8 3.9 1.8h2.8A6.7 6.7 0 0 0 23 15.6v-3.2a2 2 0 0 0-3.6-1.2V6.5a2 2 0 0 0-4 0v3.4-4a2 2 0 0 0-4 0v3.6-5a2 2 0 0 0-4 0Z" stroke="#191713" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>眼睛与头部共享同一套跟随，不一快一慢。</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="stage-shell" aria-label="可跟随鼠标移动的 Bot 头像群">
+      <div class="stage-bar">
+        <span class="stage-label">The whole crew · 15 moods</span>
+        <span class="gaze-label"><i></i>跟随中</span>
+      </div>
+      <div class="stage" id="stage">
+        <svg id="crowd" viewBox="0 0 1120 538" preserveAspectRatio="xMidYMid slice" role="img" aria-label="十五个不同形状、颜色和表情的手绘风格 Bot 头像">
+          <g id="crowd-faces"></g>
+        </svg>
+      </div>
+      <div class="stage-caption"><b>↗</b>把指针放到他们中间</div>
+    </section>
+
+    <section class="details">
+      <article class="detail-card">
+        <div class="card-heading">
+          <h2>缩到真实尺寸，还认得出谁是谁</h2>
+          <span>At actual size</span>
+        </div>
+        <div class="size-row" id="size-row"></div>
+        <p class="mini-note">形状负责第一眼识别，表情负责性格。列表里不依赖头发或小配件，所以 22px 也不会变成一坨颜色。</p>
+      </article>
+
+      <article class="detail-card">
+        <div class="card-heading">
+          <h2>放进现在的 Rambo 界面</h2>
+          <span>In context</span>
+        </div>
+        <div class="app-mock" aria-label="Rambo 应用内头像效果预览">
+          <aside class="mock-sidebar">
+            <div class="mock-brand"><span>R</span>Rambo</div>
+            <div id="mock-bots"></div>
+          </aside>
+          <section class="mock-chat">
+            <div class="mock-chat-head" id="mock-chat-head"></div>
+            <div class="mock-messages">
+              <div class="mock-bubble">早，今天先盯一下发布，再帮你收邮件。</div>
+              <div class="mock-bubble user">好，先把发布清单过一遍。</div>
+            </div>
+            <div class="mock-composer"></div>
+          </section>
+        </div>
+        <p class="mini-note">同一个图形源头缩放使用；不是给小头像另画一套简化图标。</p>
+      </article>
+    </section>
+
+    <footer class="palette">
+      <div class="palette-title">
+        方向色板
+        <small>暖纸底 + 六种高饱和实色，不铺渐变</small>
+      </div>
+      <div class="swatches" aria-label="头像色板">
+        <span class="swatch" style="background:var(--yellow)"></span>
+        <span class="swatch" style="background:var(--cyan)"></span>
+        <span class="swatch" style="background:var(--coral)"></span>
+        <span class="swatch" style="background:var(--orange)"></span>
+        <span class="swatch" style="background:var(--green)"></span>
+        <span class="swatch" style="background:var(--mint)"></span>
+      </div>
+    </footer>
+
+    <footer class="closing">
+      <p><strong>这是独立方向稿。</strong> 当前交互只演示头像语言和新跟随效果，没有创建、修改或持久化任何 Bot。</p>
+      <div class="controls">
+        <button class="control" type="button" id="blink">让所有人眨眼</button>
+        <button class="control primary" type="button" id="wander">重新看一圈</button>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    const SHAPES = {
+      dome: "M4 102C4 42 20 4 50 4s46 38 46 98Z",
+      egg: "M50 3c23 0 40 23 40 51 0 27-17 43-40 43S10 81 10 54C10 26 27 3 50 3Z",
+      blob: "M53 4c25 2 41 20 39 46-2 28-16 46-43 46-25 0-41-15-41-39 0-27 18-51 45-53Z",
+      wide: "M12 82C2 69-1 48 7 32 15 15 33 6 54 6c24 0 42 9 48 26 8 21-1 45-22 57-20 11-52 10-68-7Z",
+      arch: "M7 102V47C7 20 25 4 50 4s43 16 43 43v55Z",
+      bean: "M18 93C3 81-2 59 7 38 16 18 36 5 58 6c22 1 36 15 36 34 0 16-10 27-22 35-15 9-38 21-54 18Z",
+      pebble: "M22 93C7 86-1 70 2 51 5 29 21 8 43 4c22-4 43 7 51 25 9 21 1 48-18 61-16 11-38 12-54 3Z"
+    };
+
+    const COLORS = {
+      yellow: "#f4c61b",
+      cyan: "#10b9e4",
+      coral: "#f46961",
+      orange: "#e78a3d",
+      green: "#a6c86f",
+      mint: "#c7e7d8"
+    };
+
+    const FACES = [
+      { id: "mochi", name: "麻薯", shape: "dome", color: "yellow", mood: "happy", x: 66, y: 168, size: 232, tilt: -8, depth: 1.08 },
+      { id: "mint", name: "薄荷", shape: "egg", color: "mint", mood: "content", x: 182, y: 246, size: 300, tilt: 5, depth: .76, nose: true },
+      { id: "coral", name: "珊瑚", shape: "blob", color: "coral", mood: "deadpan", x: 342, y: 188, size: 208, tilt: -4, depth: .9 },
+      { id: "mango", name: "芒果", shape: "wide", color: "orange", mood: "curious", x: 460, y: 256, size: 270, tilt: 3, depth: 1.0, nose: true },
+      { id: "sky", name: "汽水", shape: "wide", color: "cyan", mood: "deadpan", x: 562, y: 160, size: 315, tilt: -5, depth: .7 },
+      { id: "nori", name: "海苔", shape: "bean", color: "orange", mood: "wink", x: 755, y: 181, size: 217, tilt: 4, depth: .78 },
+      { id: "pea", name: "青豆", shape: "dome", color: "green", mood: "happy", x: 874, y: 156, size: 298, tilt: 7, depth: 1.08, nose: true },
+      { id: "cloud", name: "云朵", shape: "pebble", color: "mint", mood: "curious", x: 1052, y: 202, size: 256, tilt: 5, depth: .82 },
+      { id: "peach", name: "桃子", shape: "blob", color: "coral", mood: "ooh", x: 809, y: 267, size: 238, tilt: -7, depth: .9 },
+      { id: "soda", name: "小苏打", shape: "egg", color: "cyan", mood: "happy", x: 1076, y: 292, size: 228, tilt: 6, depth: 1.1 },
+      { id: "bean", name: "豆包", shape: "blob", color: "green", mood: "content", x: 382, y: 344, size: 230, tilt: -7, depth: 1.12, nose: true },
+      { id: "sunny", name: "太阳饼", shape: "dome", color: "yellow", mood: "grin", x: 220, y: 362, size: 266, tilt: 4, depth: 1.0 },
+      { id: "berry", name: "莓果", shape: "egg", color: "coral", mood: "happy", x: 559, y: 355, size: 286, tilt: -3, depth: 1.13 },
+      { id: "oat", name: "麦芽", shape: "wide", color: "mint", mood: "content", x: 805, y: 385, size: 272, tilt: 5, depth: .95 },
+      { id: "apricot", name: "杏子", shape: "bean", color: "orange", mood: "wink", x: 1005, y: 374, size: 254, tilt: -8, depth: 1.12, nose: true }
+    ];
+
+    const SVG_NS = "http://www.w3.org/2000/svg";
+
+    function makeSvgElement(tag, attrs = {}) {
+      const element = document.createElementNS(SVG_NS, tag);
+      for (const [name, value] of Object.entries(attrs)) element.setAttribute(name, String(value));
+      return element;
+    }
+
+    function featureMarkup(mood) {
+      const eyeLeftX = 35;
+      const eyeRightX = 65;
+      const eyeY = 38;
+      const dots = `
+        <circle class="face-feature eye-dot" cx="${eyeLeftX}" cy="${eyeY}" r="3.2"/>
+        <circle class="face-feature eye-dot" cx="${eyeRightX}" cy="${eyeY}" r="3.2"/>`;
+      const closed = `
+        <path class="face-feature open eye-line" d="M29 40q6-6 12 0"/>
+        <path class="face-feature open eye-line" d="M59 40q6-6 12 0"/>`;
+      const wink = `
+        <circle class="face-feature eye-dot" cx="${eyeLeftX}" cy="${eyeY}" r="3.2"/>
+        <path class="face-feature open eye-line" d="M59 40q6-6 12 0"/>`;
+      const mouths = {
+        happy: `<path class="face-feature open mouth" d="M29 56c8 10 34 10 42 0"/>`,
+        content: `<path class="face-feature open mouth" d="M37 57c6 10 20 10 26 0"/>`,
+        deadpan: `<path class="face-feature open mouth" d="M31 61h38"/>`,
+        curious: `<path class="face-feature open mouth" d="M40 55c0 12 20 12 20 0"/>`,
+        ooh: `<ellipse class="face-feature open mouth" cx="50" cy="62" rx="7" ry="10"/>`,
+        wink: `<path class="face-feature open mouth" d="M34 57c7 12 25 12 32 0"/>`,
+        grin: `<path class="face-feature mouth-fill" d="M31 53c10-7 28-7 38 0-2 19-11 27-19 27s-17-8-19-27Z"/>`
+      };
+      const eyes = mood === "ooh" ? closed : mood === "wink" ? wink : (mood === "content" || mood === "grin") ? closed : dots;
+      return `${eyes}${mouths[mood] || mouths.happy}`;
+    }
+
+    function makeFaceSvg(face, size, className = "", withBlush = false) {
+      const svg = makeSvgElement("svg", {
+        viewBox: "0 0 100 100",
+        width: size,
+        height: size,
+        class: className,
+        "aria-hidden": "true"
+      });
+      const head = makeSvgElement("g", {
+        class: "mini-head",
+        "data-shape": face.shape,
+        "data-color": face.color
+      });
+      head.append(makeSvgElement("path", {
+        d: SHAPES[face.shape],
+        fill: COLORS[face.color],
+        stroke: "#191713",
+        "stroke-width": 4.3,
+        "stroke-linejoin": "round",
+        "vector-effect": "non-scaling-stroke"
+      }));
+      if (withBlush) {
+        head.append(makeSvgElement("ellipse", {
+          class: "face-feature blush",
+          cx: 22,
+          cy: 54,
+          rx: 9,
+          ry: 3.3
+        }));
+        head.append(makeSvgElement("ellipse", {
+          class: "face-feature blush",
+          cx: 78,
+          cy: 54,
+          rx: 9,
+          ry: 3.3
+        }));
+      }
+      const featureTemplate = document.createElement("template");
+      featureTemplate.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg">${featureMarkup(face.mood)}</svg>`;
+      for (const child of [...featureTemplate.content.firstElementChild.childNodes]) {
+        head.append(child.cloneNode(true));
+      }
+      if (face.nose) {
+        head.append(makeSvgElement("path", {
+          class: "face-feature open",
+          d: "M50 45c-4 5-4 8 1 11",
+          "stroke-width": 3.5
+        }));
+      }
+      svg.append(head);
+      return svg;
+    }
+
+    function faceBaseTransform(face, dx = 0, dy = 0, extraTilt = 0) {
+      return `translate(${face.x + dx} ${face.y + dy}) rotate(${face.tilt + extraTilt} 50 50) scale(${face.size / 100}) translate(-50 -50)`;
+    }
+
+    const crowdFaces = document.querySelector("#crowd-faces");
+    const stage = document.querySelector("#stage");
+    const crowd = document.querySelector("#crowd");
+    const faceNodes = [];
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let pointer = { x: 0.5, y: 0.45, active: false };
+    let target = { x: 0, y: 0 };
+    let current = { x: 0, y: 0 };
+    let hoveredFace = null;
+    let idlePhase = 0;
+    let blinkUntil = 0;
+
+    for (const [index, face] of FACES.entries()) {
+      const group = makeSvgElement("g", {
+        class: "crowd-face",
+        "data-face": face.id,
+        "aria-label": `${face.name}，${face.shape} 外形`,
+        transform: faceBaseTransform(face)
+      });
+      const motion = makeSvgElement("g", { class: "head-motion" });
+      motion.append(makeSvgElement("path", {
+        class: "face-shape",
+        d: SHAPES[face.shape],
+        fill: COLORS[face.color]
+      }));
+      const eyes = makeSvgElement("g", { class: "eye-motion" });
+      const featureTemplate = document.createElement("template");
+      featureTemplate.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg">${featureMarkup(face.mood)}</svg>`;
+      for (const child of [...featureTemplate.content.firstElementChild.childNodes]) eyes.append(child.cloneNode(true));
+      if (face.nose) {
+        eyes.append(makeSvgElement("path", {
+          class: "face-feature open eye-nose",
+          d: "M50 45c-4 5-4 8 1 11",
+          "stroke-width": 3.5
+        }));
+      }
+      motion.append(eyes);
+      group.append(motion);
+      group.addEventListener("pointerenter", event => {
+        hoveredFace = face.id;
+        target.x += face.depth * 5;
+        target.y -= face.depth * 2;
+        event.stopPropagation();
+      });
+      group.addEventListener("pointerleave", () => {
+        if (hoveredFace === face.id) hoveredFace = null;
+      });
+      group.addEventListener("click", () => {
+        group.animate?.([
+          { transform: `${faceBaseTransform(face)} scale(1)` },
+          { transform: `${faceBaseTransform(face, 0, -8, 2)} scale(1.045)` },
+          { transform: `${faceBaseTransform(face, 0, 1, 0)} scale(.985)` },
+          { transform: faceBaseTransform(face) }
+        ], { duration: 460, easing: "cubic-bezier(.2,.85,.25,1)" });
+      });
+      crowdFaces.append(group);
+      faceNodes.push({ face, group, motion, eyes, phase: index * .56, depth: face.depth });
+    }
+
+    function updatePointer(event) {
+      const rect = stage.getBoundingClientRect();
+      pointer.x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      pointer.y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      pointer.active = true;
+      target.x = (pointer.x - .5) * 13;
+      target.y = (pointer.y - .47) * 10;
+    }
+
+    stage.addEventListener("pointermove", updatePointer);
+    stage.addEventListener("pointerenter", updatePointer);
+    stage.addEventListener("pointerleave", () => {
+      pointer.active = false;
+      target.x = 0;
+      target.y = 0;
+      hoveredFace = null;
+    });
+
+    document.querySelector("#blink").addEventListener("click", () => {
+      blinkUntil = performance.now() + 150;
+      for (const node of faceNodes) {
+        node.eyes.style.transform = "scaleY(.12)";
+        node.eyes.style.transformOrigin = "50px 40px";
+      }
+      window.setTimeout(() => {
+        for (const node of faceNodes) node.eyes.style.transform = "";
+      }, 150);
+    });
+
+    document.querySelector("#wander").addEventListener("click", () => {
+      pointer.active = false;
+      const started = performance.now();
+      const loop = now => {
+        const t = (now - started) / 1500;
+        if (t >= 1) {
+          target.x = 0;
+          target.y = 0;
+          return;
+        }
+        target.x = Math.sin(t * Math.PI * 3) * 14;
+        target.y = Math.cos(t * Math.PI * 2) * 6;
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    });
+
+    function animate(now) {
+      const dt = .13;
+      idlePhase += .007;
+      let goalX = target.x;
+      let goalY = target.y;
+      if (!pointer.active) {
+        goalX += Math.sin(idlePhase * 1.4) * .7;
+        goalY += Math.cos(idlePhase) * .45;
+      }
+      current.x += (goalX - current.x) * dt;
+      current.y += (goalY - current.y) * dt;
+      const blinking = now < blinkUntil;
+      for (const node of faceNodes) {
+        const hoverLift = hoveredFace === node.face.id ? -3 : 0;
+        const idleTilt = reduceMotion ? 0 : Math.sin(idlePhase + node.phase) * .28;
+        const dx = current.x * node.depth;
+        const dy = current.y * node.depth + hoverLift;
+        const extraTilt = current.x * .2 + idleTilt;
+        node.group.setAttribute("transform", faceBaseTransform(node.face, dx, dy, extraTilt));
+        const eyeX = current.x * node.depth * 2.3;
+        const eyeY = current.y * node.depth * 1.7;
+        node.eyes.setAttribute("transform", `translate(${eyeX} ${eyeY}) scale(${blinking ? 1 : 1} ${blinking ? .12 : 1})`);
+        node.eyes.style.transformOrigin = "50px 40px";
+      }
+      requestAnimationFrame(animate);
+    }
+
+    const SIZE_SAMPLES = [
+      FACES[1],
+      FACES[7],
+      FACES[11],
+      FACES[12]
+    ];
+    const sizeRow = document.querySelector("#size-row");
+    for (const [index, face] of SIZE_SAMPLES.entries()) {
+      const sample = document.createElement("div");
+      sample.className = "size-sample";
+      sample.append(makeFaceSvg(face, [22, 34, 48, 72][index], "", index === 3));
+      const label = document.createElement("span");
+      label.textContent = `${[22, 34, 48, 72][index]}px`;
+      sample.append(label);
+      sizeRow.append(sample);
+    }
+
+    const mockBots = document.querySelector("#mock-bots");
+    [
+      { ...FACES[0], label: "麻薯", sub: "好，先把发布清单过一遍。" },
+      { ...FACES[3], label: "芒果", sub: "今天的日历排好了。" },
+      { ...FACES[6], label: "青豆", sub: "新的调研我已经整理。" },
+      { ...FACES[11], label: "太阳饼", sub: "三封邮件需要你看。" }
+    ].forEach((face, index) => {
+      const row = document.createElement("div");
+      row.className = "mock-row" + (index === 0 ? " active" : "");
+      row.append(makeFaceSvg(face, 24));
+      const copy = document.createElement("div");
+      copy.className = "mock-copy";
+      const name = document.createElement("strong");
+      name.textContent = face.label;
+      const sub = document.createElement("small");
+      sub.textContent = face.sub;
+      copy.append(name, sub);
+      row.append(copy);
+      mockBots.append(row);
+    });
+
+    const mockHead = document.querySelector("#mock-chat-head");
+    mockHead.append(makeFaceSvg(FACES[0], 24));
+    const mockName = document.createElement("span");
+    mockName.textContent = "麻薯";
+    mockHead.append(mockName);
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

@@ -18,7 +18,7 @@ flowchart TD
     MAIN[桌面主进程：窗口、系统事件、生命周期]
     HOST[Rambo 本机宿主服务]
     DB[(SQLite 与文件存储)]
-    CODEX[随包 Codex 可执行文件\napp-server 子进程]
+    CODEX[本机优先/缓存/按需下载\n独立 app-server 子进程]
     AUDIO[音频与本地唤醒适配]
     MCP[已分配的 MCP、邮件工具和 Skills]
     CU[Codex Computer Use 组件\n独立分发与连接待验证]
@@ -46,16 +46,18 @@ flowchart TD
 
 ## 2. 打包、启动与退出
 
+2026-10-26 当前方案按 [Q147](decision-followups.md#q147)：直接使用本机同一份 `bin/codex app-server`，由 Rambo 启动独立进程；使用 `<userData>/codex-home` 保存独立会话与状态数据库，通过符号链接共享本机 `auth.json`、配置及所需资源，不复制凭据。显式覆盖 `CODEX_HOME`、`CODEX_SQLITE_HOME` 与 `sqlite_home`，避免共享配置把状态库写回本机目录。当前文件认证已实现，Keychain/auto 模式明确报不兼容。旧会话只按 Store 登记的 thread ID 复制，保留源文件、不覆盖更新历史，迁移记录防止删除后再次导入。以下关于必须选择独立 App Server、共享 CODEX_HOME 或专属来源的文字属于 Q147 前的历史方案，已由此段替代；缓存和经校验下载仍仅作为本机入口缺失时的回退。
+
 ### 包中是什么
 
-随应用放入固定版本的上游独立 App Server package 及其实际需要的配套资源；当前推荐使用独立 `codex-app-server` 的来源参数，不再将 CLI 的 `codex app-server` 子命令当成唯一入口。该独立发行物已完成归档清单核对，尚未执行其程序，见 [历史隔离方案](history-isolation-plan.md)。不是把 Codex 桌面 GUI 打进包，也不是把模型权重放进包。已核实本机 npm 的 `codex` 入口是 JS 启动器，不能只复制这个入口就宣称独立可运行；最终须定位完整原生发行物、依赖及许可文件。[本机核对](app-server-evidence.md)
+不把上游独立 App Server package 随安装包分发。二进制来源与进程归属分别处理：Rambo 可以启动本机 `bin/codex app-server`，但必须仍是 Rambo 自己的 stdio 子进程，并满足 A04。当前本机 0.164.0 CLI 把来源固定为 VSCode，不能设置专属来源，因此在 A04 不变时跳过该入口；解析优先级为“兼容 A04 的本机 App Server 入口 → Rambo 缓存 → 下载并校验固定回退版本”。独立发行物及历史隔离证据见 [历史隔离方案](history-isolation-plan.md)。不是把 Codex 桌面 GUI 或模型权重放进包。已核实本机 npm 的 `codex` 入口是 JS 启动器；复用它时还须定位完整原生发行物及依赖，不能只复制 npm 启动器。[本机核对](app-server-evidence.md)
 
-建议包内预留 `Resources/runtime/codex/<version>/`，按最终独立 package 的 manifest 保留其全部相对布局；现有 CLI 平台包包含 `bin`、`codex-resources`、`codex-path`，由版本清单记录架构、校验和及协议快照。本机 0.163.0 arm64 原生目录约 325.0 MiB，其中 Voice 配套整目录约 20.18 MiB；这不是最终应用/压缩安装包大小，Computer Use 配套也不在此清单。来源见 [CLI 发行物清单](evidence/codex-0.163.0-darwin-arm64-inventory.json)。当前优先的独立 App Server package 已另行核对，压缩约 97.26 MiB、逻辑大小约 249.15 MiB，4 个文件，包含 Code Mode Host 和 rg，但没有 Voice Host 或 Computer Use 服务，见 [独立包清单](evidence/codex-app-server-0.163.0-darwin-arm64-inventory.json)。不得把两套包的大小或资源混为一谈。
+Rambo 缓存使用 `<userData>/runtime/codex/<version>/`，按独立 package 的 manifest 保留其全部相对布局；现有 CLI 平台包包含 `bin`、`codex-resources`、`codex-path`，由版本清单记录架构、校验和及协议快照。下载回退固定 0.164.0，归档 SHA-256 为 `7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0`；解包前校验，且只接受 manifest 入口为 `codex-app-server` 的布局。本机 0.163.0 arm64 原生目录约 325.0 MiB，其中 Voice 配套整目录约 20.18 MiB；这不是最终应用/压缩安装包大小，Computer Use 配套也不在此清单。来源见 [CLI 发行物清单](evidence/codex-0.163.0-darwin-arm64-inventory.json)。独立 App Server package 压缩约 97.26 MiB、逻辑大小约 249.15 MiB，4 个文件，包含 Code Mode Host 和 rg，但没有 Voice Host 或 Computer Use 服务，见 [独立包清单](evidence/codex-app-server-0.163.0-darwin-arm64-inventory.json)。该体积现在是按需下载与缓存成本，不再计入 `.app` 安装包。
 
 ### 生命周期
 
 1. 启动桌面主进程，打开产品数据库并执行可回滚的迁移。
-2. 启动 Rambo 宿主，推荐拉起包内独立 `codex-app-server --listen stdio:// --session-source app-server`；这是拟定启动形态，本轮未执行。
+2. 启动 Rambo 宿主，按运行时解析结果拉起 Rambo 自己的 App Server 子进程；独立入口使用 `codex-app-server --listen stdio:// --session-source app-server`。若使用兼容的本机 `bin/codex`，则启动 `codex app-server --listen stdio://`，仍须证明新 thread 的来源满足 A04；当前 0.164.0 固定为 VSCode，不能选用。
 3. 完成 `initialize` / `initialized`，建立请求 ID、事件分发及断线状态。
 4. 读取账号状态、可用模型及资源目录；已认证不重复登录，未认证按 A03 使用 Codex 登录流程。
 5. 恢复队列和计划，再按已保存开关恢复唤醒；首次未启用的唤醒不自行开启。
@@ -63,7 +65,7 @@ flowchart TD
 
 只使用自己拉起的进程句柄及 PID 管理启停，不按进程名杀死其他 Codex 客户端。stderr 进入脱敏诊断日志，stdout 专用于协议。stdio 请求失败、初始化失败和后台崩溃都要显示真实状态，不能把“进程存在”显示为“Agent 可用”。
 
-升级沿 A05/A06：新版本随应用发布，待当前轮次结束再切换；队列、计划和本地数据保留。版本迁移失败使用升级前备份，不能通过清空用户数据解决兼容问题。
+升级沿 A05/A06：应用和运行时缓存分别管理，运行时来源按 A02 解析；待当前轮次结束再切换，队列、计划和本地数据保留。版本迁移失败使用升级前备份，不能通过清空用户数据解决兼容问题。
 
 ## 3. 认证、配置及历史隔离
 
@@ -84,7 +86,7 @@ flowchart TD
 
 每个 Bot 只有一个持续私聊和对应 thread；文字与 Live 沿用该 thread，不创建第二条私聊。Routine、独立异步任务和群聊成员会话仍各自有独立执行上下文。Rambo 的聊天列表只显示每 Bot 唯一私聊及显式群聊，不直接把 `thread/list` 的所有结果当成本产品聊天。
 
-**历史隔离已发现现方案的静态反证。** 匹配 0.163.0 官方源码中，现成 `codex app-server` 的普通新线程使用 `SessionSource::VSCode`；原生 CLI 默认恢复列表包含此来源。`threadSource` 是另一层分析标签，不能替换这一来源，`clientInfo.name` 和 `serviceName` 也不能完成隔离；本地非空 `originators` 过滤不支持。调用链已核对到初始化、新线程构造和列表过滤，详见 [历史隔离调查](history-isolation-research.md)。
+**历史隔离已发现现方案的静态反证。** 匹配 0.163.0 与 0.164.0 官方源码，现成 `codex app-server` 的普通新线程均使用 `SessionSource::VSCode`；原生 CLI 默认恢复列表包含此来源。`threadSource` 是另一层分析标签，不能替换这一来源，`clientInfo.name` 和 `serviceName` 也不能完成隔离；本地非空 `originators` 过滤不支持。调用链已核对到初始化、新线程构造和列表过滤，详见 [历史隔离调查](history-isolation-research.md)。
 
 因此不能照原先“同目录、改标签”的方式实现并宣称 A04 成立。第二轮已找到更直接的上游入口：独立 `codex-app-server --session-source app-server` 将根线程置于 AppServer 来源。当前桌面产物的默认历史请求及其 0.153.4 后台过滤，也已静态核对为排除此来源的默认集合；全局 CLI 0.163.0 同样如此。优先方案及版本边界见 [历史隔离方案收敛](history-isolation-plan.md)。这仍需真实包内执行、跨版本共享存储、资源发现和恢复验证；不声称是文件保密隔离，也不改成复制认证文件。
 
@@ -94,12 +96,13 @@ flowchart TD
 
 | 数据实体 | 关键内容 |
 | --- | --- |
-| Bot | 名称、头像、职责、长期指令、默认模型、资源分配、归档状态 |
-| Chat / ThreadBinding | 每 Bot 唯一私聊或群聊成员执行会话、Codex thread 映射；旧重复私聊仅作本机隐藏历史保留 |
+| Bot | 名称、头像、职责、长期指令、独立模型与权限、逐资源开关、归档状态；创建时从全局初值复制，之后不跟随全局 |
+| Chat / ThreadBinding | 每 Bot 唯一私聊或群聊成员执行会话、Codex thread 映射；私聊和群聊旧模型/权限覆盖字段仅兼容保留，不参与解析；旧重复私聊仅作本机隐藏历史保留 |
 | Message / Item | 原始条目标识、用户可见文本、来源、时间、运行与文件引用 |
 | Group / Membership | 成员、成员状态；原 defaultBotId 为旧路由字段，后续迁移不得继续作为普通群消息兜底依据 |
 | Task / Delegation | 根任务、父任务、接收 Bot、状态、依赖、停止请求和结果 |
 | Routine / Run | 当前计划版本、触发时间、执行时指令快照、状态与结果 |
+| AppSetting | 应用全局模型与权限初值、Skills/MCP/Apps/Plugins 全局可选目录和新建 Bot 开关初值；只影响之后创建的 Bot |
 | Memory | Bot 自动整理保存的记忆、所属 Bot 或“关于我”、来源；旧候选/批准字段的迁移待实现 |
 | Blob / FileReference | 内容哈希、单份本机副本、引用者、长期资料/临时附件/成果分类 |
 | Notification / Settings | 未读、逐 Bot 开关、语音设备及唤醒开关、成功通知例外 |
@@ -112,13 +115,13 @@ SQLite 事务内同时落任务状态和待派发事件；随后由 outbox 派�
 
 ## 5. Bot 上下文、记忆与文件
 
-首次创建/恢复 Bot 唯一私聊 thread 时，由宿主按归属准备 Bot 职责、已保存的“关于我”和私有记忆、已启用资源及当前聊天附件引用。后续配置变化要有版本号，明确在哪个新回合生效；模型切换仍按 B06，不改写执行中轮次。升级数据库时保留最近的未归档私聊 thread，其他重复私聊保存在本机但不加入产品列表、搜索或运行映射。
+首次创建/恢复 Bot 唯一私聊 thread 时，由宿主按归属准备 Bot 职责、已保存的“关于我”和私有记忆、已启用资源及当前聊天附件引用。唯一私聊、该 Bot 的群聊成员执行和 Routine 都读取 Bot 自身已物化的模型、权限与资源开关；系统设置中的模型和权限只作为新建 Bot 初值，全局可选目录成员同步决定可见范围。后续配置变化要有版本号，明确在哪个新回合生效，不改写执行中轮次。升级数据库时保留最近的未归档私聊 thread，其他重复私聊保存在本机但不加入产品列表、搜索或运行映射。
 
 ### Bot 自管理 Tools
 
-按 Q64/B13，宿主向 Bot 的唯一私聊暴露一组窄范围动态工具，操作对象固定为当前 thread 所属 Bot，参数不接受任意 `botId`：自身资料（名称、头像、短职责、长期指令）、默认模型、默认权限、当前私聊模型/权限覆盖、自身专属记忆、自身 Routine。会话绑定和所有权由宿主从 `threadId → chatId → botId` 解析，模型参数不能选择目标 Bot。
+按 Q64/B13/Q114，宿主向 Bot 的唯一私聊暴露一组窄范围动态工具，操作对象固定为当前 thread 所属 Bot，参数不接受任意 `botId`：自身资料（名称、头像、短职责、长期指令）、自身模型与权限、自身专属记忆、自身 Routine。会话绑定和所有权由宿主从 `threadId → chatId → botId` 解析；模型/权限修改写入当前 Bot 自身配置，并用于之后该 Bot 的唯一私聊、群聊成员执行与 Routine，不能设置应用全局初值或选择其他 Bot。
 
-合法写入不另设逐次用户批准。默认模型和权限在当前轮使用旧快照，下一轮重新解析；名称、头像、职责变化在成功写入后发布 UI 变化，并同步更新侧栏、详情页和群聊消息身份。自身记忆删除要与闲聊原文分开，Routine 修改/暂停/恢复/删除复用 R13/R14 和执行快照规则。
+合法写入不另设逐次用户批准。Bot 模型/权限在下一轮重新解析，已运行轮次保留启动快照；名称、头像、职责变化在成功写入后发布 UI 变化，并同步更新侧栏、详情页和群聊消息身份。自身记忆删除要与闲聊原文分开，Routine 修改/暂停/恢复/删除复用 R13/R14 和执行快照规则。
 
 工具集合不包含自我归档、永久删除 Bot 或清空聊天，也不提供可传入其他 Bot ID 的通用设置接口。宿主应对未注册工具名、越权对象和间接组合操作返回失败；该工具边界是产品能力限制，不冒充 Full Access 下的文件系统安全隔离。
 
@@ -166,7 +169,9 @@ Codex 自带记忆与本产品记忆的衔接需核实，确保真实写入可�
 | 单个聊天 | 普通新消息沿 B09 转向当前任务，不默认放到任务末尾 |
 | 协作等待 | 父任务等待子任务时不占用会导致子任务无法启动的全部执行名额 |
 
-任务状态建议为排队、执行、等待电脑、等待用户、等待子任务、停放、完成、失败、中断和取消。UI 状态与 provider turn 状态分别记录；“等待”不等于结束，模型仍在产生输出也不能假称已经暂停。
+任务状态建议为排队、执行、等待电脑、等待用户、等待子任务、停放、完成、失败、中断和取消。UI 状态与 provider turn 状态分别记录；“等待”不等于结束，模型仍在产生输出也不能假称已经暂停。交互 UI Tool 只对用户面对的 Bot 对话开放。Routine 在独立会话完成后按 R04 把结果交回原 Bot；由 Bot 判断是否调用交互 Tool 展示问题卡。Routine 本身不直接发卡片。卡片按钮答案回到 Bot 对话；若用户在同一 Bot 对话直接输入普通文字，则作为关联卡片的自定义答案提交，卡片转为已回答并关闭。UI 不提供主动关闭卡片的按钮或入口。Bot 通过可用应用 Tools 决定后续处理；已完成的 Routine 不自动恢复。未回答卡片不自动过期，应用退出或重启后从 SQLite 的 `contentJson` 恢复待答状态；多张未回答卡片可同时保留并各自可操作，回答一张只关闭对应卡片。单聊或群聊自由文字输入自动关联最新一张待答卡，点击卡片选项则只回答该卡。
+
+Q71 聊天内容由共享 `MessageContentView` 渲染。普通文本使用 `react-markdown`、GFM、KaTeX 和语法高亮；Mermaid 代码块以严格安全级别绘图。结构化展示使用 `rambo_chat_ui.ask_question` 和 `rambo_chat_ui.show_content` 动态工具，宿主校验工具参数并将 card/media/voice/MCP embed/visualization 数据随消息保存；Routine 执行会话不暴露这两个工具。内容写入 `messages.contentJson` 与 `group_messages.contentJson`，数据库 schema 版本为 17。媒体可使用 HTTP(S) 或当前 Bot 工作区路径；主进程按消息所属 Bot 校验路径、文件类型和 8 MiB 上限后再交给渲染层。待运行验证包括 App Server 工具调用、实际 Grok 样式对照、媒体来源兼容及异常内容的真实界面回退。
 
 内部恢复/控制回合不能被普通任务名额全部占满。具体等待是否可以保持工具调用未决，或需结束当前回合并在结果到达后续开一轮，依据 App Server 实际行为选择；这是调度技术设计，不重新追问用户。
 
@@ -178,22 +183,20 @@ Codex 自带记忆与本产品记忆的衔接需核实，确保真实写入可�
 
 进程崩溃后不能只因租约过期就把电脑交给下一任务：先证明原调用已终止或被隔离，防止旧调用仍在操作。手动接管是独立状态，不能把 `turn/interrupt` 描述成已实现无损暂停。
 
-## 7. 定时任务与 Webhook
+## 7. 定时任务
 
-宿主调度器是本产品计划的唯一调度源；当前 Bot 的聊天工具、Live 委派工具与管理页操作同一份 Routine。每次触发形成 `routineId + scheduledAt` 唯一键并保存指令快照；手动执行用不同触发 ID，不覆盖历史。
+宿主调度器是本产品计划的唯一调度源；当前 Bot 的聊天工具、Live 委派工具与管理页操作同一份 Routine。周期 Routine 支持一天内多个有序、去重的任意 `HH:mm` 时刻，所有时刻共用一条定义、指令、暂停状态和运行历史；每次触发形成 `routineId + scheduledAt` 唯一键并保存指令快照；手动执行用不同触发 ID，不覆盖历史。首版不增加通用分钟/小时 interval，未知表达必须 fail-closed。
 
 文字聊天从明确的周期委托意图中抽取任务名、指令和计划并直接保存；关键条件含糊时先澄清，Bot 自己提出的自动化想法仍先征得用户同意。当前 Bot 可按 Q64 修改、暂停、恢复和删除自己的 Routine，但所有权固定来自当前会话，不能指定其他 Bot。左侧任务页列出所有 Bot 的 Routine，Bot 详情页按 `botId` 列出该 Bot 管理的任务，两处读取同一数据。
 
-执行规则直接采用 R01–R16：12 小时以内最多一次补跑、单次错过手动处理、不重入、最多一次短暂错误重试、同因连续失败通知去重、成功默认不发系统通知。
+执行规则直接采用 R01–R17：12 小时以内最多一次补跑、单次错过手动处理、不重入、最多一次短暂错误重试、同因连续失败通知去重、成功默认不发系统通知。
 
 - 暂停计划：停止未来触发、取消未开始的排队执行；已经开始的继续，除非明确停止。
 - 修改计划：只影响后续新触发，已有执行用原快照。
 - 删除计划：移除定义但保留 run、聊天简报和成果，并保证仍有可达历史入口。
-- 一次性任务：终止自动触发后保留列表与真实状态，可手动立即运行。
+- 一次性任务：成功、失败或中断后由 Bot 清理活动定义并保留运行历史；错过时保留定义，等待用户手动立即运行，执行后同样清理。
 
-Webhook 作为本机/LAN 的宿主适配器，不为 UI/App Server 额外开放远程控制端口。设计建议每个入口使用高熵凭据、限制请求体大小、持久化事件 ID 做重复请求去重；默认监听范围由最终部署配置明确。提供者没有稳定事件 ID 时，只能给出可解释的有限重复防护，不能用内容相同就永久拒绝合法请求。
-
-这些 Webhook 参数是技术建议，尚未变成用户批准的具体接口契约；专属邮箱事件、托管队列、远程手机呼叫仍不纳入首版。
+按 Q140/T04/R10，首版没有 Routine 被动事件触发，也没有本机/LAN Webhook、外部事件 Adapter、Trigger Source、事件订阅、事件补收或自动唤醒路径。微信、邮件或其他 Connector 只向已授权 Bot 提供按需工具，不向 Routine 投递事件。未来若增加这些能力，须重新确认产品决策并另立验收规则，不能恢复旧预留。
 
 ## 8. Codex Voice 与唤醒
 
@@ -203,7 +206,7 @@ Webhook 作为本机/LAN 的宿主适配器，不为 UI/App Server 额外开放�
 
 通话链路负责设备、音频传输、状态及收尾；Codex Voice 负责交谈与语义。空闲自动结束、专用挂断动作、记忆自动保存等已经确认的宿主工具由通话适配层接通，不新增口头切换 Bot，也不重新实现用户插话策略。
 
-本机新生成 0.163.0 schema 存在 `thread/realtime/start`、音频/文本追加、停止及关闭通知，属于实验接口。匹配构建源码进一步显示：**优先显式传 WebRTC SDP、V3、audio**，App Server 通过已有 ChatGPT 认证创建通话，Rambo 自己管理 WebRTC 媒体。省略 transport 的 core 路径默认 WebSocket，该分支当前仍有 API Key 限制；不作为免额外 Key 的方案。具体 V3 账号资格和真实调用仍待证明。[Voice 调查](voice-feasibility.md)
+本机 0.164.0 实验 schema 仍有 `thread/realtime/start`、音频/文本追加、停止及关闭通知，属于实验接口。匹配构建源码进一步显示：**优先显式传 WebRTC SDP、V3、audio**，App Server 通过已有 ChatGPT 认证创建通话，Rambo 自己管理 WebRTC 媒体。省略 transport 的 core 路径默认 WebSocket，该分支当前仍有 API Key 限制；不作为免额外 Key 的方案。具体 V3 账号资格和真实调用仍待证明。[Voice 调查](voice-feasibility.md)
 
 ### 连接和资源状态
 
@@ -211,7 +214,9 @@ Webhook 作为本机/LAN 的宿主适配器，不为 UI/App Server 额外开放�
 
 结束时停止该通话音频上传和播放、关闭媒体连接并向 App Server 发停止，分别记录本地释放及服务端关闭状态。服务端确认超时也应先释放本机麦克风，不显示虚假的已确认服务端关闭；按已保存开关恢复唤醒。结束通话不杀 App Server，也不停止独立任务。
 
-挂断优先采用已查到的 Live → 普通 Codex 委派 → 宿主动态工具通路；尚无普通线程 dynamicTools 会自动直接注入 Live 模型的证据。`thread/realtime/stop` 关闭 core 实时状态，不代替 Rambo 停止媒体音轨和 PeerConnection。若整条通路不可用，V07 仍被阻塞，不能退化成匹配“退下”字符串并宣布验收通过。
+挂断采用已查到的 Live → 普通 Codex 委派 → 宿主动态工具主路径：V3 Live 的 `delegation.created` 只携带文本，`HandoffRequested` 把文本包装成普通 Codex 输入，在原 thread 启动新 turn，不会新建 thread；该 turn 才拥有 `rambo_voice.end_current_voice_session`，与成功创建提醒时调用 `rambo_routines.create_routine` 的机制相同。V3 启动参数没有 `tools` 或 `dynamicTools`，因此 Live 自身不能直接调用 Rambo 工具；启动提示要求它将语境明确的自然、口语、委婉或间接结束表达（如“结束通话”“你可以结束了”“退下吧”）立即委派，并在委派文本中明确写出工具名和空对象参数，不要求用户说“调用工具”。Host 仍保留用户转写完成与 `handoff_request` 两条语义兜底路径，按上下文识别、不得按单个词触发，防止只有口头告别而没有 delegation。`thread/realtime/stop` 关闭 core 实时状态，不代替 Rambo 停止媒体音轨和 PeerConnection。若整条通路不可用，V07 仍被阻塞，不能退化成匹配“退下”字符串并宣布验收通过。
+
+语音错误态复用顶部胶囊，不使用底部运行行或独立面板。连接超时、Realtime 错误、WebRTC 媒体协商失败、非预期关闭和结束失败都进入该错误态；界面按失败类型显示完整标题（`语音连接异常` 或 `语音结束失败`）、最多两行可辨识原因及胶囊外独立圆形“重新拨号”按钮。错误标题不得被裁成半句，重试入口不得与胶囊叠放，并须在窄窗口保持可达。
 
 ### 本地音频
 
@@ -223,21 +228,45 @@ Webhook 作为本机/LAN 的宿主适配器，不为 UI/App Server 额外开放�
 
 ## 9. MCP、Skills、邮件与图像
 
+### Connector Core
+
+按 Q83/T14，连接应用采用统一 Connector Core。Provider 描述应用及支持的能力，Connection 表示用户完成授权后的具体账号，Capability 表示该连接实际可执行的领域动作，Tool 是面向 Agent 的稳定能力投影，Grant 记录哪些 Bot 获得该连接，Adapter 封装 Gmail API、QQ IMAP/SMTP、微信本机 SQLCipher 数据等协议差异。已确认首版连接范围为邮件和微信；微信只读本机聊天消息，不建设任意连接器 SDK 或完整市场。
+
+核心执行流程统一为：从当前 `threadId` 解析 Bot 与聊天，校验该 Bot 对 Connection/Capability 的 Grant，选择连接与 Adapter，校验工具参数，执行外部调用，映射统一结果并脱敏记录。禁止在 Host 主流程按 Gmail/QQ 写业务分支，也不允许模型传入或读取凭证；连接 ID 与稳定外部 ID 是允许的工具参数。授权撤销、过期、Scope 不足和不可用连接使用统一状态，UI 可重新授权或断开，不能让每个 Adapter 自行定义状态机。
+
+面向 Agent 的邮件与微信工具通过宿主动态工具 `item/tool/call` 暴露，不要求每个 Provider 启动独立 MCP Server。MCP 保留为未来通用连接器或第三方 MCP 的可选传输层；无论传输为何，都复用同一 Connector Core 的授权、能力、凭证与审计边界。
+
+按 Q84/T15，每轮为当前 Bot 构造已授权连接目录，包含稳定 `connection_id`、Provider、账号展示信息、显示名称和默认发件状态。目录从 Grant 与 Connection 元数据生成，只出现当前 Bot 可用连接；邮箱地址按产品隐私规则展示，但不把令牌或授权码写入目录。Agent 通过 `connection_id` 选择连接，工具参数和结果都保留连接身份，读信后的回复使用原连接。
+
+连接目录是模型完成意图映射的上下文，不是授权凭据。所有工具调用仍由 Host 从 `threadId` 解析 Bot 并重新校验 Grant；伪造、失效或未授权的连接 ID 必须拒绝。用户指定账号、Provider 或显示名称无法唯一匹配时，工具返回明确歧义或不可用状态，不能默认改选另一账号。最终用户可见回复应能说明实际使用的 Provider/账号，但日志和模型上下文不得包含秘密。
+
+按 Q85/T16，Connection 是账号授权对象，Grant 是 Bot 对 Connection/Capability 的显式授权关系。授权账号一次即可供多个 Bot 复用，但创建 Bot 时不从已有 Connection 自动生成 Grant。连接目录、工具注册和调用校验都从当前 Bot 的 Grant 派生；撤销某个 Grant 只影响该 Bot，不撤销共享账号连接或其他 Bot 的 Grant，也不能通过再次登录同一账号隐式扩大 Grant。
+
+按 Q86/T17，当前 Grant 的实际粒度是整条 Connection，而不是 Capability 子集。Grant 存在时，该 Bot 获得 Connection 支持的全部已确认邮件工具；Grant 不存在时，不注册也不暴露任何该连接的邮件工具。内部模型仍可保留 Capability 描述以判断 Provider 健康状态和未来扩展，但首版不提供按 Capability 勾选的用户界面或授权档，也不能据内部字段声称支持细粒度授权。
+
+Connector Grant 只控制 Rambo 外部应用能力，不改变 Codex Full Access；Full Access 也不能让 Bot 调用未 Grant 的 Connection。连接可被多个 Bot 共享，Grant 的创建与撤销按 Bot 独立持久化。
+
+按 Q87/T18，获得 Connection Grant 的 Bot 在明确邮件任务中可直接调用发送与回复工具，Host 不增加发送前的人工确认门禁。权限判断只区分 Connection Grant、Codex 权限档和正常工具参数错误，不根据邮件内容、收件人或 Bot 是主动建议还是用户点名临时弹审批。发送结果不确定时进入待核对状态，不自动重发，沿用 R07/O04。
+
+当前实现与上述 T17 字面要求仍有明确差距：按 0.163.0 协议 schema，`thread/start` 接受 `dynamicTools`，`thread/resume` 不接受；私聊首轮固定注册 `rambo_mail`，授权变化只改变每轮连接目录并由 Host 在每次调用时重新校验 Grant，不重建 thread。因此未授予时目录为空、调用被拒绝，但工具 schema 本身仍可能存在。这个折中不等于“撤销后连只读工具也不暴露”，在最终 T17 验收前必须通过可验证的重建/隔离执行上下文解决，或由用户明确接受修订后的产品落点。UI 已勾选、配置已保存或某次模拟调用成功，都不能替代真实轮次获得或失去工具的证据。
+
 ### 逐 Bot 可用资源
 
-共享资源目录 + Bot 分配表。每次构造执行会话时形成有效工具集合，分配是工具曝光/上下文组织，不是 Full Access 下的访问沙箱。
+按 T01/T02/Q113/Q118，资源使用三层模型：发现目录只展示 App Server 发现的 Skills、MCP、Apps、Plugins 及来源，只能加入全局可选目录；全局可选目录是全部 Bot 实时同步的候选范围；每个 Bot 另存独立开关。新建 Bot 复制当时全局开关，之后全局与 Bot 开关完全独立。有效执行集合是全局可选目录与 Bot 开启项的交集，Host 每次执行仍按最新目录和 Bot 开关复核。
 
-本机协议存在 Skills 列表和全局配置写入、线程配置覆盖等接口，但不能直接推断全局开关就是逐 Bot 开关。禁止在共享进程里为 Bot A 开关全局 Skill 导致 Bot B 同时变更。先证明线程级选择与 MCP 可见性过滤；若只有进程级配置，再评估按资源配置分组的独立 App Server 子进程，并仍统一调度。后者属于备选架构，尚未验证。
+发现目录不能直接启用，Bot 也不能把其中资源加入全局可选目录。全局新增资源对已有 Bot 立即可见并建立默认关闭的开关；全局移除后所有 Bot 立即不可见、不可执行，再次加入时重新建立关闭值，不恢复旧开关。App Server 发现的 Apps/Plugins 按四类本机资源处理；连接应用市场的账号型 Connector 继续由独立 Connection/Grant 控制，不能被资源目录或开关替代。
 
-MCP 连接凭据在本机安全存储中保管，产品数据库只存引用；授权与导入只在用户设置或明确请求下处理。新增本地 Skill 保留配套目录，默认不全局启用。主动提议保存技能和用户明确保存的区别沿 T09。
+本机协议存在 Skills 列表和全局配置写入、线程配置覆盖等接口，但不能直接推断全局开关就是逐 Bot 开关。禁止在共享进程里为 Bot A 开关全局 Skill 导致 Bot B 同时变更。先证明线程级选择与 MCP 可见性过滤；若只有进程级配置，再评估按资源配置分组的独立 App Server 子进程，并仍统一调度。后者属于备选架构，尚未验证。连接凭证由应用本地 256-bit 密钥使用 AES-256-GCM 加密后写入独立 SQLite，产品 Store 只存不透明引用。
 
 ### 邮箱
 
-QQ 与 Gmail 各一个账号，两者均支持已定的七类操作。优先核对真正可复用的连接，不因当前会话能用某连接器就认为随包进程也拥有它。
+QQ 与 Gmail 各一个账号，两者均支持已定的七类操作。两者作为 Connector Core 的 Provider 与 Adapter 接入，统一使用邮件领域工具，不因当前会话能用某连接器就认为随包进程也拥有它。
 
-若需要自行适配，建议 QQ 使用本机 IMAP/SMTP 适配器，Gmail 使用桌面 OAuth + Gmail API 适配器，统一提供给 Codex 的邮件工具。具体协议与凭据条件见[邮箱调查](email-integration-research.md)，本轮未重新登录或联调。
+QQ 使用本机 IMAP/SMTP 适配器，Gmail 使用桌面 OAuth + Gmail API 适配器，由 Connector Core 统一提供给 Codex 的邮件动态工具。统一工具覆盖搜索、读信、附件、起草、回复和发送；Gmail 草稿走 `drafts`，QQ 草稿由 IMAP 追加到 Drafts。Gmail 连接弹窗由用户填写自己的 Desktop OAuth Client ID 与 Client Secret，并提供 Google Cloud 项目、Gmail API、同意屏幕和凭据创建步骤。两项 OAuth 客户端配置和授权令牌按 Connection 一起使用应用本地 AES-256-GCM 密钥加密，写入 `<userData>/connector-credentials/credentials.sqlite`；256-bit 密钥单独保存在 `credential-key`，密钥和数据库文件权限为 `0600`。产品 Store 只保存 `db:` 不透明引用；Adapter 刷新访问令牌时从同一加密载荷读取客户端配置。该方案不需要 Electron `safeStorage` 或 macOS Keychain，但只提供应用本地文件加密：同用户权限下可读取应用文件或其密钥的进程仍可能解密，不能宣称强于 Keychain。OAuth 使用系统浏览器、动态本机 loopback 回调与 PKCE，Client Secret 不进入授权 URL，渲染层不读取账号令牌。源码、环境文件、普通配置和发布包不内置真实 OAuth 凭据。具体协议与凭据条件见[邮箱调查](email-integration-research.md)，当前仅有注入网络接口的模拟协议测试；真实 Google 授权、刷新和邮箱调用仍须用户自己的 OAuth 客户端验证。
 
 工具参数使用连接 ID 与稳定邮件 ID；回复默认原账号，新邮件默认 Bot 发件账号，明确指定优先。读取的邮件是数据，不把信中内容当作宿主授权或直接修改 Bot 设置的依据；这不是增加通用执行审批。发送失败且状态不确定时沿 R07 处理，不盲目重发。
+
+工具调用与结果都带连接识别信息，Agent 不得仅凭统一工具名推断当前服务。连接目录中的 Provider、账号和默认状态用于映射用户意图；`connection_id` 是唯一执行路由键。若用户明确指定 Gmail 而当前 Bot 只有 QQ 的 Grant，应说明不可用，不得转到 QQ 后把结果描述成 Gmail。
 
 ### 图像
 
@@ -263,12 +292,12 @@ Rambo 的 Codex thread 位于共享存储中，备份设计必须明确如何只
 | --- | --- |
 | 品牌与首用界面 | P01–P07、B04、I03 |
 | Bot 列表、详情与聊天 | B01–B12、M01–M08、F01/F03/F04 |
-| 群聊和协作记录 | G01–G11 |
+| 群聊和协作记录 | G01–G12 |
 | 资源与邮件连接设置 | T01–T13 |
 | 电脑任务状态、等待与接管 | C01–C07、B11 |
 | Live 与语音设置 | V01–V14 |
 | 图像和文件预览 | I01–I03、F01–F05 |
-| 计划管理、运行记录和历史入口 | R01–R16 |
+| 计划管理、运行记录和历史入口 | R01–R17 |
 | 后台、通知、备份、更新 | O01–O05、A01–A06 |
 | 交付与协作流程 | P08、W01–W04 |
 
@@ -281,12 +310,12 @@ Rambo 的 Codex thread 位于共享存储中，备份设计必须明确如何只
 | 顺序 | 阻塞 | 必须取得的证据 | 对应验收 |
 | --- | --- | --- | --- |
 | 1 | 包内运行时与会话归属 | 无需原生 CLI/App 前台运行；认证复用；历史默认不混入；自有 thread 可恢复 | A01–A05、B01/B02、O03 |
-| 2 | Codex Voice | 同 thread 双向音频、转写、工具委派、真正挂断及再次唤醒 | V01/V02/V07/V09、R11、M07 |
+| 2 | Codex Voice | 同 thread 双向音频、转写、文本委派到普通 Codex 工具、真正挂断及再次唤醒 | V01/V02/V07/V09、R11、M07 |
 | 3 | Computer Use 独立组件 | 启动/权限/分发条件、真实工具连接、操作前互斥、停止与人工接管 | C01–C07 |
 | 4 | 逐 Bot 资源分配 | 两个 Bot 同时执行时，MCP/Skill 启用范围互不串改 | T01–T09 |
 | 5 | 本机唤醒与音频设备 | Rambo 两种说法、固定设备断开、外置耳机合盖、状态恢复 | V03–V06、V10–V14 |
 | 6 | 邮件与图像 | QQ/Gmail 各七类操作、默认账号、生成与改图实际授权 | T10–T13、I01–I03 |
-| 7 | 持久化与调度恢复 | 重启、补跑、取消、委派等待、备份导出及恢复不重复执行 | R01–R16、G08–G11、O03/O04 |
+| 7 | 持久化与调度恢复 | 重启、补跑、取消、委派等待、备份导出及恢复不重复执行 | R01–R17、G08–G11、O03/O04 |
 
 用户已要求先设计。上述协议探查/运行验证若需要开始执行真实 Agent、使用麦克风或操作外部应用，应在接下来的实施/验证阶段安排；当前不以未执行的探查填“通过”。只有全部已确认功能按矩阵完成，才报完整交付。
 

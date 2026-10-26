@@ -12,6 +12,7 @@
 - 项目素材相对路径：`assets/branding/app-logo-source.png`。
 - 图片规格：PNG，1254 × 1254 像素。
 - SHA-256：`fc527b8ebc1ae67cce4fb673ef49bc5613b2efb7d70e308d564e1240053ad37e`。
+- macOS 菜单栏状态图标：用户于 2026-10-23 指定小机器人斜眼，并明确脸型使用应用内原本的机器人圆头而非参考图正圆、图标尺寸要适配菜单栏、颜色交给系统统一染色，见 [Q80](decision-followups.md#q80)。本地 SVG 设计源与动画帧位于 `assets/branding/tray-frames/`，输出 18×18 PNG 和 36×36 `@2x` PNG，运行时按 18×18 pt 的 template 图像加载；眼睛使用透明镂空。Dock 应用图标仍使用上述战士 Logo。
 
 该素材是原始文件的字节一致副本，不是重新生成或编辑后的图。Downloads 原件保持原位。具体 macOS 图标尺寸资源和应用包图标接入在实现阶段处理，最终视觉按 P02/全量验收矩阵复核；本轮没有编写应用代码或声称已完成打包。
 

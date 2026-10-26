@@ -1,7 +1,7 @@
 import type { Bot, Chat } from '../shared/contracts';
 
 export function shouldShowReturnToChat(view: string): boolean {
-  return view !== 'chat' && view !== 'group-chat';
+  return view !== 'chat' && view !== 'group-chat' && view !== 'connectors';
 }
 
 export function partitionBotChats(chats: Chat[], botId: string): { active: Chat[]; archived: Chat[] } {

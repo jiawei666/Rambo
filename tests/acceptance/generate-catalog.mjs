@@ -21,6 +21,17 @@ for (const line of matrix.split('\n')) {
   });
 }
 
+const activeRules = new Set(rows.keys());
+for (const group of [...catalog.journeys, ...catalog.releaseSuites]) {
+  group.rules = group.rules.filter(rule => activeRules.has(rule));
+}
+catalog.ruleAcceptance = (catalog.ruleAcceptance ?? [])
+  .filter(item => activeRules.has(item.rule));
+catalog.cases = catalog.cases.flatMap(item => {
+  item.rules = item.rules.filter(rule => activeRules.has(rule));
+  return item.rules.length ? [item] : [];
+});
+
 const plans = new Map(RULE_PLANS.map(item => [item.rule, item]));
 const fullAcceptanceIds = new Set(RULE_PLANS.flatMap(item =>
   item.scenarios.map(scenario => scenario.id)

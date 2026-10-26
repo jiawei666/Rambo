@@ -1,0 +1,16 @@
+[package]
+name = "rambo-wechat-silk-decoder"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "silk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rambo-wechat-silk-decoder"
+path = "src/main.rs"
+
+[dev-dependencies]
+sha2 = "0.10"

@@ -54,9 +54,35 @@
       "reason": "测试编排或规则映射本身变化"
     },
     {
+      "id": "electron-test-harness",
+      "label": "Electron 测试共享夹具",
+      "paths": ["tests/e2e/fixtures/**"],
+      "checks": ["electron-e2e"],
+      "e2eTargets": [
+        "tests/e2e/private-chat.spec.mjs",
+        "tests/e2e/group-chat.spec.mjs",
+        "tests/e2e/avatar-picker.spec.mjs",
+        "tests/e2e/media-preview.spec.mjs"
+      ],
+      "reason": "共享启动、profile 与重启生命周期会影响全部 Electron 流程"
+    },
+    {
+      "id": "electron-avatar-picker",
+      "label": "Bot 头像选择与动态预览",
+      "paths": [
+        "src/renderer/robot-avatar.tsx",
+        "src/renderer/vendor/agent-robot-avatar/src/agent-robot-avatar-core.js",
+        "src/renderer/vendor/agent-robot-avatar/UPSTREAM.md",
+        "tests/e2e/avatar-picker.spec.mjs"
+      ],
+      "checks": ["typecheck", "electron-e2e"],
+      "e2eTargets": ["tests/e2e/avatar-picker.spec.mjs"],
+      "reason": "头像眼型首帧和鼠标跟随需要真实 Electron 渲染验证"
+    },
+    {
       "id": "backend-tests",
       "label": "后端测试文件",
-      "paths": ["tests/backend/**/*.test.mjs"],
+      "paths": ["tests/backend/**/*.test.mjs", "tests/backend/*.test.mjs"],
       "checks": ["backend-unit"],
       "backendTargets": ["{path}"],
       "reason": "测试文件自身改动只运行该测试，不扩展到全部后端测试"
@@ -70,20 +96,160 @@
       "reason": "跨进程边界变化会同时影响宿主和渲染层"
     },
     {
+      "id": "connectors",
+      "label": "连接应用、授权与邮件 Adapter",
+      "paths": [
+        "src/main/connectors.ts",
+        "src/main/connector-credentials.ts",
+        "src/main/gmail-oauth-app-config.ts",
+        "src/main/gmail-oauth.ts",
+        "src/main/gmail-adapter.ts",
+        "src/main/qq-mail-adapter.ts",
+        "src/main/mail-adapter.ts",
+        "src/main/mail-runtime.ts",
+        "src/main/mail-tools.ts",
+        "src/main/bot-credential-tools.ts",
+        "tests/backend/bot-credential-tools.test.mjs",
+        "tests/backend/connector-credentials.test.mjs",
+        "tests/backend/gmail-oauth.test.mjs",
+        "tests/backend/gmail-adapter.test.mjs",
+        "tests/backend/qq-mail-adapter.test.mjs",
+        "tests/backend/mail-runtime.test.mjs",
+        "tests/backend/mail-tools.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": [
+        "tests/backend/bot-credential-tools.test.mjs",
+        "tests/backend/connector-credentials.test.mjs",
+        "tests/backend/gmail-oauth.test.mjs",
+        "tests/backend/gmail-adapter.test.mjs",
+        "tests/backend/qq-mail-adapter.test.mjs",
+        "tests/backend/mail-runtime.test.mjs",
+        "tests/backend/mail-tools.test.mjs",
+        "tests/backend/host.test.mjs",
+        "tests/backend/store.test.mjs"
+      ],
+      "reason": "Provider、凭证、OAuth、Adapter 与动态工具共享授权边界，需同时验证协议映射和 Host 执行时校验"
+    },
+    {
+      "id": "electron-runtime-startup",
+      "label": "本机 Codex 启动和共享登录态",
+      "paths": ["src/main/runtime.ts", "src/main/runtime-home.ts", "tests/e2e/runtime-startup.spec.mjs"],
+      "checks": ["electron-e2e"],
+      "e2eTargets": ["tests/e2e/runtime-startup.spec.mjs"],
+      "reason": "真实 Electron 验证本机二进制路径、共享账号状态和运行时重启"
+    },
+    {
       "id": "main-host-runtime",
       "label": "主进程、Host、Store、Runtime",
       "paths": [
         "src/main/bot-data.ts",
+        "src/main/chat-content-tools.ts",
         "src/main/host.ts",
         "src/main/login-item.ts",
         "src/main/routine-schedule.ts",
         "src/main/routine-scheduler.ts",
         "src/main/runtime.ts",
+        "src/main/runtime-home.ts",
         "src/main/store.ts"
       ],
       "checks": ["typecheck", "backend-unit"],
       "backendTargets": ["tests/backend/{stem}.test.mjs"],
       "reason": "本机执行、持久化和宿主行为由后端集成测试覆盖"
+    },
+    {
+      "id": "bot-resources",
+      "label": "Bot Skills、MCP、Apps 与 Plugins 资源目录",
+      "paths": [
+        "src/main/bot-resources.ts",
+        "src/main/bot-resource-tools.ts",
+        "src/main/managed-skills.ts",
+        "src/main/direct-mcp.ts",
+        "tests/backend/bot-resources.test.mjs",
+        "tests/backend/bot-resource-tools.test.mjs",
+        "tests/backend/managed-skills.test.mjs",
+        "tests/backend/direct-mcp.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": [
+        "tests/backend/bot-resources.test.mjs",
+        "tests/backend/bot-resource-tools.test.mjs",
+        "tests/backend/managed-skills.test.mjs",
+        "tests/backend/direct-mcp.test.mjs",
+        "tests/backend/store.test.mjs",
+        "tests/backend/host.test.mjs"
+      ],
+      "reason": "资源发现、目录同步和逐 Bot 开关共享同一标识与持久化边界"
+    },
+    {
+      "id": "playwright-extension-verifier",
+      "label": "Playwright Chrome 扩展首次连接验证",
+      "paths": [
+        "src/main/playwright-extension-verifier.ts",
+        "tests/backend/playwright-extension-verifier.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": ["tests/backend/playwright-extension-verifier.test.mjs"],
+      "reason": "MCP stdio 握手、Chrome 标签确认、只读快照和取消清理由单独进程模块验证"
+    },
+    {
+      "id": "wechat-connector",
+      "label": "微信本机连接、查询 Tool 与媒体边界",
+      "paths": [
+        "src/main/wechat-adapter.ts",
+        "src/main/wechat-sqlcipher.ts",
+        "src/main/wechat-tools.ts",
+        "tests/backend/wechat-adapter.test.mjs",
+        "tests/backend/wechat-sqlcipher.test.mjs",
+        "tests/backend/wechat-tools.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": [
+        "tests/backend/wechat-adapter.test.mjs",
+        "tests/backend/wechat-tools.test.mjs",
+        "tests/backend/connector-credentials.test.mjs",
+        "tests/backend/host.test.mjs",
+        "tests/backend/store.test.mjs"
+      ],
+      "reason": "时间、分页、能力状态、Grant 与凭证边界必须用隔离夹具验证；真实微信读取另行验收"
+    },
+    {
+      "id": "electron-private-chat",
+      "label": "私聊与连接应用 Electron 流程",
+      "paths": ["tests/e2e/private-chat.spec.mjs"],
+      "checks": ["electron-e2e"],
+      "e2eTargets": ["tests/e2e/private-chat.spec.mjs"],
+      "reason": "私聊、连接应用市场和 Bot 授权属于真实 Electron 用户流程"
+    },
+    {
+      "id": "electron-voice-waveform-analysis",
+      "label": "真实 Web Audio 语音频谱分析",
+      "paths": [
+        "src/renderer/voice-waveform-model.ts",
+        "tests/backend/voice-waveform-model.test.mjs",
+        "tests/e2e/voice-waveform-analysis.spec.mjs"
+      ],
+      "checks": ["backend-unit", "electron-e2e"],
+      "backendTargets": ["tests/backend/voice-waveform-model.test.mjs"],
+      "e2eTargets": [
+        "tests/e2e/voice-waveform-analysis.spec.mjs",
+        "tests/e2e/private-chat.spec.mjs"
+      ],
+      "reason": "频段分析与语音活动门控同时需要纯状态和真实 Web Audio 链路验证"
+    },
+    {
+      "id": "electron-file-preview",
+      "label": "聊天文件预览与本机打开",
+      "paths": [
+        "src/main/index.ts",
+        "src/preload/index.ts",
+        "src/renderer/message-content.tsx",
+        "src/renderer/message-content.css",
+        "tests/e2e/media-preview.spec.mjs"
+      ],
+      "checks": ["typecheck", "electron-e2e"],
+      "e2eTargets": ["tests/e2e/media-preview.spec.mjs"],
+      "reason": "资源授权、媒体流、保存和系统文件操作由隔离 Electron 流程验证"
     },
     {
       "id": "renderer",
@@ -128,7 +294,7 @@
       "when": "修改了真实 Electron 用户流程、窗口导航或关键交互",
       "add": ["electron-e2e"],
       "requiresApproval": false,
-      "targets": ["tests/e2e/private-chat.spec.mjs", "tests/e2e/group-chat.spec.mjs"]
+      "targets": ["tests/e2e/private-chat.spec.mjs", "tests/e2e/group-chat.spec.mjs", "tests/e2e/media-preview.spec.mjs"]
     },
     {
       "when": "用户明确要求完整验收、候选版本或发布验证",

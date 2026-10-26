@@ -37,6 +37,7 @@ function weekdayOf(year: number, month: number, day: number): number {
 export interface RoutineScheduleInput {
   schedule: string;
   triggerTime: string;
+  triggerTimes?: string[] | null;
   kind?: RoutineKind;
   frequency?: RoutineFrequency | null;
   weekday?: number | null;
@@ -54,6 +55,7 @@ export interface ParsedRoutineSchedule {
   frequency: RoutineFrequency | null;
   weekday: number | null;
   dayOfMonth: number | null;
+  times: string[];
   time: string;
   timezone: string;
   runAt: string | null;
@@ -64,46 +66,83 @@ export interface ParsedRoutineSchedule {
   display: string;
 }
 
+const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const INTERVAL_EXPRESSION = /每\s*\d+\s*(?:分钟|小时)|every\s+\d+\s*(?:minutes?|hours?)/iu;
+export const MAX_DAILY_TRIGGER_TIMES = 24 * 60;
+
+export function isUnsupportedIntervalSchedule(schedule: string): boolean {
+  return INTERVAL_EXPRESSION.test(schedule);
+}
+
+function normalizeTriggerTimes(times: string[]): string[] {
+  if (times.length > MAX_DAILY_TRIGGER_TIMES) {
+    throw new Error(`每日触发时刻不能超过 ${MAX_DAILY_TRIGGER_TIMES} 个。`);
+  }
+  const normalized = times.map(value => {
+    const time = value.trim();
+    if (!TIME_PATTERN.test(time)) throw new Error(`触发时刻“${value}”须为 HH:mm。`);
+    return time;
+  });
+  const unique = [...new Set(normalized)].sort();
+  if (!unique.length) throw new Error('周期任务至少需要一个明确的一天内触发时刻。');
+  return unique;
+}
+
 function inferFrequency(schedule: string): Pick<ParsedRoutineSchedule, 'frequency' | 'weekday' | 'dayOfMonth'> {
   const normalized = schedule.trim().toLowerCase();
+  if (INTERVAL_EXPRESSION.test(normalized)) {
+    throw new Error('当前不支持“每 N 分钟”这类间隔表达。请把一天内的全部 HH:mm 触发时刻放进 triggerTimes；系统会作为同一条 Routine 执行，不会拆成多条任务。');
+  }
   const weekly = normalized.match(/每(?:周|星期)([一二三四五六日天])/) ??
+    normalized.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/) ??
     normalized.match(/weekly\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/);
   if (weekly) return { frequency: 'weekly', weekday: weekdayMap[weekly[1].toLowerCase()] ?? 1, dayOfMonth: null };
   if (/工作日|weekday/.test(normalized)) return { frequency: 'weekdays', weekday: null, dayOfMonth: null };
   if (/每月|monthly/.test(normalized)) return { frequency: 'monthly', weekday: null, dayOfMonth: null };
-  return { frequency: 'daily', weekday: null, dayOfMonth: null };
+  if (/每天|每日|daily|every\s+day/.test(normalized)) {
+    return { frequency: 'daily', weekday: null, dayOfMonth: null };
+  }
+  throw new Error('无法识别周期表达。请明确为每天、工作日、每周某天或每月某日；不会自动降级为每天。');
 }
 
 export function parseRoutineSchedule(input: RoutineScheduleInput): ParsedRoutineSchedule {
   const now = input.now ?? new Date();
   const timezone = input.timezone ?? 'Asia/Shanghai';
-  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.triggerTime)) {
+  if (!TIME_PATTERN.test(input.triggerTime)) {
     throw new Error('缺少明确的一天内触发时刻。请先向用户追问具体时间；收到 HH:mm 格式的明确答复后再创建任务。');
   }
-  const [hour, minute] = input.triggerTime.split(':').map(Number);
   const kind = input.kind ?? (input.runDate ? 'once' : /一次|提醒我|at\s+\d{4}/i.test(input.schedule) ? 'once' : 'recurring');
-  const inferred = inferFrequency(input.schedule);
+  const inferred = kind === 'once'
+    ? { frequency: null, weekday: null, dayOfMonth: null }
+    : inferFrequency(input.schedule);
   const frequency = kind === 'once' ? null : input.frequency ?? inferred.frequency;
   const weekday = frequency === 'weekly' ? input.weekday ?? inferred.weekday ?? 1 : null;
-  const dayOfMonth = frequency === 'monthly' ? input.dayOfMonth ?? localParts(now, timezone).day : null;
+  const dayOfMonth = frequency === 'monthly'
+    ? input.dayOfMonth ?? (kind === 'once' ? null : localParts(now, timezone).day)
+    : null;
+  const times = kind === 'once'
+    ? [input.triggerTime]
+    : normalizeTriggerTimes(input.triggerTimes ?? [input.triggerTime]);
   if (kind === 'once' && !input.runDate) {
     throw new Error('一次性任务缺少执行日期。请先向用户追问具体日期。');
   }
   if (input.runDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.runDate)) throw new Error('一次性任务日期须为 YYYY-MM-DD。');
+    const [hour, minute] = input.triggerTime.split(':').map(Number);
     const [year, month, day] = input.runDate.split('-').map(Number);
     const runAt = zonedLocalToIso(year, month, day, hour, minute, timezone);
     if (Date.parse(runAt) <= now.getTime()) {
       return {
-        ...inferred, kind, timezone, time: input.triggerTime, runAt, nextRunAt: runAt,
+        kind, frequency: null, weekday: null, dayOfMonth: null, timezone, times,
+        time: input.triggerTime, runAt, nextRunAt: runAt,
         catchUp: input.catchUp ?? true, rememberLastResult: input.rememberLastResult ?? false,
         successNotification: input.successNotification ?? false,
         display: input.schedule.trim()
       };
     }
     return {
-      ...inferred, kind, frequency: null, weekday: null, dayOfMonth: null, timezone,
-      time: input.triggerTime, runAt, nextRunAt: runAt,
+      kind, frequency: null, weekday: null, dayOfMonth: null, timezone,
+      times, time: input.triggerTime, runAt, nextRunAt: runAt,
       catchUp: input.catchUp ?? true, rememberLastResult: input.rememberLastResult ?? false,
       successNotification: input.successNotification ?? false,
       display: input.schedule.trim()
@@ -111,6 +150,7 @@ export function parseRoutineSchedule(input: RoutineScheduleInput): ParsedRoutine
   }
 
   const today = localParts(now, timezone);
+  let earliest: string | null = null;
   for (let offset = 0; offset < 370; offset += 1) {
     const next = addLocalDays(today.year, today.month, today.day, offset);
     const dayOfWeek = weekdayOf(next.year, next.month, next.day);
@@ -120,25 +160,34 @@ export function parseRoutineSchedule(input: RoutineScheduleInput): ParsedRoutine
       (frequency === 'weekly' && dayOfWeek === weekday) ||
       (frequency === 'monthly' && next.day === dayOfMonth);
     if (!matches) continue;
-    const nextRunAt = zonedLocalToIso(next.year, next.month, next.day, hour, minute, timezone);
-    if (Date.parse(nextRunAt) > now.getTime()) {
-      return {
-        ...inferred, kind, frequency, weekday, dayOfMonth, timezone, time: input.triggerTime,
-        runAt: null, nextRunAt, catchUp: input.catchUp ?? true,
-        rememberLastResult: input.rememberLastResult ?? false,
-        successNotification: input.successNotification ?? false,
-        display: input.schedule.trim()
-      };
+    for (const time of times) {
+      const [hour, minute] = time.split(':').map(Number);
+      const nextRunAt = zonedLocalToIso(next.year, next.month, next.day, hour, minute, timezone);
+      if (Date.parse(nextRunAt) > now.getTime()) {
+        earliest = nextRunAt;
+        break;
+      }
     }
+    if (earliest) break;
+  }
+  if (earliest) {
+    return {
+      ...inferred, kind, frequency, weekday, dayOfMonth, timezone, times, time: times[0],
+      runAt: null, nextRunAt: earliest, catchUp: input.catchUp ?? true,
+      rememberLastResult: input.rememberLastResult ?? false,
+      successNotification: input.successNotification ?? false,
+      display: input.schedule.trim()
+    };
   }
   throw new Error('无法计算下一次执行时间');
 }
 
 export function followingRun(definition: Pick<RoutineDefinition,
-  'kind' | 'frequency' | 'weekday' | 'dayOfMonth' | 'time' | 'timezone'>, after: Date): string | null {
+  'kind' | 'frequency' | 'weekday' | 'dayOfMonth' | 'times' | 'time' | 'timezone'>, after: Date): string | null {
   if (definition.kind === 'once' || !definition.frequency) return null;
   const parsed = parseRoutineSchedule({
     schedule: definition.frequency, triggerTime: definition.time, kind: 'recurring',
+    triggerTimes: definition.times,
     frequency: definition.frequency, weekday: definition.weekday, dayOfMonth: definition.dayOfMonth,
     timezone: definition.timezone, now: after
   });

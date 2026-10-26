@@ -13,7 +13,7 @@ npm run verify:regression -- --issue ISSUE-0012
 npm run verify:candidate
 ```
 
-`tests/acceptance/catalog.json` 的 `ruleAcceptance` 保存 113 条规则的完整场景，`cases` 保存可执行的局部证据，`npm run test:catalog` 会同时核对规则归属、具体步骤和测试入口。`npm run test:plan` 生成 [规则级测试计划](../../../../docs/acceptance-test-plan.md)。单测与 Host/SQLite 集成用于日常和功能完成；Playwright `_electron.launch` 用于高价值真实页面旅程；Playwright MCP 只用于探索和排障；Computer Use 只用于真实系统、设备和跨应用。
+`tests/acceptance/catalog.json` 的 `ruleAcceptance` 保存当前全部规则的完整场景，`cases` 保存可执行的局部证据，`npm run test:catalog` 会同时核对规则归属、具体步骤和测试入口。规则数量以当前决策与矩阵编号集合为准（本轮为 117 条）。`npm run test:plan` 生成 [规则级测试计划](../../../../docs/acceptance-test-plan.md)。单测与 Host/SQLite 集成用于日常和功能完成；Playwright `_electron.launch` 用于高价值真实页面旅程；Playwright MCP 只用于探索和排障；Computer Use 只用于真实系统、设备和跨应用。
 
 同一功能域完成后可建立发布级 run 并登记功能证据，但报告必须写“功能当前可用”，不能写“全量发布通过”。准备长期交付时才运行 `verify:candidate` 和发布验收。
 

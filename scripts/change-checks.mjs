@@ -39,11 +39,13 @@ if (!paths.length) {
 }
 
 function globToRegex(glob) {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  const pattern = escaped
-    .replace(/\*\*\//g, '(?:.*/)?')
-    .replace(/\*\*/g, '.*')
-    .replace(/\*/g, '[^/]*');
+  const pattern = glob
+    .split('**')
+    .map(segment => segment
+      .split('*')
+      .map(part => part.replace(/[.+^${}()|[\]\\]/g, '\\$&'))
+      .join('[^/]*'))
+    .join('.*');
   return new RegExp(`^${pattern}$`);
 }
 
@@ -65,7 +67,9 @@ for (const path of paths) {
               .replace('{path}', path)
               .replace('{stem}', path.split('/').pop().replace(/\.[^.]+$/, ''))
           ).filter(target => existsSync(join(root, target)))
-          : []
+          : check === 'electron-e2e'
+            ? (area.e2eTargets ?? []).filter(target => existsSync(join(root, target)))
+            : []
       });
     }
   }
@@ -116,18 +120,31 @@ for (const item of [...byCheck.values()]) {
 
 // Explicit user-visible flow changes can opt into the related Electron spec.
 const e2eMapping = [
+  { areas: ['electron-avatar-picker'], target: 'tests/e2e/avatar-picker.spec.mjs', trigger: /avatar/ },
+  { areas: ['electron-file-preview'], target: 'tests/e2e/media-preview.spec.mjs', trigger: /file preview/i },
   { areas: ['renderer'], target: 'tests/e2e/private-chat.spec.mjs', trigger: /private-chat|唯一私聊|消息流/ },
   { areas: ['renderer'], target: 'tests/e2e/group-chat.spec.mjs', trigger: /群聊|group/i }
 ];
-const changedDiff = paths
-  .filter(path => path.startsWith('src/renderer/'))
-  .map(path => git(['diff', '--unified=0', '--', path]))
-  .join('\n');
-const needsE2E = paths.includes('src/renderer/App.tsx') &&
-  e2eMapping.some(mapping => mapping.trigger.test(changedDiff));
+const matchedE2eAreas = new Set(e2eMapping.flatMap(mapping =>
+  mapping.areas.some(area => matchedAreas.has(area)) ? mapping.areas : []
+));
+const diffCache = {};
+const changedDiff = paths.map(path => Object.hasOwn(diffCache, path)
+  ? diffCache[path]
+  : (diffCache[path] = git(['diff', '--unified=0', '--', path]))).join('\n');
+const explicitE2e = paths.includes('src/renderer/robot-avatar.tsx') ||
+  paths.includes('tests/e2e/avatar-picker.spec.mjs');
+const needsE2E = explicitE2e || matchedAreas.has('electron-file-preview') ||
+  matchedAreas.has('electron-test-harness') || (paths.includes('src/renderer/App.tsx') &&
+  e2eMapping.some(mapping => mapping.areas.some(area => matchedE2eAreas.has(area)) &&
+    mapping.trigger.test(changedDiff)));
 if (needsE2E) {
   const targets = e2eMapping
-    .filter(mapping => mapping.trigger.test(changedDiff))
+    .filter(mapping =>
+      (explicitE2e && mapping.areas.includes('electron-avatar-picker')) ||
+      mapping.areas.includes('electron-file-preview') && matchedAreas.has('electron-file-preview') ||
+      mapping.trigger.test(changedDiff)
+    )
     .map(mapping => mapping.target);
   byCheck.set('electron-e2e', {
     check: 'electron-e2e',
@@ -164,7 +181,7 @@ console.log(JSON.stringify({
     targets: item.targets
   })),
   skipped: matrix.areas
-    .filter(area => !checks.some(check => check.areas?.includes(area.id)))
+    .filter(area => !matchedAreas.has(area.id))
     .map(area => ({ area: area.id, label: area.label, reason: '本轮路径未命中该模块' }))
 }, null, 2));
 

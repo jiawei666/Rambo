@@ -1617,7 +1617,7 @@ def _write_report(run_dir: Path) -> None:
         lines.extend(
             [
                 "",
-                f"> 本 run 为旧版 schema，仍保留 {legacy_flow_count} 条历史 E 流程；新 run 使用 J1–J4 和 6 个发布套件，不再创建 E 流程义务。",
+                f"> 本 run 为旧版 schema，仍保留 {legacy_flow_count} 条历史 E 流程；新 run 使用 J1–J4 和 7 个发布套件，不再创建 E 流程义务。",
             ]
         )
     lines.extend(["", "## 子case与问题状态", ""])

@@ -8,14 +8,14 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const version = '0.163.0';
-const sha256 = 'c64323d8d51933c3fe50489e841f3a9ebbce971d9e06dc3d734ac2f3c7ddb2cf';
+const version = '0.164.0';
+const sha256 = '7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0';
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('当前已固定校验的运行时仅支持 macOS arm64');
 const dest = resolve('runtime/codex', version);
 if (existsSync(join(dest, 'bin/codex-app-server'))) { console.log(`运行时已准备：${dest}`); process.exit(0); }
 const temporary = await mkdtemp(join(tmpdir(), 'rambo-runtime-'));
 try {
-  let archive = '/tmp/rambo-app-server-package-0.163.0-aarch64-apple-darwin.tar.gz';
+  let archive = `/tmp/rambo-app-server-package-${version}-aarch64-apple-darwin.tar.gz`;
   if (!existsSync(archive)) {
     archive = join(temporary, 'runtime.tar.gz');
     const response = await fetch(`https://github.com/openai/codex/releases/download/rust-v${version}/codex-app-server-package-aarch64-apple-darwin.tar.gz`);
@@ -33,6 +33,6 @@ try {
   if (!existsSync(join(extracted, 'bin/codex-app-server'))) throw new Error('归档布局与固定版本不匹配');
   await mkdir(resolve('runtime/codex'), { recursive: true });
   await rename(extracted, dest);
-  await writeFile(join(dest, 'rambo-runtime.json'), JSON.stringify({ version, sha256, source: 'openai/codex rust-v0.163.0', sessionSource: 'app-server' }, null, 2));
+  await writeFile(join(dest, 'rambo-runtime.json'), JSON.stringify({ version, sha256, source: `openai/codex rust-v${version}`, sessionSource: 'app-server' }, null, 2));
   console.log(`已准备独立 App Server ${version}：${dest}`);
 } finally { await rm(temporary, { recursive: true, force: true }); }

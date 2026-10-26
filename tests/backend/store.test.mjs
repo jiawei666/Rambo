@@ -9,12 +9,23 @@ import ts from 'typescript';
 
 const storeSourcePath = new URL('../../src/main/store.ts', import.meta.url);
 const scheduleSourcePath = new URL('../../src/main/routine-schedule.ts', import.meta.url);
+const robotAvatarSourcePath = new URL('../../src/shared/robot-avatar.ts', import.meta.url);
+const contractsSourcePath = new URL('../../src/shared/contracts.ts', import.meta.url);
 const compiledSchedule = ts.transpileModule(readFileSync(scheduleSourcePath, 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText;
+const compiledRobotAvatar = ts.transpileModule(readFileSync(robotAvatarSourcePath, 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText;
+const compiledContracts = ts.transpileModule(readFileSync(contractsSourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText;
 const compiledStore = ts.transpileModule(readFileSync(storeSourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
-}).outputText.replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'");
+}).outputText
+  .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
+  .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'")
+  .replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
 const groupActionsSourcePath = new URL('../../src/renderer/group-create-actions.ts', import.meta.url);
 const compiledGroupActions = ts.transpileModule(readFileSync(groupActionsSourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
@@ -24,12 +35,125 @@ async function withDirectory(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-store-test-'));
   const modulePath = join(directory, 'store.mjs');
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule, { mode: 0o600 });
+  writeFileSync(join(directory, 'robot-avatar.mjs'), compiledRobotAvatar, { mode: 0o600 });
+  writeFileSync(join(directory, 'contracts.mjs'), compiledContracts, { mode: 0o600 });
   writeFileSync(modulePath, compiledStore, { mode: 0o600 });
   try {
     const { Store } = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);
-    await run(Store, directory);
+    const originalStore = Store;
+    const initializedStore = class extends originalStore {
+      constructor(directory) {
+        super(directory);
+        if (!this.settings().defaultBotModel) {
+          this.setSetting('defaultBotModel', 'test-model');
+          this.setSetting('defaultBotPermission', 'fullAccess');
+        }
+      }
+    };
+    await run(initializedStore, directory);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
+
+test('randomizes legacy Bot eye poses once while preserving robot appearance settings', async () => {
+  await withDirectory(async (Store, directory) => {
+    const initial = new Store(directory);
+    const legacy = initial.createBot('Legacy avatar', 'grok-avatar:v1:cloud:violet').bot;
+    const robot = initial.createBot('Existing robot', 'agent-robot:v1:100:orange').bot;
+    const alreadyCurrent = initial.createBot('Current avatar', 'agent-robot:v2:0:red:angry').bot;
+    initial.db.exec('PRAGMA user_version=17');
+    initial.close();
+
+    const migrated = new Store(directory);
+    let savedLegacyAvatar;
+    try {
+      savedLegacyAvatar = migrated.bot(legacy.id).avatar;
+      assert.match(savedLegacyAvatar, /^agent-robot:v2:100:violet:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
+      assert.match(migrated.bot(robot.id).avatar, /^agent-robot:v2:100:orange:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
+      assert.equal(migrated.bot(alreadyCurrent.id).avatar, 'agent-robot:v2:100:red:angry');
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+    } finally { migrated.close(); }
+
+    const reopened = new Store(directory);
+    try { assert.equal(reopened.bot(legacy.id).avatar, savedLegacyAvatar); }
+    finally { reopened.close(); }
+  });
+});
+
+test('every selectable Robot eye pose remains a valid persisted appearance', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      for (const eyeStyle of ['idle', 'happy', 'sad', 'angry', 'sleepy', 'sleep', 'surprise']) {
+        const avatar = `agent-robot:v2:100:blue:${eyeStyle}`;
+        const created = store.createBot(`Eye ${eyeStyle}`, avatar);
+        assert.equal(store.bot(created.bot.id).avatar, avatar);
+      }
+    } finally { store.close(); }
+  });
+});
+
+test('replaces a persisted input eye once now that input is not selectable', async () => {
+  await withDirectory(async (Store, directory) => {
+    const initial = new Store(directory);
+    const inputBot = initial.createBot('Input eye', 'agent-robot:v2:100:blue:input').bot;
+    const happyBot = initial.createBot('Happy eye', 'agent-robot:v2:100:green:happy').bot;
+    initial.db.exec('PRAGMA user_version=20');
+    initial.close();
+
+    const migrated = new Store(directory);
+    let savedInputAvatar;
+    try {
+      savedInputAvatar = migrated.bot(inputBot.id).avatar;
+      assert.match(savedInputAvatar, /^agent-robot:v2:100:blue:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
+      assert.equal(migrated.bot(happyBot.id).avatar, 'agent-robot:v2:100:green:happy');
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+    } finally { migrated.close(); }
+
+    const reopened = new Store(directory);
+    try { assert.equal(reopened.bot(inputBot.id).avatar, savedInputAvatar); }
+    finally { reopened.close(); }
+  });
+});
+
+test('persists queued chat messages and Routine recovery decisions across store restart', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    const { bot, chat } = store.createBot('Restart queue Bot', 'a');
+    const queued = store.enqueueChatMessage(chat.id, 'dispatch after restart');
+    const uncertain = store.enqueueChatMessage(chat.id, 'do not resend blindly');
+    store.setQueuedChatMessageStatus(uncertain.id, 'dispatching');
+    const routine = store.createRoutine({
+      botId: bot.id, title: 'Restart recovery', instruction: 'Check safely.',
+      schedule: '每天', time: '09:00', sourceCallId: 'restart-recovery'
+    });
+    const run = store.createRoutineRun({
+      routineId: routine.id, scheduledFor: '2026-10-25T01:00:00.000Z',
+      trigger: 'schedule', status: 'running'
+    });
+    const claimed = store.claimRoutineRunRecovery(run.id);
+    assert.equal(claimed.recoveryCount, 1);
+    store.markRoutineRunNeedsUser(run.id, '外部操作结果无法确认。');
+    store.close();
+
+    const reopened = new Store(directory);
+    try {
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.deepEqual(reopened.queuedChatMessages(chat.id).map(message => message.id), [queued.id]);
+      assert.equal(reopened.messages(chat.id).find(message => message.id === uncertain.id)?.dispatchStatus, 'needs_user');
+      const persistedRun = reopened.routineRun(run.id);
+      assert.equal(persistedRun.status, 'needs_user');
+      assert.equal(persistedRun.recoveryCount, 1);
+      assert.equal(persistedRun.needsUserReason, '外部操作结果无法确认。');
+      assert.equal(reopened.routine(routine.id).status, 'paused');
+      assert.throws(() => reopened.setRoutineStatus(routine.id, 'active'), /先检查上次运行结果/u);
+      const resumed = reopened.resolveRoutineRunAndResume(routine.id);
+      assert.equal(resumed.status, 'active');
+      assert.equal(reopened.routineRun(run.id).status, 'interrupted');
+      assert.equal(reopened.routineRun(run.id).error, '外部操作结果无法确认。');
+      assert.match(reopened.routineRun(run.id).process, /用户检查后选择恢复计划/u);
+    } finally { reopened.close(); }
+  });
+});
 
 test('migrates legacy chats without changing existing bot/chat data', async () => {
   await withDirectory(async (Store, directory) => {
@@ -88,7 +212,7 @@ test('migrates saved groups to allow a retained group with no default Bot', asyn
       assert.deepEqual(store.group('group-old').memberIds, ['bot-old']);
       assert.equal(store.group('group-old').defaultBotId, 'bot-old');
       assert.equal(store.db.prepare('PRAGMA table_info(group_chats)').all().find(row => row.name === 'defaultBotId').notnull, 0);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 16);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 24);
       assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { store.close(); }
   });
@@ -115,7 +239,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const migrated = new Store(directory);
     try {
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 16);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
       assert.equal(migrated.chat(currentChatId).threadId, 'thread-current-v12');
       assert.equal(migrated.chat(currentChatId).archived, false);
       assert.equal(migrated.chat('chat-newer-empty').archived, true);
@@ -135,7 +259,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 16);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
       assert.equal(reopened.chat('chat-newer-empty').archived, true);
       assert.deepEqual(reopened.chats().map(chat => chat.id), [currentChatId]);
       assert.deepEqual(reopened.allChats().map(chat => chat.id), [currentChatId]);
@@ -165,25 +289,9 @@ test('one persistent chat per Bot keeps chat overrides and Bot defaults scoped',
     assert.equal(store.chat(first.chat.id).model, null);
     assert.equal(store.chat(first.chat.id).permission, null);
 
-    store.applyBotPermissionToChats(first.bot.id, 'workspaceWrite');
-    assert.equal(store.bot(first.bot.id).permission, 'workspaceWrite');
-    assert.equal(store.chat(first.chat.id).permission, 'workspaceWrite');
-    assert.equal(store.chat(second.chat.id).permission, null);
-    assert.equal(store.ensureBotChat(first.bot.id).permission, 'workspaceWrite');
-    assert.equal(store.chats().length, 2);
-
-    // The default and all existing chat overrides change as one transaction.
-    store.db.exec(`CREATE TRIGGER fail_chat_permission_update BEFORE UPDATE OF permission ON chats
-      WHEN OLD.botId='${first.bot.id}' BEGIN SELECT RAISE(ABORT, 'test failure'); END`);
-    assert.throws(() => store.applyBotPermissionToChats(first.bot.id, 'readOnly'), /test failure/);
-    assert.equal(store.bot(first.bot.id).permission, 'workspaceWrite');
-    assert.equal(store.chat(first.chat.id).permission, 'workspaceWrite');
-    store.db.exec('DROP TRIGGER fail_chat_permission_update');
-
     assert.throws(() => store.updateChat(first.chat.id, { permission: 'admin' }));
     assert.throws(() => store.updateChat(first.chat.id, { title: 'Renamed chat' }), /不支持的聊天字段/);
     assert.throws(() => store.updateChat(first.chat.id, { unexpected: true }));
-    assert.throws(() => store.applyBotPermissionToChats(first.bot.id, 'admin'));
     } finally { store.close(); }
   });
 });
@@ -266,16 +374,114 @@ test('two Bots keep chats, settings, routines, memories, and global settings iso
   });
 });
 
-test('new Bots default to full-access permission without any extra tool resources enabled', async () => {
+test('new Bots copy explicit execution defaults and independent resource switches', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
     try {
-      const { bot, chat } = store.createBot('Default permissions', 'default-avatar');
-      assert.equal(bot.permission, 'fullAccess');
+      store.setSetting('defaultBotModel', 'model-a');
+      store.setSetting('defaultBotPermission', 'readOnly');
+      store.syncBotResources([
+        'skill:documents', 'skill:pdf', 'mcp:playwright'
+      ], [
+        'skill:documents', 'mcp:playwright'
+      ]);
+      assert.deepEqual(JSON.parse(store.settings().globalDefaultResourceIds), [
+        'skill:documents', 'mcp:playwright'
+      ]);
+      const first = store.createBot('Default permissions', 'default-avatar');
+      const { bot, chat } = first;
+      assert.equal(bot.model, 'model-a');
+      assert.equal(bot.permission, 'readOnly');
+      assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), true);
+      assert.equal(store.botResourceEnabled(bot.id, 'skill:pdf'), false);
+      assert.equal(store.botResourceEnabled(bot.id, 'mcp:playwright'), true);
       assert.equal(chat.permission, null);
       assert.equal(store.chatRoutineToolsEnabled(chat.id), false);
       assert.equal(store.chatMemoryToolsEnabled(chat.id), false);
       assert.deepEqual(store.groups(), []);
+      assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), true);
+      assert.equal(store.botResourceEnabled(bot.id, 'mcp:playwright'), true);
+
+      store.setBotResource(bot.id, 'skill:documents', false);
+      store.setSetting('defaultBotModel', 'model-b');
+      store.setSetting('defaultBotPermission', 'workspaceWrite');
+      const second = store.createBot('Second defaults', 'default-avatar');
+      assert.equal(store.bot(bot.id).model, 'model-a');
+      assert.equal(store.bot(bot.id).permission, 'readOnly');
+      assert.equal(store.bot(bot.id).notificationsEnabled, true);
+      store.updateBot(bot.id, { notificationsEnabled: false });
+      assert.equal(store.bot(bot.id).notificationsEnabled, false);
+      assert.equal(store.bot(second.bot.id).notificationsEnabled, true);
+      assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), false);
+      assert.equal(second.bot.model, 'model-b');
+      assert.equal(second.bot.permission, 'workspaceWrite');
+      assert.equal(store.botResourceEnabled(second.bot.id, 'skill:documents'), true);
+
+      store.syncBotResources(['skill:pdf', 'mcp:playwright'], ['skill:pdf']);
+      assert.equal(store.botResourceRecords(bot.id).some(record => record.resourceId === 'skill:documents'), false);
+      store.syncBotResources(['skill:documents', 'skill:pdf', 'mcp:playwright'], ['skill:documents']);
+      assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), false);
+      assert.equal(store.botResourceEnabled(second.bot.id, 'skill:documents'), false);
+    } finally {
+      store.close();
+    }
+    const reopened = new Store(directory);
+    try {
+      const bots = reopened.bots();
+      assert.deepEqual(bots.map(bot => [bot.model, bot.permission]), [
+        ['model-a', 'readOnly'], ['model-b', 'workspaceWrite']
+      ]);
+      assert.equal(reopened.botResourceEnabled(bots[0].id, 'mcp:playwright'), true);
+      assert.equal(reopened.botResourceEnabled(bots[1].id, 'mcp:playwright'), true);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+test('invalid or empty global permission never silently becomes Full Access', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.setSetting('defaultBotModel', 'model-a');
+      store.setSetting('defaultBotPermission', 'not-a-permission');
+      const beforeBots = store.bots().length;
+      const beforeChats = store.chats().length;
+
+      assert.throws(
+        () => store.createBot('Invalid permission', 'a'),
+        /新建 Bot 的全局权限配置无效/u
+      );
+      assert.equal(store.bots().length, beforeBots);
+      assert.equal(store.chats().length, beforeChats);
+
+      store.setSetting('defaultBotPermission', '');
+      const created = store.createBot('Legacy default', 'b');
+      assert.equal(created.bot.permission, 'fullAccess');
+      assert.equal(created.bot.model, 'model-a');
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test('saving valid execution defaults clears a previous initialization error', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.setSetting('modelInitializationError', '模型目录不可用');
+      store.setExecutionDefaultModel(' model-after-recovery ');
+      assert.equal(store.settings().defaultBotModel, 'model-after-recovery');
+      assert.equal(store.settings().modelInitializationError, '');
+
+      store.setSetting('modelInitializationError', '第二次初始化失败');
+      store.setExecutionDefaults({
+        model: ' model-with-explicit-permission ',
+        permission: 'readOnly'
+      });
+      assert.equal(store.settings().defaultBotModel, 'model-with-explicit-permission');
+      assert.equal(store.settings().defaultBotPermission, 'readOnly');
+      assert.equal(store.settings().modelInitializationError, '');
     } finally {
       store.close();
     }
@@ -377,6 +583,38 @@ test('adding members to an existing group appends membership, rejects invalid me
   });
 });
 
+test('group archive is reversible and permanent deletion cascades group history and member sessions', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    let groupId, sessionIds;
+    try {
+      const first = store.createBot('First', 'a');
+      const second = store.createBot('Second', 'b');
+      const group = store.createGroup('Lifecycle room', [first.bot.id, second.bot.id]);
+      groupId = group.id;
+      store.addGroupMessage(group.id, 'user', 'group history');
+      sessionIds = [store.groupSession(group.id, first.bot.id).id, store.groupSession(group.id, second.bot.id).id];
+
+      const archived = store.setGroupArchived(group.id, true);
+      assert.equal(archived.archived, true);
+      assert.deepEqual(store.groups(), []);
+      assert.deepEqual(store.archivedGroups().map(item => item.id), [group.id]);
+      assert.equal(store.groupMessages(group.id).length, 1);
+
+      const restored = store.setGroupArchived(group.id, false);
+      assert.equal(restored.archived, false);
+      assert.deepEqual(store.groups().map(item => item.id), [group.id]);
+      assert.deepEqual(store.archivedGroups(), []);
+
+      store.deleteGroup(group.id);
+      assert.deepEqual(store.groups(), []);
+      assert.deepEqual(store.groupSessions(), []);
+      for (const chatId of sessionIds) assert.throws(() => store.chat(chatId), /聊天不存在/);
+      assert.throws(() => store.group(groupId), /群聊不存在/);
+    } finally { store.close(); }
+  });
+});
+
 test('routine list is backed by SQLite and remains empty after reopening without created tasks', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
@@ -392,7 +630,7 @@ test('routine list is backed by SQLite and remains empty after reopening without
       assert.deepEqual(reopened.routines(), []);
       const table = reopened.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routines'").get();
       assert.equal(table?.name, 'routines');
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 16);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
     } finally { reopened.close(); }
   });
 });
@@ -418,8 +656,48 @@ test('migrates a version 13 routines table that predates scheduling columns', as
       const columns = store.db.prepare('PRAGMA table_info(routines)').all().map(row => row.name);
       assert.equal(columns.includes('nextRunAt'), true);
       assert.equal(columns.includes('lastScheduledFor'), true);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 16);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 24);
     } finally { store.close(); }
+  });
+});
+
+test('legacy routine runs gain a readable plan snapshot while retaining their original instruction', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    let botId, routineId;
+    try {
+      const { bot } = store.createBot('Legacy Run Owner', 'a');
+      botId = bot.id;
+      const routine = store.createRoutine({
+        botId,
+        title: 'Legacy daily',
+        instruction: 'Original persisted instruction.',
+        schedule: '每天',
+        time: '09:30',
+        sourceCallId: 'legacy-run-snapshot'
+      });
+      routineId = routine.id;
+      store.db.prepare(`INSERT INTO routine_runs(
+        id,routineId,botId,routineTitle,instruction,scheduledFor,status,trigger,createdAt)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(
+        'legacy-run', routineId, botId, routine.title, routine.definition.instruction,
+        '2026-10-22T01:30:00.000Z', 'succeeded', 'schedule', '2026-10-22T01:30:00.000Z'
+      );
+      store.db.exec('DROP INDEX IF EXISTS routine_runs_routine');
+      store.db.exec(`ALTER TABLE routine_runs DROP COLUMN definitionJson`);
+      store.db.exec(`ALTER TABLE routine_runs DROP COLUMN definitionVersion`);
+    } finally { store.close(); }
+
+    const migrated = new Store(directory);
+    try {
+      const run = migrated.routineRun('legacy-run');
+      assert.equal(run.routineId, routineId);
+      assert.equal(run.botId, botId);
+      assert.equal(run.instruction, 'Original persisted instruction.');
+      assert.equal(run.definition.instruction, run.instruction);
+      assert.equal(run.definition.schedule, '');
+      assert.match(run.definitionVersion, /^[a-f\d]{64}$/u);
+    } finally { migrated.close(); }
   });
 });
 
@@ -439,8 +717,8 @@ test('routine list maps persisted summary fields and orders the newest update fi
           id: 'routine-paused', title: 'Weekly summary', botId: bot.id, status: 'paused',
           sourceChatId: expectSourceChatId,
           definition: {
-            instruction: '', schedule: '', kind: 'recurring', timezone: 'Asia/Shanghai',
-            frequency: 'daily', weekday: null, dayOfMonth: null, time: '09:00', runAt: null,
+            instruction: '', execution: { mode: 'chat' }, schedule: '', kind: 'recurring', timezone: 'Asia/Shanghai',
+            frequency: 'daily', weekday: null, dayOfMonth: null, times: ['09:00'], time: '09:00', runAt: null,
             catchUp: true, rememberLastResult: false, successNotification: false
           },
           nextRunAt: null,
@@ -451,8 +729,8 @@ test('routine list maps persisted summary fields and orders the newest update fi
           id: 'routine-active', title: 'Daily review', botId: bot.id, status: 'active',
           sourceChatId: expectSourceChatId,
           definition: {
-            instruction: '', schedule: '', kind: 'recurring', timezone: 'Asia/Shanghai',
-            frequency: 'daily', weekday: null, dayOfMonth: null, time: '09:00', runAt: null,
+            instruction: '', execution: { mode: 'chat' }, schedule: '', kind: 'recurring', timezone: 'Asia/Shanghai',
+            frequency: 'daily', weekday: null, dayOfMonth: null, times: ['09:00'], time: '09:00', runAt: null,
             catchUp: true, rememberLastResult: false, successNotification: false
           },
           nextRunAt: null,
@@ -519,9 +797,9 @@ test('routine creation persists its definition, is idempotent for one tool call,
       createdDefinition = created.definition;
       assert.equal(created.status, 'active');
       assert.deepEqual(created.definition, {
-        instruction: input.instruction, schedule: input.schedule,
+        instruction: input.instruction, execution: { mode: 'chat' }, schedule: input.schedule,
         kind: 'recurring', timezone: 'Asia/Shanghai', frequency: 'weekdays',
-        weekday: null, dayOfMonth: null, time: '09:00', runAt: null,
+        weekday: null, dayOfMonth: null, times: ['09:00'], time: '09:00', runAt: null,
         catchUp: true, rememberLastResult: false, successNotification: false
       });
       assert.deepEqual(store.routine(created.id), created);
@@ -540,6 +818,80 @@ test('routine creation persists its definition, is idempotent for one tool call,
       assert.equal(saved.botId, bot.id);
       assert.deepEqual(saved.definition, createdDefinition);
       assert.deepEqual(store.routine(saved.id), saved);
+    } finally { store.close(); }
+  });
+});
+
+test('Routine execution modes persist with backward-compatible chat defaults', async () => {
+  await withDirectory(async (Store, directory) => {
+    let store = new Store(directory);
+    const { bot } = store.createBot('Routine execution owner', 'brand');
+    try {
+      const legacy = store.createRoutine({
+        botId: bot.id,
+        title: 'Legacy chat mode',
+        instruction: 'Summarize the result in conversation.',
+        schedule: '每天 09:00',
+        sourceCallId: 'execution-legacy'
+      });
+      assert.deepEqual(legacy.definition.execution, { mode: 'chat' });
+
+      const script = store.createRoutine({
+        botId: bot.id,
+        title: 'Script-backed report',
+        instruction: 'Generate and inspect a report.',
+        schedule: '每天 10:00',
+        sourceCallId: 'execution-script',
+        executionMode: 'script',
+        executionTemplate: 'Run the report generator and verify its output file.'
+      });
+      assert.deepEqual(script.definition.execution, {
+        mode: 'script',
+        template: 'Run the report generator and verify its output file.'
+      });
+      const hybrid = store.createRoutine({
+        botId: bot.id,
+        title: 'Hybrid report',
+        instruction: 'Judge the input, then run the deterministic export.',
+        schedule: '每天 11:00',
+        sourceCallId: 'execution-hybrid',
+        executionMode: 'hybrid',
+        executionTemplate: 'Choose input fields, then run the exporter.'
+      });
+      assert.equal(hybrid.definition.execution.mode, 'hybrid');
+      assert.throws(() => store.createRoutine({
+        botId: bot.id,
+        title: 'Missing template',
+        instruction: 'Run a script.',
+        schedule: '每天 12:00',
+        sourceCallId: 'execution-missing-template',
+        executionMode: 'script'
+      }), /需要提供执行模板/u);
+
+      const updated = store.updateRoutine(script.id, {
+        executionMode: 'chat',
+        executionTemplate: null
+      });
+      assert.deepEqual(updated.definition.execution, { mode: 'chat' });
+
+      const raw = store.db.prepare('SELECT definitionJson FROM routines WHERE id=?').get(legacy.id);
+      const definition = JSON.parse(String(raw.definitionJson));
+      delete definition.execution;
+      store.db.prepare('UPDATE routines SET definitionJson=? WHERE id=?')
+        .run(JSON.stringify(definition), legacy.id);
+    } finally { store.close(); }
+
+    store = new Store(directory);
+    try {
+      const legacy = store.routines().find(item => item.title === 'Legacy chat mode');
+      const script = store.routines().find(item => item.title === 'Script-backed report');
+      const hybrid = store.routines().find(item => item.title === 'Hybrid report');
+      assert.deepEqual(legacy.definition.execution, { mode: 'chat' });
+      assert.deepEqual(script.definition.execution, { mode: 'chat' });
+      assert.deepEqual(hybrid.definition.execution, {
+        mode: 'hybrid',
+        template: 'Choose input fields, then run the exporter.'
+      });
     } finally { store.close(); }
   });
 });
@@ -621,7 +973,10 @@ test('reopening a Bot resolves the same private chat and preserves settings, mes
       assert.equal(resolved.id, chat.id);
       assert.equal(reopened.messages(chat.id)[0].text, 'remove this message');
       assert.deepEqual(reopened.memories(bot.id).map(memory => memory.text), ['shared Bot memory']);
-      assert.deepEqual(reopened.settings(), { theme: 'light', wakeEnabled: 'true' });
+      assert.deepEqual(reopened.settings(), {
+        globalPermission: 'fullAccess', theme: 'light', wakeEnabled: 'true',
+        defaultBotModel: 'test-model', defaultBotPermission: 'fullAccess'
+      });
       assert.equal(reopened.routines()[0].title, 'Persisted routine');
       assert.equal(reopened.routines()[0].botId, bot.id);
     } finally { reopened.close(); }
@@ -871,7 +1226,7 @@ test('turn metadata is atomic, immutable across default changes, and honest abou
       permission: 'readOnly', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' }
     };
     const begun = store.beginTurn(chat.id, 'hello', {
-      threadId: 'thread-1', requestedModel: 'gpt-5.6-luna', modelSource: 'bot',
+      threadId: 'thread-1', requestedModel: 'gpt-5.6-luna', modelSource: 'chat',
       permissionSnapshot, threadModelObservation: observation
     });
 
@@ -928,6 +1283,28 @@ test('turn metadata is atomic, immutable across default changes, and honest abou
   });
 });
 
+test('a hidden turn prompt records turn metadata without inserting a visible user message', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const { chat } = store.createBot('Hidden prompt', 'a');
+      const permissionSnapshot = {
+        permission: 'readOnly', approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' }
+      };
+      const begun = store.beginTurn(chat.id, 'internal handoff', {
+        threadId: 'thread-hidden', requestedModel: 'gpt-5.6-luna', modelSource: 'bot',
+        permissionSnapshot, promptVisible: false
+      });
+
+      assert.deepEqual(store.messages(chat.id), []);
+      assert.equal(store.turn(begun.turn.id)?.threadId, 'thread-hidden');
+      assert.equal(store.turns(chat.id).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 test('group messages persist in one shared timeline with one hidden member thread per Bot', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
@@ -948,12 +1325,22 @@ test('group messages persist in one shared timeline with one hidden member threa
       store.addMessage(first.chat.id, 'user', 'private trace phrase');
       assert.deepEqual(store.groupMessages(group.id), []);
       const user = store.addGroupMessage(group.id, 'user', 'Please summarize the shared notes.');
-      const partial = store.groupAssistantItem(group.id, first.bot.id, 'item-1', 'Here are', true, 'streaming');
-      const completed = store.groupAssistantItem(group.id, first.bot.id, 'item-1', 'Here are the notes.', false, 'complete');
+      const partial = store.groupAssistantItem(
+        group.id, first.bot.id, 'commentary-1', 'I will check the shared notes.', true, 'streaming', 'turn-1', 'commentary'
+      );
+      const nextPhase = store.groupAssistantItem(
+        group.id, first.bot.id, 'partial-1', 'I found the main points.', true, 'streaming', 'turn-1', 'partial_answer'
+      );
+      const completed = store.groupAssistantItem(
+        group.id, first.bot.id, 'final-1', 'Here are the notes.', false, 'complete', 'turn-1', 'final_answer'
+      );
       assert.equal(partial.id, completed.id);
+      assert.equal(nextPhase.id, completed.id);
       assert.equal(completed.senderBotId, first.bot.id);
       assert.equal(completed.senderName, 'Researcher');
       assert.equal(completed.text, 'Here are the notes.');
+      assert.equal(completed.itemId, 'final-1');
+      assert.equal(completed.phase, 'final_answer');
       assert.deepEqual(store.groupMessages(group.id).map(message => message.id), [user.id, completed.id]);
     } finally { store.close(); }
 
@@ -985,7 +1372,7 @@ test('group member setting chats keep model and permission overrides isolated pe
 
       assert.equal(store.chat(first.chat.id).model, null);
       assert.equal(store.chat(first.chat.id).permission, null);
-      assert.equal(store.bot(first.bot.id).model, null);
+      assert.equal(store.bot(first.bot.id).model, 'test-model');
       assert.equal(store.bot(first.bot.id).permission, 'fullAccess');
       const secondGroupChat = store.groupMemberChats(secondGroup.id).find(chat => chat.botId === first.bot.id);
       assert.ok(secondGroupChat);
@@ -993,6 +1380,80 @@ test('group member setting chats keep model and permission overrides isolated pe
       assert.equal(secondGroupChat.model, null);
       assert.equal(secondGroupChat.permission, null);
       assert.deepEqual(store.groupMemberChats(firstGroup.id).map(chat => chat.botId), [first.bot.id, second.bot.id]);
+    } finally { store.close(); }
+  });
+});
+
+test('connector connections persist by provider and grants remain isolated per Bot', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    let first, second, connection;
+    try {
+      first = store.createBot('Connector A', 'a').bot;
+      second = store.createBot('Connector B', 'b').bot;
+      connection = store.createConnectorConnection({
+        id: 'connection-qq-1',
+        providerId: 'qqmail',
+        displayName: '工作邮箱',
+        accountLabel: 'owner@qq.com',
+        authKind: 'credentials',
+        credentialRef: 'pending-keychain:connection-qq-1'
+      });
+
+      assert.equal(connection.status, 'ready');
+      assert.equal(store.connectorCredentialRef(connection.id), 'pending-keychain:connection-qq-1');
+      assert.deepEqual(store.connectorConnections().map(item => item.id), [connection.id]);
+      assert.equal('credentialRef' in connection, false);
+
+      assert.deepEqual(
+        store.setConnectorGrant(first.id, connection.id, true).map(grant => grant.botId),
+        [first.id]
+      );
+      assert.deepEqual(store.setConnectorGrant(second.id, connection.id, true).map(grant => grant.botId), [second.id]);
+      assert.deepEqual(store.setConnectorGrant(first.id, connection.id, false), []);
+      assert.deepEqual(store.connectorGrants().map(grant => grant.botId), [second.id]);
+      assert.equal(store.connectorConnection(connection.id).status, 'ready');
+      assert.equal(store.connectorConnection(connection.id).accountLabel, 'owner@qq.com');
+    } finally { store.close(); }
+
+    const reopened = new Store(directory);
+    try {
+      assert.deepEqual(reopened.connectorGrants().map(grant => grant.botId), [second.id]);
+      assert.equal(reopened.connectorConnection(connection.id).displayName, '工作邮箱');
+    } finally { reopened.close(); }
+  });
+});
+
+test('removing a connector connection cascades its Bot grants', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const bot = store.createBot('Cascade bot', 'a').bot;
+      const connection = store.createConnectorConnection({
+        id: 'connection-cascade',
+        providerId: 'qqmail',
+        displayName: 'QQ',
+        accountLabel: 'cascade@qq.com',
+        authKind: 'credentials',
+        credentialRef: 'pending-keychain:connection-cascade'
+      });
+      store.setConnectorGrant(bot.id, connection.id, true);
+      store.deleteConnectorConnection(connection.id);
+      assert.deepEqual(store.connectorGrants(), []);
+      assert.deepEqual(store.connectorConnections(), []);
+    } finally { store.close(); }
+  });
+});
+
+
+test('owned Codex thread inventory includes archived chats and excludes unrelated native sessions', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const { bot, chat } = store.createBot('Migration owner', 'grok-avatar:v1:cloud:violet');
+      store.bindThread(chat.id, '00000000-0000-0000-0000-000000000001');
+      store.setBotArchived(bot.id, true);
+      assert.deepEqual(store.ownedCodexThreadIds(), ['00000000-0000-0000-0000-000000000001']);
     } finally { store.close(); }
   });
 });

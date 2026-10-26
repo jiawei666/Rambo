@@ -27,9 +27,9 @@ const escapeCell = value => String(value).replaceAll('|', '\\|').replaceAll('\n'
 const lines = [
   '# Rambo 规则级测试计划',
   '',
-  '生成日期：2026-10-22。来源：`tests/acceptance/rule-plans.mjs`、`tests/acceptance/catalog.json` 与 `docs/acceptance-matrix.md`。',
+  '生成日期：2026-10-23。来源：`tests/acceptance/rule-plans.mjs`、`tests/acceptance/catalog.json` 与 `docs/acceptance-matrix.md`。',
   '',
-  `本文件回答“每条已确认规则究竟怎么验”。113 条规则各有完整场景、通过条件、适用测试层和证据要求；现有 ${catalog.cases.length} 个测试案例只是局部证据入口，不能用来说明整条规则已通过。可执行状态与证据状态分别记录。`,
+  `本文件回答“每条已确认规则究竟怎么验”。${catalog.ruleAcceptance.length} 条规则各有完整场景、通过条件、适用测试层和证据要求；现有 ${catalog.cases.length} 个测试案例只是局部证据入口，不能用来说明整条规则已通过。可执行状态与证据状态分别记录。`,
   '',
   '## 判定口径',
   '',
@@ -54,7 +54,7 @@ lines.push(
   `- 完整场景：**${catalog.ruleAcceptance.reduce((count, item) => count + item.scenarios.length, 0)}** 个`,
   `- 局部测试案例：**${catalog.cases.length}** 个，其中可执行 **${catalog.cases.filter(item => item.status !== 'not_implemented').length}** 个`,
   `- 已有局部证据的规则：**${implementedRules.size}** 条；规则级当前通过：**0** 条`,
-  `- 当前发布判定：**未通过，产品功能与验收证据尚未覆盖全部 113 条**`,
+  `- 当前发布判定：**未通过，产品功能与验收证据尚未覆盖全部 ${catalog.ruleAcceptance.length} 条**`,
   ''
 );
 
@@ -96,7 +96,7 @@ lines.push(
   '| 连接与文件 | connections、files | 对应功能完成时 | MCP/Skills/邮件、生图、附件及文件预览；外部账号按真实服务验证 |',
   '| 调度与恢复 | scheduling、recovery | 调度/备份实现稳定后 | 受控时钟覆盖时间分支，再用真实后台执行和候选包验证关键结果 |',
   '| 语音与系统 | J4、interface | 候选版本和发布前 | 真实麦克风、合盖环境、登录启动、通知和电源行为只在合适环境执行 |',
-  '| 发布验收 | 113 条规则、J1–J4、6 个发布套件 | 准备长期使用/交付前 | 审核完整场景在目标构建上的当前证据；任一缺口阻止通过 |',
+  `| 发布验收 | ${catalog.ruleAcceptance.length} 条规则、J1–J4、${catalog.releaseSuites.length} 个发布套件 | 准备长期使用/交付前 | 审核完整场景在目标构建上的当前证据；任一缺口阻止通过 |`,
   '',
   '## 更新方式',
   '',

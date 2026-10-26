@@ -5,7 +5,7 @@
 用户已授权开始开发，当前处于分批实现阶段。先阅读 [产品决策记录](docs/product-decisions.md)；需要核对原话、确认回复或方案变化时，查阅 [完整问答摘录](docs/conversation-evidence.md)。当前实际进度见 [实施记录](docs/implementation-progress.md)。
 
 
-全部已确认功能的操作步骤、预期结果与交付判定见 [全量验收矩阵](docs/acceptance-matrix.md)。当前正在按冻结基线逐项验收；已完成的 80 个特征门禁局部案例与 4 个候选包案例不代表 113 条规则或发布套件通过。最新进度、缺口和证据入口见[当前验收任务](docs/active-acceptance-run.md)。
+全部已确认功能的操作步骤、预期结果与交付判定见 [全量验收矩阵](docs/acceptance-matrix.md)。当前正在按冻结基线逐项验收；局部案例不代表 142 条规则或发布套件通过。最新进度、缺口和证据入口见[当前验收任务](docs/active-acceptance-run.md)。
 
 技术方案见 [技术设计](docs/technical-design.md)，Codex 0.163.0 协议与证据边界见 [App Server 本机核对](docs/app-server-evidence.md)。采用 Electron / React / TypeScript 和本机 SQLite 开始实现；Voice、Computer Use、历史隔离等仍待实际验证。
 
@@ -17,17 +17,16 @@
 
 ## 本机开发
 
-当前固定的运行时为 macOS arm64 Codex App Server 0.163.0，保留完整发行物相对布局。下载和解包不会复制认证文件或修改原生 Codex 安装。
+运行时不随 `.app` 打包。Rambo 优先直接启动本机 Codex daemon package 中的同一份 `bin/codex app-server`，独立管理自己的 stdio 子进程，不连接现有 daemon。本机没有可用入口时保留缓存与经校验下载回退。Rambo 使用应用数据目录下的独立 `codex-home` 保存会话和状态数据库，通过符号链接共用本机 `auth.json`、配置及所需资源；不复制凭据、不共享会话目录。当前共享认证支持文件模式，Keychain/auto 模式明确报不兼容。旧会话只按 Rambo 登记的 thread ID 复制并保留源文件。方案依据见 [Q147](docs/decision-followups.md#q147)。
 
 ```sh
 npm install
-npm run runtime:prepare
 npm run dev
 ```
 
-`npm run build` 生成桌面代码，`npm run package:mac` 生成本机未签名应用目录。首次未准备运行时时界面如实显示错误；不退回公用 CLI 进程。认证沿本机 Codex 配置，产品数据保存在 Electron 的 Rambo 用户数据目录。
+本机已有独立运行时时可直接 `npm run dev`；需要预置缓存时可显式运行 `npm run runtime:prepare`。`npm run build` 生成桌面代码，`npm run package:mac` 生成本机未签名应用目录。运行时下载或校验失败时界面如实显示错误，不退回公用 CLI 进程。认证沿本机 Codex 配置，产品数据保存在 Electron 的 Rambo 用户数据目录。
 
-当前实现不等于完整交付；当前规则通过为 0/113，J1–J4 和六个发布套件均未通过。尚未接通的功能和验收状态见实施记录，不使用演示回复代替真实 Codex。
+当前实现不等于完整交付；当前规则通过为 0/142，J1–J4 和七个发布套件均未通过。尚未接通的功能和验收状态见实施记录，不使用演示回复代替真实 Codex。
 
 ## 全量验收 Skill
 

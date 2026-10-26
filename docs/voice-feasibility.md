@@ -1,6 +1,6 @@
 # Codex Voice 独立接入可行性核对
 
-日期：2026-10-20。状态：协议、发行资源和公开源码的静态调查；没有启动 App Server 会话、模型推理、语音、麦克风或桌面操作，没有运行测试或编写应用代码。
+日期：2026-10-20，2026-10-25 补充 0.164.0 协议核对。状态：协议、发行资源和公开源码的静态调查；补充轮次核对了本机 schema，但没有启动新的 Live 音频复验。本文不把静态证据或 Host 集成测试当成麦克风、媒体和真实委派已通过。
 
 对应规则：V01/V02/V07/V09、M07、R11、A01–A03。本文补充[技术设计第 8 节](technical-design.md#8-codex-voice-与唤醒)，不改变产品范围或将待验证功能标记通过。
 
@@ -19,7 +19,8 @@
 
 ### 本机确定版本
 
-- 本机生成协议：`/tmp/rambo-design-codex-0163-schema`，来自 `codex-cli 0.163.0`，生成方法见[既有核对](app-server-evidence.md)。
+- 原调查协议：`/tmp/rambo-design-codex-0163-schema`，来自 `codex-cli 0.163.0`，生成方法见[既有核对](app-server-evidence.md)。
+- 2026-10-25 补充核对：`codex-cli 0.164.0` 实验协议生成到 `/tmp/rambo-codex-schema-0164-exp.ngzlL7`；其中 `ThreadRealtimeStartParams` 仍没有 `tools` 或 `dynamicTools`。
 - 当前 npm 平台发行资源：`/Users/yuanjiawei/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/`。
 - 其中 `codex-resources/voice/manifest.json` 声明 `appVersion: 0.163.0`、`buildCommit: 83086188ae0614bd882818ff1aa23f3194962012`、目标 `aarch64-apple-darwin`。
 - 以下公开源码按该 **buildCommit 固定链接**核对；不是把线上 main 的新代码反推成本机能力。源码下载到 `/tmp`，没有改产品源文件。
@@ -122,11 +123,14 @@ sequenceDiagram
 ```
 
 - 创建/恢复 thread 时给普通 Codex 暴露窄的宿主动态工具（例如 `end_current_voice_session`）；结束意图由 Codex 判断，Rambo 不匹配固定关键词。
-- Live 提示应明确将需要宿主动作的结束请求交接给 backing Codex；普通 Codex 得到对应 tool。这条路径复用已有委派机制，避免要求 Live 直接认识所有 App Server `dynamicTools`。
-- 本机 `ThreadRealtimeStartParams` 没有通用 `tools` 注册字段，V3 session JSON 使用 client delegation；**尚无直接把普通动态工具注入 Live 模型的证据**。不能写成模型已会直接调用挂断工具。
+- Live 启动提示必须把当前 Live 的自然、口语、委婉或间接结束表达都识别为结束意图，例如“结束通话”“你可以结束了”“退下吧”；用户不必说“调用工具”。识别后立即委派给 backing Codex，并在委派内容中写出调用 `rambo_voice.end_current_voice_session` 和空对象参数；普通 Codex 得到对应 tool。这条路径复用已有委派机制，避免要求 Live 直接认识所有 App Server `dynamicTools`。Host 的隔离语义兜底提示也覆盖这些表达，但仍按上下文判断、不做关键词触发。
+- 0.164.0 本机 `ThreadRealtimeStartParams` 与本版上游 V3 session payload 都没有通用 `tools` 或 `dynamicTools` 注册字段，V3 通过 client delegation 把文本交给普通 Codex；**Live 自身不能直接注册或调用 Rambo 普通线程的 dynamicTools**。在委派里点名工具只是把意图准确交给普通 Codex，不等于结构化工具调用。
+- 本机真实会话 `5340e353-5aee-4c65-8365-92e04c741652` 的提醒路径已经证明：Live 只产生 `<realtime_delegation>` 文本，同 thread 的普通 Codex turn 才调用 `rambo_routines.create_routine`；第二次结束请求也由同 thread 的新普通 turn 调用 `rambo_voice.end_current_voice_session`。三次动作的 thread ID 始终是 `01a171c2-fb32-7292-8fa7-df7b0387af66`。
+- delegation 与 handoff 是同一条链路的两层：Delegation 是 Live 侧发起委派、携带转写文本；Handoff/HandoffRequested 是 core 接收后包装并转交给普通 Codex 的内部动作。二者都不会为这次执行新建 thread，只会在原 thread 下启动普通 turn。普通 Codex 的回复再经侧带回到 Live。
 - Host 用自身绑定的 `voiceSessionId + threadId` 处理本次调用；旧 call 的延迟结果不能结束新 call。当前 stop RPC 只有 threadId，没有 expected session id，因此宿主必须串行化该 thread 的结束与重连，发送过期 stop 前先核本地状态。
 - 工具先取得挂断请求的可识别结果，媒体与服务端停止通过独立状态收尾，避免等待当前模型回合完成才挂断而形成相互等待；具体时序仍需验证。
 - M07 的语音记忆批准和 R11 的计划管理可走同一 delegation→普通 Codex 宿主工具通路，仍需分别验收，不能用“能挂断”代替全部语音工具成功。
+- 宿主仍须保留语义兜底：用户 Realtime 转写完成和收到 `handoff_request` 时分别触发一次隔离、只读、无工具的意图判定；同一转写 item 去重，只有明确高置信度结束时才停止 Live。这样即使 Live 只口头告别而没有 delegation，也有一次独立处理机会；该兜底已由 Host 集成覆盖，仍需真实 Live 音频验证。
 
 动态工具的 `item/tool/call` 参数包括 threadId、turnId、callId、工具名和 arguments，结果为 success/contentItems；这是普通 turn 的接口，不是 WebRTC data channel 中天然同名的工具。[官方动态工具说明](https://learn.chatgpt.com/docs/app-server)
 

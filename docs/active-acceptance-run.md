@@ -1,12 +1,22 @@
 # 2026-10-22：当前全量验收续跑与候选包复验
 
+## 2026-10-24 当前模型与权限规则（Q97）
+
+系统设置提供唯一应用全局模型和权限；Bot 设置只为该 Bot 的唯一私聊设置会话级覆盖，空值继承全局。群聊和 Routine 使用全局配置；不再要求 Bot 默认模型/权限或“应用到全部聊天”。下文旧 run、旧问题单与旧 Agent 分工均保留为历史记录，凡与 Q97 冲突的待办按 Q97 更新，不修改已冻结 run。
+
+## 2026-10-24 当前 Bot Routine 可见性规则（Q104）
+
+Bot 设置恢复“定时任务”Tab，只读展示当前 Bot 的 Routine 清单、计划、执行内容、状态、下次执行时间和最近结果；不显示其他 Bot 的任务，也不提供运行控制。全部 Routine 仍由系统设置统一管理并提供控制。旧冻结 run 不覆盖这项 B12 修订，按现行验收流程重新验证时须纳入 Bot 设置隔离与系统设置管理断言；不修改历史 run。
+
 ## 当前状态
 
-当前开发模式 run 为 [`20261022-acceptance-final-01`](../acceptance-runs/20261022-acceptance-final-01/REPORT.md)，冻结 113 条规则、113 个完整规则场景、4 条核心旅程、6 个发布套件和 173 个局部案例。开发构建 epoch 1，源码指纹 `1913207f0c5fb826486956c8812509cc06056e46d46bcd0eac60d001196a0ae8`；产品决策、验收矩阵和测试目录 hash 均与冻结基线一致。
+截至 2026-10-24，产品决策与验收矩阵当前为 **126 条规则**、4 条用户旅程和 7 个发布套件。下列已登记 run 均早于当前基线，只能作为各自构建的历史证据，不再代表当前规则基线。目前没有已冻结且覆盖 126 条规则的完整验收 run，因此当前全量验收状态为“尚无现行基线”，不能报告全量通过。
 
-- 当前 dev run 已规划并机器复验的特征门禁局部案例为 **80/80**，原始结果见 [feature-all-80](../acceptance-runs/20261022-acceptance-final-01/evidence/feature-all-80/result.json)。
-- 测试目录当前为 **173** 个局部案例，其中 **84** 个 implemented、**89** 个 not implemented；已规划集合只覆盖目录可自动执行部分，不是全部 84 个案例，也不能替代完整规则场景。
-- 规则级结果仍为 **0/113**；J1–J4 与 connections、files、recovery、scheduling、interface、workflow 六个发布套件均为 0 通过，全量验收未通过。
+最近一次冻结的开发模式 run 为 [`20261022-acceptance-final-01`](../acceptance-runs/20261022-acceptance-final-01/REPORT.md)，当时冻结 113 条规则、113 个完整规则场景、4 条核心旅程、6 个发布套件和 173 个局部案例。开发构建 epoch 1，源码指纹 `1913207f0c5fb826486956c8812509cc06056e46d46bcd0eac60d001196a0ae8`；其自身冻结 hash 保持不变，但当前产品决策、验收矩阵和测试目录已经超出该基线。
+
+- 该历史 run 已规划并机器复验的特征门禁局部案例为 **80/80**，原始结果见 [feature-all-80](../acceptance-runs/20261022-acceptance-final-01/evidence/feature-all-80/result.json)。
+- 当时的测试目录为 **173** 个局部案例，其中 **84** 个 implemented、**89** 个 not implemented；已规划集合只覆盖目录可自动执行部分，不是全部 84 个案例，也不能替代完整规则场景。
+- 当时规则级结果为 **0/113**；J1–J4 与当时的六个发布套件均为 0 通过。该历史结果不能作为当前 126 条规则的通过证据。
 
 独立 app 模式 run 为 [`20261022-package-final-01`](../acceptance-runs/20261022-package-final-01/REPORT.md)，构建为 `dist/mac-arm64/Rambo.app`，`app.asar` SHA-256 为 `ac1035326baefcddcc7ba61f7943b4e16477ca79bcbe851552dd11bc816e46b6`。该包已通过 `codesign --verify --deep --strict`，但未公证。A02-PACKAGE-01、A02-PACKAGE-02、A05-PACKAGE-01、A05-PACKAGE-02 四个局部案例为 **4/4** 有效通过；A02/A05 规则仍因隔离安装、真实授权任务、Computer Use 分发、升级隔离等条件未验证而保持 incomplete。
 
@@ -20,7 +30,7 @@
 
 用户通过 [Q55](decision-followups.md#q55) 修改 G02–G04/G06，通过 [Q56](decision-followups.md#q56) 将记忆改为 Bot 自行整理保存、无需确认；通过 [Q57](decision-followups.md#q57) 明确群聊与单聊统一样式及组合头像；通过 [Q63](decision-followups.md#q63) 取消任何固定默认 Bot 兜底；并在 [Q64](decision-followups.md#q64) 开放 Bot 通过应用 Tools 自主管理自身资料、配置、记忆和 Routine，同时禁止自我归档、永久删除与清空聊天。产品决策和验收矩阵已更新，`20261022-full-q63-01` 的冻结基准现已失效，更早 run 同样只保留历史。恢复全量验收须按现有 Skill 创建冻结更新后基准的新 run，引用旧问题和历史证据；不得改写旧 run hash，也不得把旧的集中路由、默认兜底、记忆批准或长期指令批准结果用于新规则通过。
 
-当前新 run 为 [`20261022-full-q68-01`](../acceptance-runs/20261022-full-q68-01/REPORT.md)，冻结 113 条规则、4 条核心旅程与 6 个发布套件，开发构建 epoch 1，源码指纹 `561371321d5a74d1502233c3f2912c3277f0f14b276a05bcbe57693833d875ad`。该 run 已规划并机器验证 B06-ELECTRON-01、B13-ELECTRON-01、G01-HOST-02、G01-HOST-03、G01-ELECTRON-02 五个局部案例；规则 0/113，全量未通过。下一步应继续真实模型自主调用与完整场景，以及其他 97 个明确缺口，不能把局部案例通过写成规则通过。旧 run `20261022-full-q66-01`、`20261022-full-q64-01`、`20261022-full-q63-01` 只保留历史，不改写其冻结 hash。
+历史 run [`20261022-full-q68-01`](../acceptance-runs/20261022-full-q68-01/REPORT.md) 冻结 113 条规则、4 条核心旅程与当时的 6 个发布套件，开发构建 epoch 1，源码指纹 `561371321d5a74d1502233c3f2912c3277f0f14b276a05bcbe57693833d875ad`。该 run 已规划并机器验证 B06-ELECTRON-01、B13-ELECTRON-01、G01-HOST-02、G01-HOST-03、G01-ELECTRON-02 五个局部案例；当时规则 0/113，全量未通过。该 run 不覆盖新增 G12/S01、P09 与运行时获取规则。下一步需按现行 126 条规则创建新的冻结基线后再执行全量验收，不能把局部案例或旧 run 通过写成规则通过。旧 run `20261022-full-q66-01`、`20261022-full-q64-01`、`20261022-full-q63-01` 只保留历史，不改写其冻结 hash。
 
 # 2026-10-21 epoch 7 最新续验状态（Q55 变更前历史）
 

@@ -1,0 +1,5 @@
+{
+  "name": "rambo-wechat-live-diagnostic",
+  "private": true,
+  "main": "main.cjs"
+}

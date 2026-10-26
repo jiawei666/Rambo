@@ -2,30 +2,60 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
-  type CSSProperties,
   type ReactNode
 } from 'react';
 import appAvatarUrl from '../../assets/branding/app-logo-source.png';
-import { AVATAR_SVG_TEMPLATES } from './avatar-data';
+import calendarLogo from '../../assets/connectors/calendar.png';
+import gmailLogo from '../../assets/connectors/gmail.png';
+import githubLogo from '../../assets/connectors/github.png';
+import qqMailLogo from '../../assets/connectors/qqmail.png';
+import wechatLogo from '../../assets/connectors/wechat.svg';
+import {
+  RobotAvatar as Avatar,
+  RobotAvatarPicker as AvatarPicker,
+  createInitialRobotAvatar as createInitialAvatar,
+  parseRobotAvatar
+} from './robot-avatar';
 import { runGroupCreateAction } from './group-create-actions';
 import { partitionBots, privateChatForBot, selectedPrivateChat, shouldShowReturnToChat } from './chat-list-model';
-import { GroupComposerSettings } from './group-composer-settings';
 import { runAfterExplicitConfirmation } from './management-actions';
+import { MessageContentView } from './message-content';
+import { insertMention, mentionOptions, mentionRange, type MentionOption } from './mention-autocomplete';
+import {
+  centerVoiceFrequencyBands,
+  createVoiceFrequencyBands,
+  createVoiceWaveformSmoother,
+  voiceFrequencyBinRange
+} from './voice-waveform-model';
+import hark, { type Harker } from 'hark';
 import type {
   AccountState,
   AppEvent,
   Bot,
+  BotResource,
   Chat,
+  ConnectorAuthChallenge,
+  ConnectorCategory,
+  ConnectorConnection,
+  ConnectorCredentialInput,
+  ConnectorGrant,
+  ConnectorProvider,
+  DirectMcpServer,
   GroupChat,
   GroupMessage,
+  GroupRuntimeMember,
+  GroupRuntimeState,
   Memory,
   Message,
   ModelOption,
   PermissionMode,
+  PlaywrightVerificationResult,
   RoutineListItem,
   RoutineRun,
   RuntimeState,
@@ -33,140 +63,133 @@ import type {
   TurnActivity,
   VoiceState
 } from '../shared/contracts';
+import { botExecutionConfigError } from '../shared/execution-config';
 
-type View = 'chat' | 'settings' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members' | 'routines';
-type AvatarShape =
-  | 'blob' | 'pebble' | 'bean' | 'egg' | 'squircle' | 'tablet' | 'capsule' | 'cylinder'
-  | 'hex' | 'gem' | 'crystal' | 'wedge' | 'shield' | 'dome' | 'arch' | 'cloud'
-  | 'teardrop' | 'leaf' | 'square' | 'sparkle' | 'clover' | 'flower' | 'heart' | 'house'
-  | 'star' | 'pumpkin';
-type AvatarColor = 'black' | 'brown' | 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'violet' | 'magenta' | 'gray';
-type AvatarSelection = { shape: AvatarShape; color: AvatarColor; legacy?: LegacyAvatar };
-type LegacyAvatar = { id: string; symbol: string; tone: string; shape: AvatarShape; color: AvatarColor; label: string };
+type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
+type SystemSettingsTab = 'general' | 'model' | 'resources' | 'routines';
+type AutoSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type LiveVoiceUi = {
   chatId: string;
   state: VoiceState;
   error: string | null;
-  transcript: string;
 };
-
-const AVATAR_SHAPES: AvatarShape[] = [
-  'blob', 'pebble', 'bean', 'egg', 'squircle', 'tablet', 'capsule', 'cylinder', 'hex', 'gem',
-  'crystal', 'wedge', 'shield', 'dome', 'arch', 'cloud', 'teardrop', 'leaf', 'square', 'sparkle',
-  'clover', 'flower', 'heart', 'house', 'star', 'pumpkin'
-];
-const AVATAR_PICKER_SHAPES = [
-  'blob', 'cloud', 'square', 'sparkle', 'clover', 'heart', 'flower', 'teardrop', 'tablet', 'wedge', 'house', 'star', 'hex'
-] as const satisfies readonly AvatarShape[];
-type AvatarPickerShape = typeof AVATAR_PICKER_SHAPES[number];
-const AVATAR_SHAPE_LABELS: Record<AvatarPickerShape, string> = {
-  blob: '团块', cloud: '云朵', square: '方形', sparkle: '星芒', clover: '四叶草', heart: '爱心', flower: '花朵',
-  teardrop: '水滴', tablet: '药片', wedge: '楔形', house: '房子', star: '星形', hex: '六边形'
+type VoiceTranscriptFragment = { text: string; sequence: number };
+type VoiceErrorPresentation = {
+  title: string;
+  detail: string;
 };
-const AVATAR_COLORS: Array<{ id: AvatarColor; label: string; value: string }> = [
-  { id: 'black', label: '黑色', value: '#000000' },
-  { id: 'brown', label: '棕色', value: '#a06b39' },
-  { id: 'red', label: '红色', value: '#fb2b3e' },
-  { id: 'orange', label: '橙色', value: '#fd690f' },
-  { id: 'yellow', label: '黄色', value: '#f59312' },
-  { id: 'green', label: '绿色', value: '#14c16f' },
-  { id: 'cyan', label: '青色', value: '#13b7a2' },
-  { id: 'blue', label: '蓝色', value: '#1e86fc' },
-  { id: 'violet', label: '紫色', value: '#8f59f9' },
-  { id: 'magenta', label: '洋红', value: '#f93498' },
-  { id: 'gray', label: '灰色', value: '#959595' }
-];
-const LEGACY_AVATARS: LegacyAvatar[] = [
-  { id: 'spark', symbol: '✦', tone: 'coral', shape: 'sparkle', color: 'magenta', label: '星光' },
-  { id: 'orbit', symbol: '◉', tone: 'blue', shape: 'blob', color: 'blue', label: '轨道' },
-  { id: 'leaf', symbol: '✿', tone: 'green', shape: 'leaf', color: 'green', label: '花叶' },
-  { id: 'sun', symbol: '☼', tone: 'yellow', shape: 'flower', color: 'yellow', label: '太阳' },
-  { id: 'moon', symbol: '☾', tone: 'violet', shape: 'teardrop', color: 'violet', label: '月亮' },
-  { id: 'wave', symbol: '≈', tone: 'teal', shape: 'cloud', color: 'cyan', label: '波纹' }
-];
-
-function avatarSeedHash(value: string): number {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function avatarShapeIndex(value: string): number {
-  let hash = avatarSeedHash(value) | 0;
-  hash = Math.imul(hash ^ (hash >>> 16), 73244475);
-  hash = Math.imul(hash ^ (hash >>> 13), 3266489909);
-  hash = (hash ^ (hash >>> 16)) >>> 0;
-  return hash % AVATAR_PICKER_SHAPES.length;
-}
-
-function avatarColorIndex(value: string): number {
-  const streamSeed = (avatarSeedHash(value) ^ Math.imul(1, 2654435769)) >>> 0;
-  let state = (streamSeed ^ Math.imul(1, 2654435769)) >>> 0;
-  state = (state + 1831565813) | 0;
-  let sample = Math.imul(state ^ (state >>> 15), 1 | state);
-  sample = (sample + Math.imul(sample ^ (sample >>> 7), 61 | sample)) ^ sample;
-  const random = ((sample ^ (sample >>> 14)) >>> 0) / 4294967296;
-  return Math.floor(random * (AVATAR_COLORS.length - 1));
-}
-
-function createInitialAvatar(): string {
-  const seed = crypto.randomUUID();
-  const shape = AVATAR_PICKER_SHAPES[avatarShapeIndex(seed)];
-  const color = AVATAR_COLORS[avatarColorIndex(seed) + 1].id;
-  return encodeAvatar(shape, color);
-}
 
 const EMPTY_SNAPSHOT: Snapshot = {
+  codexHome: '',
   bots: [],
   chats: [],
+  connectorProviders: [],
+  connections: [],
+  connectorGrants: [],
+  botResources: [],
+  globalResourceIds: [],
+  globalDefaultResourceIds: [],
+  directMcpServers: [],
   groups: [],
+  archivedGroups: [],
   routines: [],
   routineRuns: [],
   runtime: { status: 'stopped', version: '', error: null },
   activeTurns: {},
-  settings: {}
+  startingTurns: {},
+  groupRuntimes: {},
+  settings: {},
+  executionDefaults: {
+    ready: false,
+    model: '',
+    permission: null,
+    error: '尚未读取模型配置。'
+  },
+  recentMessages: {},
+  unreadCounts: {},
+  notifications: {
+    runtimeState: 'unknown',
+    unavailableMessage: null,
+    recentBotReplies: []
+  }
 };
 
-function encodeAvatar(shape: AvatarShape, color: AvatarColor): string {
-  return `grok-avatar:v1:${shape}:${shape === 'pumpkin' ? 'orange' : color}`;
+export function mergeRecentMessage(
+  recentMessages: Record<string, string>,
+  message: Message
+): Record<string, string> {
+  const previousUpdatedAt = recentMessages[`${message.chatId}:updatedAt`] ?? '';
+  const previousArrival = Number(recentMessages[`${message.chatId}:arrival`] ?? 0);
+  if (previousUpdatedAt > message.createdAt) return recentMessages;
+  const arrival = Math.max(Date.now(), previousArrival + 1);
+  return {
+    ...recentMessages,
+    [message.chatId]: message.text,
+    [`${message.chatId}:updatedAt`]: message.createdAt,
+    [`${message.chatId}:arrival`]: String(arrival)
+  };
 }
 
-function parseAvatar(value: string): AvatarSelection {
-  const legacy = LEGACY_AVATARS.find(item => item.id === value);
-  if (legacy) return { shape: legacy.shape, color: legacy.color, legacy };
-
-  const match = /^grok-avatar:v1:([a-z]+):([a-z]+)$/.exec(value);
-  const shape = match?.[1] as AvatarShape | undefined;
-  const color = match?.[2] as AvatarColor | undefined;
-  if (shape && AVATAR_SHAPES.includes(shape) && color && AVATAR_COLORS.some(item => item.id === color)) {
-    return { shape, color: shape === 'pumpkin' ? 'orange' : color };
+export function mergeUnreadCount(
+  unreadCounts: Record<string, number>,
+  message: Message,
+  visibleAndFocused: boolean,
+  seenItems: Set<string>
+): Record<string, number> {
+  if (message.role !== 'assistant' || visibleAndFocused) {
+    if (message.itemId) seenItems.add(message.itemId);
+    return unreadCounts;
   }
-  return { shape: 'blob', color: 'black' };
+  if (message.itemId) {
+    if (seenItems.has(message.itemId)) return unreadCounts;
+    seenItems.add(message.itemId);
+  }
+  const previous = unreadCounts[message.chatId] ?? 0;
+  return { ...unreadCounts, [message.chatId]: previous + 1 };
 }
 
-function Avatar({ value, size = 'regular' }: { value: string; size?: 'small' | 'regular' | 'large' | 'picker' | 'preview' }) {
-  const selection = parseAvatar(value);
-  const instanceId = useId().replace(/:/g, '');
-  if (selection.legacy) {
-    return (
-      <span className={'bot-avatar legacy-avatar avatar-' + selection.legacy.tone + ' avatar-' + size} aria-hidden="true">
-        {selection.legacy.symbol}
-      </span>
-    );
+export function keepVisibleChatUnreadClear<T extends { unreadCounts: Record<string, number> }>(
+  snapshot: T,
+  visibleChatId: string | null,
+  windowFocused: boolean
+): T {
+  if (!visibleChatId || !windowFocused || !snapshot.unreadCounts[visibleChatId]) return snapshot;
+  return {
+    ...snapshot,
+    unreadCounts: { ...snapshot.unreadCounts, [visibleChatId]: 0 }
+  };
+}
+
+function voiceAccentStyle(avatar: string): CSSProperties {
+  const color = parseRobotAvatar(avatar).color;
+  return {
+    '--voice-accent': color === 'black'
+      ? 'var(--avatar-swatch-black, #000)'
+      : `var(--avatar-ink-${color}, var(--text-secondary))`
+  } as CSSProperties;
+}
+
+function liveVoiceStatusLabel(voice: LiveVoiceUi): string {
+  if (voice.state === 'connecting') return '正在拨号';
+  if (voice.state === 'live') return '正在聆听';
+  if (voice.state === 'stopping') return '正在结束语音';
+  return voice.error?.startsWith('语音服务停止失败') ? '语音结束失败' : '语音连接异常';
+}
+
+function voiceErrorPresentation(voice: LiveVoiceUi): VoiceErrorPresentation | null {
+  if (voice.state !== 'error') return null;
+  const raw = voice.error?.trim() || '';
+  if (raw.startsWith('语音服务停止失败')) {
+    const detail = raw.replace(/^语音服务停止失败[：:]\s*/u, '').trim();
+    return {
+      title: '语音结束失败',
+      detail: detail || '语音服务没有完成关闭，麦克风已停止使用。'
+    };
   }
-  const template = AVATAR_SVG_TEMPLATES[selection.shape] ?? AVATAR_SVG_TEMPLATES.blob;
-  // Scope SVG IDs and fragment references without renaming the ink CSS variable.
-  const markup = template.replace(/(["#])grok-bot-still(?=[-"])/g, `$1rambo-avatar-${instanceId}`);
-  const color = AVATAR_COLORS.find(item => item.id === selection.color)?.value ?? '#000000';
-  return (
-    <span className={'bot-avatar avatar-' + (size === 'picker' ? 'shape-mark' : size)}
-      style={{ '--grok-bot-still-ink': `var(--avatar-ink-${selection.color}, ${color})` } as CSSProperties} aria-hidden="true">
-      <span className="avatar-art" dangerouslySetInnerHTML={{ __html: markup }} />
-    </span>
-  );
+  return {
+    title: '语音连接异常',
+    detail: raw || '未能建立语音连接，请检查麦克风权限和网络。'
+  };
 }
 
 function GroupAvatar({ group, bots, size = 'small' }: { group: GroupChat; bots: Bot[]; size?: 'small' | 'regular' }) {
@@ -185,61 +208,16 @@ function GroupAvatar({ group, bots, size = 'small' }: { group: GroupChat; bots: 
   );
 }
 
-function AvatarPicker({
-  value,
-  onChange,
-  disabled = false,
-  className = ''
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-  className?: string;
-}) {
-  const selected = parseAvatar(value);
-  const rows: AvatarPickerShape[][] = [];
-  for (let index = 0; index < AVATAR_PICKER_SHAPES.length; index += 5) {
-    rows.push(AVATAR_PICKER_SHAPES.slice(index, index + 5));
-  }
-
+function UnreadBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
   return (
-    <div className={'avatar-picker ' + className}>
-      <div className="avatar-shape-rows" role="group" aria-label="角色形状">
-        {rows.map((row, rowIndex) => (
-          <div className="avatar-shape-row" key={rowIndex}>
-            {row.map(shape => {
-              const color = selected.color;
-              const chosen = selected.shape === shape;
-              return (
-                <button type="button" key={shape} className={'avatar-shape-button' + (chosen ? ' chosen' : '')}
-                  aria-label={AVATAR_SHAPE_LABELS[shape]} aria-pressed={chosen} title={AVATAR_SHAPE_LABELS[shape]} disabled={disabled}
-                  onClick={() => onChange(encodeAvatar(shape, color))}>
-                  <Avatar value={encodeAvatar(shape, color)} size="picker" />
-                  <span className="avatar-shape-selection" aria-hidden="true" />
-                </button>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-      {selected.shape !== 'pumpkin' && (
-        <div className="avatar-color-row" role="group" aria-label="角色颜色">
-          {AVATAR_COLORS.map(color => (
-            <button type="button" key={color.id}
-              className={'avatar-color-cell' + (selected.color === color.id ? ' chosen' : '')}
-              aria-label={color.label} aria-pressed={selected.color === color.id} title={color.label}
-              disabled={disabled} onClick={() => onChange(encodeAvatar(selected.shape, color.id))}>
-              <span className="avatar-color-swatch"
-                style={{ backgroundColor: `var(--avatar-ink-${color.id}, ${color.value})` }} />
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <span className="unread-badge" aria-label={`${count} 条未读`}>
+      {count > 99 ? '99+' : count}
+    </span>
   );
 }
 
-type IconName = 'plus' | 'settings' | 'chevron' | 'send' | 'stop' | 'close' | 'back' | 'check' | 'arrow' | 'panel' | 'search' | 'account' | 'users' | 'calendar' | 'more' | 'voice';
+type IconName = 'plus' | 'settings' | 'chevron' | 'send' | 'stop' | 'close' | 'back' | 'check' | 'arrow' | 'panel' | 'search' | 'account' | 'users' | 'calendar' | 'more' | 'voice' | 'connectors' | 'copy' | 'archive' | 'trash';
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const shapes: Record<IconName, ReactNode> = {
@@ -258,7 +236,11 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     users: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19c.3-3.2 2.1-5 5.5-5s5.2 1.8 5.5 5M16 5.5a2.8 2.8 0 0 1 0 5.5m1 3c2.2.5 3.4 2.1 3.5 5" /></>,
     calendar: <><rect x="3.5" y="5" width="17" height="16" rx="2" /><path d="M7.5 3v4M16.5 3v4M3.5 10h17M8 14h2m4 0h2m-8 3h2m4 0h2" /></>,
     more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
-    voice: <><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6" /></>
+    voice: <><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6" /></>,
+    connectors: <><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="18" r="3" /><path d="m8.3 8.2 2.2 7.2m5.2-7.2-2.2 7.2M9 6h6" /></>,
+    copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+    archive: <><rect x="4" y="5" width="16" height="4" rx="1" /><path d="M6 9v10h12V9M9.5 13h5" /></>,
+    trash: <><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></>
   };
 
   return (
@@ -273,11 +255,59 @@ function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function permissionModeFromSetting(value: string | undefined): PermissionMode | null {
+  if (value === undefined || value === '') return 'fullAccess';
+  return value === 'workspaceWrite' || value === 'readOnly' || value === 'fullAccess'
+    ? value
+    : null;
+}
+
+const CONNECTOR_CATEGORY_LABELS: Record<ConnectorCategory | 'all' | 'connected', string> = {
+  all: '全部',
+  connected: '已连接',
+  email: '邮件',
+  calendar: '日程',
+  files: '文件',
+  communication: '沟通',
+  productivity: '效率',
+  developer: '开发',
+  data: '数据',
+  other: '其他'
+};
+
+const CONNECTOR_FEATURED_ORDER = ['wechat', 'gmail', 'qqmail', 'calendar', 'github'];
+const CONNECTOR_LOGOS: Record<string, string> = {
+  wechat: wechatLogo,
+  gmail: gmailLogo,
+  qqmail: qqMailLogo,
+  calendar: calendarLogo,
+  github: githubLogo
+};
+
+function ConnectorProviderIcon({ provider, className }: {
+  provider: ConnectorProvider;
+  className: 'connector-card-icon' | 'connector-dialog-icon';
+}) {
+  const logo = CONNECTOR_LOGOS[provider.id];
+  return (
+    <div className={className + (logo ? ' connector-icon-has-logo' : '')}
+      style={{ '--connector-brand': provider.brandColor } as CSSProperties} aria-hidden="true">
+      {logo ? <img className="connector-provider-logo" src={logo} alt="" /> : <span>{provider.monogram}</span>}
+    </div>
+  );
+}
+
 class VoiceMediaSession {
   private peer: RTCPeerConnection | null = null;
   private stream: MediaStream | null = null;
   private audio: HTMLAudioElement | null = null;
   private channel: RTCDataChannel | null = null;
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private harker: Harker | null = null;
+  private frequencySamples: Float32Array<ArrayBuffer> | null = null;
+  private voiceLowBin = 0;
+  private voiceHighBin = 0;
 
   constructor(readonly chatId: string) {}
 
@@ -286,6 +316,7 @@ class VoiceMediaSession {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
     this.stream = stream;
+    this.startLevelMeter(stream);
     const peer = new RTCPeerConnection();
     this.peer = peer;
     for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
@@ -313,6 +344,22 @@ class VoiceMediaSession {
     await this.peer.setRemoteDescription({ type: 'answer', sdp });
   }
 
+  readInputLevels(barCount: number): { levels: number[]; speech: boolean } | null {
+    const analyser = this.analyser;
+    const samples = this.frequencySamples;
+    if (!analyser || !samples || this.audioContext?.state !== 'running') return null;
+    analyser.getFloatFrequencyData(samples);
+    const bands = createVoiceFrequencyBands(samples, {
+      barCount,
+      loBin: this.voiceLowBin,
+      hiBin: this.voiceHighBin
+    });
+    return {
+      levels: centerVoiceFrequencyBands(bands),
+      speech: this.harker?.speaking ?? false
+    };
+  }
+
   async close(): Promise<void> {
     const peer = this.peer;
     this.peer = null;
@@ -322,6 +369,20 @@ class VoiceMediaSession {
       try { track.stop(); } catch { /* already stopped */ }
     }
     this.stream = null;
+    this.analyser?.disconnect();
+    this.analyser = null;
+    this.harker?.stop();
+    this.harker = null;
+    this.frequencySamples = null;
+    this.voiceLowBin = 0;
+    this.voiceHighBin = 0;
+    const audioContext = this.audioContext;
+    this.audioContext = null;
+    if (audioContext && audioContext.state !== 'closed') {
+      void audioContext.close().catch(() => {
+        // The context may already be closing with the media session.
+      });
+    }
     if (this.audio) {
       this.audio.pause();
       this.audio.srcObject = null;
@@ -329,6 +390,40 @@ class VoiceMediaSession {
       this.audio = null;
     }
     try { peer?.close(); } catch { /* already closed */ }
+  }
+
+  private startLevelMeter(stream: MediaStream): void {
+    try {
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.45;
+      analyser.minDecibels = -100;
+      analyser.maxDecibels = -10;
+      source.connect(analyser);
+      // Hark is the MIT-licensed VAD used by this meter. Keep its upstream
+      // three-frame attack/four-frame release state machine short enough for
+      // conversational feedback while still rejecting isolated spikes.
+      const harker = hark(stream, {
+        audioContext,
+        interval: 32,
+        history: 4,
+        threshold: -50
+      });
+      this.audioContext = audioContext;
+      this.analyser = analyser;
+      this.harker = harker;
+      this.frequencySamples = new Float32Array(analyser.frequencyBinCount);
+      const range = voiceFrequencyBinRange(audioContext.sampleRate, analyser.fftSize);
+      this.voiceLowBin = range.loBin;
+      this.voiceHighBin = Math.min(analyser.frequencyBinCount, range.hiBin);
+      void audioContext.resume().catch(() => {
+        // The meter falls back to its idle animation if audio is suspended.
+      });
+    } catch {
+      // Media delivery must not fail just because an optional level meter is unavailable.
+    }
   }
 
   private async waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
@@ -379,35 +474,6 @@ function mergeMessages(base: Message[], overlay: Message[]): Message[] {
   return overlay.reduce(upsertMessage, base);
 }
 
-const PERMISSION_LABELS: Record<PermissionMode, string> = {
-  fullAccess: '完全访问',
-  workspaceWrite: '工作区写入',
-  readOnly: '只读'
-};
-
-function modelSourceLabel(source: 'chat' | 'bot' | 'global' | 'localConfig' | 'unknown'): string {
-  if (source === 'chat') return '当前聊天';
-  if (source === 'bot') return 'Bot 默认';
-  if (source === 'global') return '产品默认（model/list）';
-  if (source === 'localConfig') return '本机配置，发送时解析';
-  return '未知来源';
-}
-
-function modelLabel(modelId: string | null, options: ModelOption[]): string {
-  if (!modelId) return '未知';
-  return options.find(option => option.id === modelId)?.label ?? modelId;
-}
-
-function inheritedChatModel(bot: Bot): { id: string | null; source: 'bot' | 'localConfig' } {
-  if (bot.model !== null) return { id: bot.model, source: 'bot' };
-  return { id: null, source: 'localConfig' };
-}
-
-function selectedChatModel(chat: Chat, bot: Bot): { id: string | null; source: 'chat' | 'bot' | 'localConfig' } {
-  if (chat.model !== null) return { id: chat.model, source: 'chat' };
-  return inheritedChatModel(bot);
-}
-
 type PendingMessageLoad = {
   requestId: number;
   streamed: Map<string, Message>;
@@ -423,10 +489,12 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [activities, setActivities] = useState<TurnActivity[]>([]);
   const [groupMessages, setGroupMessages] = useState<GroupMessage[]>([]);
+  const [enteringMessageIds, setEnteringMessageIds] = useState<Set<string>>(() => new Set());
   const [loadingGroupMessages, setLoadingGroupMessages] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [view, setView] = useState<View>('chat');
+  const [systemSettingsTab, setSystemSettingsTab] = useState<SystemSettingsTab>('general');
   const [groupCreateReturnView, setGroupCreateReturnView] = useState<View>('chat');
   const [createOpen, setCreateOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
@@ -438,22 +506,111 @@ function App() {
   const [searchResults, setSearchResults] = useState<Array<{ message: Message; chat: Chat; bot: Bot }>>([]);
   const [searching, setSearching] = useState(false);
   const [deletingBot, setDeletingBot] = useState<Bot | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState<GroupChat | null>(null);
+  const [sidebarMenu, setSidebarMenu] = useState<
+    | { kind: 'bot'; bot: Bot; conversationId: string; x: number; y: number }
+    | { kind: 'group'; group: GroupChat; conversationId: string; x: number; y: number }
+    | null
+  >(null);
+  const [sidebarNotice, setSidebarNotice] = useState<string | null>(null);
+  const [connectorDialog, setConnectorDialog] = useState<{
+    mode: 'connect' | 'manage';
+    provider: ConnectorProvider;
+    connection: ConnectorConnection | null;
+  } | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
-  const [elapsedRunSeconds, setElapsedRunSeconds] = useState(0);
   const [voice, setVoice] = useState<LiveVoiceUi | null>(null);
+  const botsRef = useRef<Bot[]>([]);
   const voiceRef = useRef<LiveVoiceUi | null>(null);
   const voiceSessionRef = useRef<VoiceMediaSession | null>(null);
   const selectedChatRef = useRef<string | null>(null);
   const selectedGroupRef = useRef<string | null>(null);
+  const windowFocusedRef = useRef(document.hasFocus());
   const initializedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const transcriptFollowsLatestRef = useRef(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchRequestRef = useRef(0);
   const messageLoadSequenceRef = useRef(0);
   const pendingMessageLoadsRef = useRef(new Map<string, PendingMessageLoad>());
+  const pendingVoiceMessagesRef = useRef(new Map<string, Message>());
+  const voiceMessageFrameRef = useRef<number | null>(null);
+  const seenUnreadItemsRef = useRef(new Set<string>());
   const groupMessageLoadSequenceRef = useRef(0);
-  const pendingGroupMessageLoadsRef = useRef(new Map<string, { requestId: number; streamed: Map<string, GroupMessage> }>());
+  const pendingGroupMessageLoadsRef = useRef(new Map<string, {
+    requestId: number; streamed: Map<string, GroupMessage>; removed: Set<string>
+  }>());
+  const singleChatScrollPendingRef = useRef(false);
+  const enteredMessageIdsRef = useRef(new Set<string>());
+  const enteringMessageTimersRef = useRef(new Map<string, number>());
+
+  const markMessageEntering = useCallback((id: string) => {
+    if (enteredMessageIdsRef.current.has(id)) return;
+    enteredMessageIdsRef.current.add(id);
+    setEnteringMessageIds(current => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+    const previousTimer = enteringMessageTimersRef.current.get(id);
+    if (previousTimer) window.clearTimeout(previousTimer);
+    const timer = window.setTimeout(() => {
+      enteringMessageTimersRef.current.delete(id);
+      setEnteringMessageIds(current => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }, 260);
+    enteringMessageTimersRef.current.set(id, timer);
+  }, []);
+
+  useEffect(() => {
+    const timers = enteringMessageTimersRef.current;
+    return () => {
+      for (const timer of timers.values()) window.clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
+
+  useEffect(() => () => {
+    if (voiceMessageFrameRef.current !== null) {
+      window.cancelAnimationFrame(voiceMessageFrameRef.current);
+      voiceMessageFrameRef.current = null;
+    }
+    pendingVoiceMessagesRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarMenu) return;
+    const menu = document.querySelector<HTMLElement>('.sidebar-context-menu');
+    menu?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
+    const close = () => setSidebarMenu(null);
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('blur', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sidebarMenu]);
+
+  useEffect(() => {
+    if (!sidebarNotice) return;
+    const timer = window.setTimeout(() => setSidebarNotice(null), 2_400);
+    return () => window.clearTimeout(timer);
+  }, [sidebarNotice]);
 
   const loadMessages = useCallback(async (
     chatId: string,
@@ -505,6 +662,28 @@ function App() {
     }
   }, []);
 
+  const markChatRead = useCallback((chatId: string) => {
+    const readAt = new Date().toISOString();
+    setSnapshot(current => current ? {
+      ...current,
+      chats: current.chats.map(item => item.id === chatId
+        ? { ...item, lastReadAt: readAt }
+        : item),
+      unreadCounts: { ...current.unreadCounts, [chatId]: 0 }
+    } : current);
+    void window.rambo.markChatRead(chatId).catch(error => setAppError(toError(error)));
+  }, []);
+
+  const keepVisibleChatRead = useCallback((next: Snapshot): Snapshot => {
+    return keepVisibleChatUnreadClear(next, selectedChatRef.current, windowFocusedRef.current);
+  }, []);
+  const syncVisibleChat = useCallback((chatId: string | null, notifyMain = false) => {
+    if (notifyMain) void window.rambo.setVisibleChat(null);
+    void window.rambo.setVisibleChatFocus(document.hasFocus())
+      .then(() => window.rambo.setVisibleChat(chatId))
+      .catch(error => setAppError(toError(error)));
+  }, []);
+
   const updateVoice = useCallback((next: LiveVoiceUi | null | ((current: LiveVoiceUi | null) => LiveVoiceUi | null)) => {
     setVoice(current => {
       const value = typeof next === 'function' ? next(current) : next;
@@ -513,19 +692,24 @@ function App() {
     });
   }, []);
 
+  const readVoiceLevels = useCallback(
+    (barCount: number) => voiceSessionRef.current?.readInputLevels(barCount) ?? null,
+    []
+  );
+
   const startVoice = useCallback(async (chat: Chat) => {
     if (voiceSessionRef.current || voiceRef.current?.state === 'connecting' || voiceRef.current?.state === 'live') return;
     setAppError(null);
     const media = new VoiceMediaSession(chat.id);
     voiceSessionRef.current = media;
-    updateVoice({ chatId: chat.id, state: 'connecting', error: null, transcript: '' });
+    updateVoice({ chatId: chat.id, state: 'connecting', error: null });
     try {
       const offer = await media.start();
       await window.rambo.startVoice(chat.id, offer);
     } catch (error) {
       await media.close();
       if (voiceSessionRef.current === media) voiceSessionRef.current = null;
-      updateVoice({ chatId: chat.id, state: 'error', error: toError(error), transcript: '' });
+      updateVoice({ chatId: chat.id, state: 'error', error: toError(error) });
       setAppError(toError(error));
       throw error;
     }
@@ -538,19 +722,30 @@ function App() {
     voiceSessionRef.current = null;
     try {
       await window.rambo.stopVoice(chatId, reason);
-    } finally {
       updateVoice(null);
+    } catch (error) {
+      const message = toError(error);
+      setAppError(message);
+      updateVoice(current => current?.chatId === chatId
+        ? { ...current, state: 'error', error: message }
+        : current);
     }
   }, [updateVoice]);
 
   const loadGroupMessages = useCallback(async (groupId: string) => {
-    const pending = { requestId: ++groupMessageLoadSequenceRef.current, streamed: new Map<string, GroupMessage>() };
+    const pending = {
+      requestId: ++groupMessageLoadSequenceRef.current,
+      streamed: new Map<string, GroupMessage>(),
+      removed: new Set<string>()
+    };
     pendingGroupMessageLoadsRef.current.set(groupId, pending);
     try {
       const result = await window.rambo.groupMessages(groupId);
       if (selectedGroupRef.current === groupId && pendingGroupMessageLoadsRef.current.get(groupId) === pending) {
-        const merged = new Map(result.map(message => [message.id, message]));
-        for (const [id, message] of pending.streamed) merged.set(id, message);
+        const merged = new Map(result.filter(message => !pending.removed.has(message.id)).map(message => [message.id, message]));
+        for (const [id, message] of pending.streamed) {
+          if (!pending.removed.has(id)) merged.set(id, message);
+        }
         setGroupMessages([...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
       }
     } catch (error) {
@@ -577,9 +772,12 @@ function App() {
     setLoadingMessages(true);
     setGroupMessages([]);
     setAppError(null);
+    transcriptFollowsLatestRef.current = true;
+    markChatRead(chat.id);
+    syncVisibleChat(chat.id, true);
     void loadActivities(chat.id);
     await loadMessages(chat.id, { clearCurrent: true, showLoading: true, resetStreamBuffer: true });
-  }, [loadActivities, loadMessages]);
+  }, [loadActivities, loadMessages, markChatRead, syncVisibleChat]);
 
   useEffect(() => {
     let alive = true;
@@ -588,7 +786,7 @@ function App() {
       try {
         const next = await window.rambo.snapshot();
         if (!alive) return;
-        setSnapshot(next);
+        setSnapshot(keepVisibleChatRead(next));
         if (!initializedRef.current) {
           initializedRef.current = true;
           const firstBot = next.bots.find(bot => !bot.archived);
@@ -606,14 +804,77 @@ function App() {
       }
     };
 
+    const applyMessage = (message: Message) => {
+      const pending = pendingMessageLoadsRef.current.get(message.chatId);
+      pending?.streamed.set(message.id, message);
+      if (message.role === 'user' || message.role === 'assistant') {
+        const visibleAndFocused = selectedChatRef.current === message.chatId && windowFocusedRef.current;
+        setSnapshot(current => current ? {
+          ...current,
+          ...(message.text.trim()
+            ? {
+                recentMessages: mergeRecentMessage(current.recentMessages, message),
+                unreadCounts: mergeUnreadCount(
+                  current.unreadCounts,
+                  message,
+                  visibleAndFocused,
+                  seenUnreadItemsRef.current
+                )
+              }
+            : {})
+        } : current);
+        if (visibleAndFocused && message.role === 'assistant' &&
+            message.status !== 'streaming' && message.text.trim()) {
+          markChatRead(message.chatId);
+        }
+      }
+      if (selectedChatRef.current === message.chatId) {
+        markMessageEntering(message.id);
+        setMessages(current => upsertMessage(current, message));
+      }
+    };
+
+    const flushPendingVoiceMessages = () => {
+      if (voiceMessageFrameRef.current !== null) {
+        window.cancelAnimationFrame(voiceMessageFrameRef.current);
+        voiceMessageFrameRef.current = null;
+      }
+      const messages = [...pendingVoiceMessagesRef.current.values()];
+      pendingVoiceMessagesRef.current.clear();
+      for (const message of messages) applyMessage(message);
+    };
+
+    const cancelVoiceMessageFrameIfIdle = () => {
+      if (pendingVoiceMessagesRef.current.size || voiceMessageFrameRef.current === null) return;
+      window.cancelAnimationFrame(voiceMessageFrameRef.current);
+      voiceMessageFrameRef.current = null;
+    };
+
     const unsubscribe = window.rambo.onEvent((event: AppEvent) => {
       if (event.type === 'changed') {
         void refresh();
       } else if (event.type === 'message') {
-        const pending = pendingMessageLoadsRef.current.get(event.message.chatId);
-        pending?.streamed.set(event.message.id, event.message);
-        if (selectedChatRef.current === event.message.chatId) {
-          setMessages(current => upsertMessage(current, event.message));
+        if (event.message.source === 'voice' && event.message.status === 'streaming') {
+          pendingVoiceMessagesRef.current.set(event.message.id, event.message);
+          if (voiceMessageFrameRef.current === null) {
+            voiceMessageFrameRef.current = window.requestAnimationFrame(() => {
+              voiceMessageFrameRef.current = null;
+              const messages = [...pendingVoiceMessagesRef.current.values()];
+              pendingVoiceMessagesRef.current.clear();
+              for (const message of messages) applyMessage(message);
+            });
+          }
+        } else {
+          pendingVoiceMessagesRef.current.delete(event.message.id);
+          cancelVoiceMessageFrameIfIdle();
+          applyMessage(event.message);
+        }
+      } else if (event.type === 'messageRemoved') {
+        pendingVoiceMessagesRef.current.delete(event.messageId);
+        cancelVoiceMessageFrameIfIdle();
+        pendingMessageLoadsRef.current.get(event.chatId)?.streamed.delete(event.messageId);
+        if (selectedChatRef.current === event.chatId) {
+          setMessages(current => current.filter(message => message.id !== event.messageId));
         }
       } else if (event.type === 'activity') {
         if (selectedChatRef.current === event.activity.chatId) {
@@ -625,18 +886,52 @@ function App() {
             return next;
           });
         }
+      } else if (event.type === 'groupRuntime') {
+        setSnapshot(current => {
+          if (!current) return current;
+          const groupRuntimes = { ...current.groupRuntimes };
+          if (event.runtime) groupRuntimes[event.groupId] = event.runtime;
+          else delete groupRuntimes[event.groupId];
+          return { ...current, groupRuntimes };
+        });
       } else if (event.type === 'groupMessage') {
         const pending = pendingGroupMessageLoadsRef.current.get(event.groupId);
+        pending?.removed.delete(event.message.id);
         pending?.streamed.set(event.message.id, event.message);
         if (selectedGroupRef.current === event.groupId) {
+          markMessageEntering(event.message.id);
           setGroupMessages(current => {
             const next = new Map(current.map(message => [message.id, message]));
             next.set(event.message.id, event.message);
             return [...next.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
           });
         }
+      } else if (event.type === 'groupMessageRemoved') {
+        const pending = pendingGroupMessageLoadsRef.current.get(event.groupId);
+        pending?.streamed.delete(event.messageId);
+        pending?.removed.add(event.messageId);
+        if (selectedGroupRef.current === event.groupId) {
+          setGroupMessages(current => current.filter(message => message.id !== event.messageId));
+        }
       } else if (event.type === 'runtime') {
         setSnapshot(current => current ? { ...current, runtime: event.state } : current);
+      } else if (event.type === 'focusBot') {
+        const bot = botsRef.current.find(item => item.id === event.botId);
+        if (bot) void chooseBot(bot);
+      } else if (event.type === 'groupCreated') {
+        setSnapshot(current => current ? {
+          ...current,
+          groups: [event.group, ...current.groups.filter(group => group.id !== event.group.id)]
+        } : current);
+        selectedChatRef.current = null;
+        setSelectedChatId(null);
+        selectedGroupRef.current = event.group.id;
+        setSelectedGroupId(event.group.id);
+        setGroupMessages([]);
+        setLoadingGroupMessages(true);
+        setView('group-chat');
+        setAppError(null);
+        void loadGroupMessages(event.group.id);
       } else if (event.type === 'turn') {
         setSnapshot(current => {
           if (!current) return current;
@@ -649,10 +944,20 @@ function App() {
           void loadActivities(event.chatId);
           if (!event.turnId) void loadMessages(event.chatId, { clearCurrent: false, resetStreamBuffer: true });
         }
+        if (!event.turnId && selectedChatRef.current === event.chatId && windowFocusedRef.current) {
+          markChatRead(event.chatId);
+        }
+      } else if (event.type === 'startingTurn') {
+        setSnapshot(current => {
+          if (!current) return current;
+          const startingTurns = { ...current.startingTurns };
+          if (event.starting) startingTurns[event.chatId] = true;
+          else delete startingTurns[event.chatId];
+          return { ...current, startingTurns };
+        });
       } else if (event.type === 'turnMetadata') {
         // Turn metadata remains persisted by the Host for routine/audit records.
       } else if (event.type === 'voiceState') {
-        const current = voiceRef.current;
         if (event.session.state === 'error') {
           void voiceSessionRef.current?.close();
           voiceSessionRef.current = null;
@@ -660,32 +965,35 @@ function App() {
         updateVoice({
           chatId: event.session.chatId,
           state: event.session.state,
-          error: event.session.error,
-          transcript: current?.chatId === event.session.chatId ? current.transcript : ''
+          error: event.session.error
         });
+      } else if (event.type === 'voiceStopFinished') {
+        flushPendingVoiceMessages();
+        const current = voiceRef.current;
+        if (current?.chatId === event.chatId) {
+          updateVoice(event.error
+            ? { ...current, state: 'error', error: event.error }
+            : null);
+        }
       } else if (event.type === 'voiceSdp') {
         void (async () => {
           try {
             await voiceSessionRef.current?.applyAnswer(event.sdp);
           } catch (error) {
-            setAppError('语音媒体协商失败：' + toError(error));
+            const message = '语音媒体协商失败：' + toError(error);
+            setAppError(message);
+            updateVoice({
+              chatId: event.chatId,
+              state: 'error',
+              error: message
+            });
             void voiceSessionRef.current?.close();
             voiceSessionRef.current = null;
             void window.rambo.stopVoice(event.chatId, '媒体协商失败');
           }
         })();
-      } else if (event.type === 'voiceTranscript') {
-        updateVoice(current => {
-          const base = current?.chatId === event.transcript.chatId
-            ? current
-            : { chatId: event.transcript.chatId, state: 'live' as VoiceState, error: null, transcript: '' };
-          if (event.transcript.done) return { ...base, transcript: '' };
-          return {
-            ...base,
-            transcript: base.transcript + event.transcript.text
-          };
-        });
       } else if (event.type === 'voiceEndRequested') {
+        flushPendingVoiceMessages();
         if (voiceRef.current?.chatId === event.chatId) {
           updateVoice({ ...voiceRef.current, state: 'stopping' });
         }
@@ -702,11 +1010,11 @@ function App() {
       alive = false;
       unsubscribe();
     };
-  }, [loadActivities, loadMessages, openChat, updateVoice]);
+  }, [keepVisibleChatRead, loadActivities, loadMessages, markChatRead, openChat, updateVoice]);
 
   useEffect(() => {
     let active = true;
-    window.rambo.models().then(options => {
+    const refreshModels = () => window.rambo.models().then(options => {
       if (active) {
         setModelOptions(options);
         setModelOptionsError(null);
@@ -714,8 +1022,46 @@ function App() {
     }).catch(error => {
       if (active) setModelOptionsError(toError(error));
     });
-    return () => { active = false; };
+    void refreshModels();
+    const onRuntime = (event: AppEvent) => {
+      if (event.type !== 'runtime') return;
+      if (event.state.status !== 'ready') {
+        setModelOptions([]);
+        setModelOptionsError(event.state.error ?? 'App Server 尚未就绪');
+        return;
+      }
+      void refreshModels();
+      void window.rambo.snapshot().then(next => {
+        if (active) setSnapshot(next);
+      }).catch(issue => {
+        if (active) setAppError(toError(issue));
+      });
+    };
+    const unsubscribe = window.rambo.onEvent(onRuntime);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
+
+  useEffect(() => {
+    const updateFocus = () => {
+      windowFocusedRef.current = document.hasFocus();
+      void window.rambo.setVisibleChatFocus(windowFocusedRef.current)
+        .catch(error => setAppError(toError(error)));
+      if (!windowFocusedRef.current || !selectedChatRef.current) return;
+      const chatId = selectedChatRef.current;
+      markChatRead(chatId);
+    };
+    window.addEventListener('focus', updateFocus);
+    window.addEventListener('blur', updateFocus);
+    document.addEventListener('visibilitychange', updateFocus);
+    return () => {
+      window.removeEventListener('focus', updateFocus);
+      window.removeEventListener('blur', updateFocus);
+      document.removeEventListener('visibilitychange', updateFocus);
+    };
+  }, [markChatRead]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -744,9 +1090,35 @@ function App() {
   }, [searchOpen, searchQuery, searchBotId]);
 
   useEffect(() => {
+    const sync = () => {
+      const visible = view === 'chat' && document.hasFocus() ? selectedChatRef.current : null;
+      void window.rambo.setVisibleChatFocus(document.hasFocus())
+        .then(() => window.rambo.setVisibleChat(visible))
+        .catch(error => setAppError(toError(error)));
+    };
+    sync();
+    window.addEventListener('focus', sync);
+    window.addEventListener('blur', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('blur', sync);
+      document.removeEventListener('visibilitychange', sync);
+      void window.rambo.setVisibleChat(null).catch(() => {});
+    };
+  }, [view, selectedChatId]);
+
+  useEffect(() => {
+    singleChatScrollPendingRef.current = true;
+  }, [activities, messages, selectedChatId, snapshot?.activeTurns, snapshot?.startingTurns]);
+
+  useLayoutEffect(() => {
+    if (!singleChatScrollPendingRef.current) return;
+    singleChatScrollPendingRef.current = false;
     const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [activities, messages, selectedChatId]);
+    if (!element || !transcriptFollowsLatestRef.current) return;
+    element.scrollTop = element.scrollHeight;
+  });
 
   useEffect(() => () => {
     void voiceSessionRef.current?.close();
@@ -754,27 +1126,22 @@ function App() {
   }, []);
 
   const currentSnapshot = snapshot ?? EMPTY_SNAPSHOT;
+  botsRef.current = currentSnapshot.bots;
   const botSections = partitionBots(currentSnapshot.bots);
   const activeBots = botSections.active;
   const archivedBots = botSections.archived;
+  const archivedGroups = currentSnapshot.archivedGroups ?? [];
   const currentBot = activeBots.find(bot => bot.id === selectedBotId) ?? null;
+  const currentBotExecutionError = currentBot ? botExecutionConfigError(currentBot) : null;
   const settingsBot = currentSnapshot.bots.find(bot => bot.id === selectedBotId) ?? null;
   const currentChat = selectedPrivateChat(currentSnapshot.chats, selectedChatId, selectedBotId);
+  const currentVoice = currentChat && voice?.chatId === currentChat.id ? voice : null;
+  const currentVoiceLabel = currentVoice ? liveVoiceStatusLabel(currentVoice) : null;
+  const currentVoiceError = currentVoice ? voiceErrorPresentation(currentVoice) : null;
+  const headerPillRef = useRef<HTMLButtonElement>(null);
   const currentGroup = currentSnapshot.groups.find(group => group.id === selectedGroupId) ?? null;
   const isRunning = currentChat ? Boolean(currentSnapshot.activeTurns[currentChat.id]) : false;
-
-  useEffect(() => {
-    if (!currentChat || !currentSnapshot.activeTurns[currentChat.id]) {
-      setElapsedRunSeconds(0);
-      return;
-    }
-    const startedAt = Date.now();
-    setElapsedRunSeconds(0);
-    const timer = window.setInterval(() => {
-      setElapsedRunSeconds(Math.floor((Date.now() - startedAt) / 1_000));
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [currentChat?.id, currentSnapshot.activeTurns]);
+  const isStartingTurn = currentChat ? Boolean(currentSnapshot.startingTurns[currentChat.id]) : false;
 
   const returnToChat = async () => {
     const target = currentSnapshot.bots.find(bot => bot.id === selectedBotId && !bot.archived)
@@ -856,13 +1223,15 @@ function App() {
   };
 
   const chooseBot = async (bot: Bot) => {
+    const existingChat = sortChats(currentSnapshot.chats, bot.id)[0];
+    if (view === 'chat' && selectedBotId === bot.id && currentChat?.id === existingChat?.id) return;
     setSelectedGroupId(null);
     selectedGroupRef.current = null;
     setView('chat');
     setSelectedBotId(bot.id);
     setAppError(null);
     try {
-      const chat = sortChats(currentSnapshot.chats, bot.id)[0] ?? await window.rambo.ensureBotChat(bot.id);
+      const chat = existingChat ?? await window.rambo.ensureBotChat(bot.id);
       setSnapshot(current => current
         ? { ...current, chats: [chat, ...current.chats.filter(item => item.id !== chat.id)] }
         : current);
@@ -872,21 +1241,10 @@ function App() {
     }
   };
 
-  const saveBot = async (id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'model' | 'permission'>>) => {
+  const saveBot = async (id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions'>>) => {
     const updated = await window.rambo.updateBot(id, patch);
     setSnapshot(current => current
       ? { ...current, bots: current.bots.map(bot => bot.id === id ? updated : bot) }
-      : current);
-  };
-
-  const applyBotPermissionToChats = async (botId: string, permission: PermissionMode) => {
-    await window.rambo.applyBotPermissionToChats(botId, permission);
-    setSnapshot(current => current
-      ? {
-          ...current,
-          bots: current.bots.map(bot => bot.id === botId ? { ...bot, permission } : bot),
-          chats: current.chats.map(chat => chat.botId === botId ? { ...chat, permission } : chat)
-        }
       : current);
   };
 
@@ -898,8 +1256,14 @@ function App() {
     setAppError(null);
   };
 
-  const openSettings = () => {
+  const openSettings = (tab: SystemSettingsTab = 'general') => {
+    setSystemSettingsTab(tab);
     setView('settings');
+    setAppError(null);
+  };
+
+  const openConnectors = () => {
+    setView('connectors');
     setAppError(null);
   };
 
@@ -922,6 +1286,7 @@ function App() {
     setMessages([]);
     setActivities([]);
     setLoadingMessages(false);
+    syncVisibleChat(null);
   };
 
   const setBotArchived = async (botId: string, archived: boolean) => {
@@ -936,13 +1301,12 @@ function App() {
     catch (error) { setAppError(toError(error)); }
   };
 
-  const updateChat = async (id: string, patch: { model?: string | null; permission?: PermissionMode | null }) => {
-    await window.rambo.updateChat(id, patch);
+  const updateBotExecutionConfig = async (id: string, patch: { model: string; permission: PermissionMode }) => {
+    const bot = await window.rambo.updateBotExecutionConfig(id, patch);
     setSnapshot(current => current
-      ? { ...current, chats: current.chats.map(chat => chat.id === id ? { ...chat, ...patch } : chat) }
+      ? { ...current, bots: current.bots.map(item => item.id === bot.id ? bot : item) }
       : current);
   };
-
 
   const permanentlyDeleteBot = async () => {
     if (!deletingBot) return;
@@ -967,6 +1331,77 @@ function App() {
         clearSelectedChat();
       }
     }
+  };
+
+  const archiveGroupFromSidebar = async (group: GroupChat) => {
+    setSidebarMenu(null);
+    try {
+      await window.rambo.setGroupArchived(group.id, true);
+      const next = await window.rambo.snapshot();
+      setSnapshot(next);
+      setSidebarNotice(`已归档群聊 ${group.title}`);
+      if (selectedGroupId === group.id) await returnToChat();
+    } catch (error) { setAppError(toError(error)); }
+  };
+
+  const restoreGroup = async (groupId: string) => {
+    try {
+      await window.rambo.setGroupArchived(groupId, false);
+      setSnapshot(await window.rambo.snapshot());
+      setAppError(null);
+    } catch (error) { setAppError(toError(error)); }
+  };
+
+  const permanentlyDeleteGroup = async () => {
+    if (!deletingGroup) return;
+    const target = deletingGroup;
+    await window.rambo.deleteGroup(target.id);
+    setSnapshot(await window.rambo.snapshot());
+    setDeletingGroup(null);
+    if (selectedGroupId === target.id) await returnToChat();
+  };
+
+  const openSidebarMenu = (
+    event: React.MouseEvent,
+    target: { kind: 'bot'; bot: Bot; chat: Chat | null } | { kind: 'group'; group: GroupChat }
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (target.kind === 'bot' && !target.chat) return;
+    const width = 196;
+    const height = 126;
+    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8));
+    const y = Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8));
+    setSidebarNotice(null);
+    setSidebarMenu(target.kind === 'bot'
+      ? { kind: 'bot', bot: target.bot, conversationId: target.chat!.id, x, y }
+      : { kind: 'group', group: target.group, conversationId: target.group.id, x, y });
+  };
+
+  const copySidebarChatId = async (conversationId: string) => {
+    setSidebarMenu(null);
+    try {
+      await window.rambo.copyText(conversationId);
+      setSidebarNotice('对话 ID 已复制');
+    } catch (error) {
+      setAppError(toError(error));
+    }
+  };
+
+  const archiveFromSidebar = async (menu: NonNullable<typeof sidebarMenu>) => {
+    setSidebarMenu(null);
+    if (menu.kind === 'bot') {
+      try {
+        await setBotArchived(menu.bot.id, true);
+        setSidebarNotice(`已归档 ${menu.bot.name}`);
+      } catch (error) { setAppError(toError(error)); }
+    } else await archiveGroupFromSidebar(menu.group);
+  };
+
+  const deleteFromSidebar = (menu: NonNullable<typeof sidebarMenu>) => {
+    setSidebarMenu(null);
+    if (menu.kind === 'bot') setDeletingBot(menu.bot);
+    else setDeletingGroup(menu.group);
   };
 
   return (
@@ -1001,21 +1436,27 @@ function App() {
             <>
               <div className="bot-list" aria-label="会话列表">
                 {activeBots.map(bot => {
+                  const chat = privateChatForBot(currentSnapshot.chats, bot.id);
+                  const running = Boolean(chat && (
+                    currentSnapshot.activeTurns[chat.id] || currentSnapshot.startingTurns[chat.id]
+                  ));
+                  const preview = chat ? currentSnapshot.recentMessages[chat.id]?.trim() : '';
                   return (
                     <div className="bot-group" key={bot.id}>
-                      <div className={'bot-list-row' + (selectedBotId === bot.id && view === 'chat' ? ' selected' : '')}>
+                      <div className={'bot-list-row' + (selectedBotId === bot.id && view === 'chat' ? ' selected' : '')}
+                        data-avatar-follow-region=""
+                        data-running={running ? 'true' : undefined}
+                        onContextMenu={event => openSidebarMenu(event, { kind: 'bot', bot, chat })}>
                         <button type="button" className="bot-select" onClick={() => void chooseBot(bot)}
                           aria-current={selectedBotId === bot.id && view === 'chat' ? 'true' : undefined}>
-                          <Avatar value={bot.avatar} size="small" />
+                          <span className="bot-avatar-wrap">
+                            <Avatar value={bot.avatar} size="sidebar" followOnHover />
+                            <UnreadBadge count={chat ? currentSnapshot.unreadCounts[chat.id] ?? 0 : 0} />
+                          </span>
                           <span className="bot-card-copy">
                             <span className="bot-row-name">{bot.name}</span>
-                            <span className="bot-row-summary">{bot.role.trim() || '唯一私聊'}</span>
+                            <span className="bot-row-summary">{preview || bot.role.trim() || '开始聊天'}</span>
                           </span>
-                        </button>
-                        <button type="button" className="icon-button bot-settings-shortcut"
-                          aria-label={'设置 ' + bot.name} title="Bot 设置"
-                          onClick={() => openBotSettings(bot)}>
-                          <Icon name="settings" size={14} />
                         </button>
                       </div>
                     </div>
@@ -1025,7 +1466,8 @@ function App() {
                   const members = group.memberIds.map(id => currentSnapshot.bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
                   return (
                     <div className="bot-group" key={group.id}>
-                      <div className={'bot-list-row' + (selectedGroupId === group.id && view === 'group-chat' ? ' selected' : '')}>
+                      <div className={'bot-list-row' + (selectedGroupId === group.id && view === 'group-chat' ? ' selected' : '')}
+                        onContextMenu={event => openSidebarMenu(event, { kind: 'group', group })}>
                         <button type="button" className="bot-select" onClick={() => openGroup(group)}
                           aria-current={selectedGroupId === group.id && view === 'group-chat' ? 'page' : undefined}>
                           <GroupAvatar group={group} bots={currentSnapshot.bots} />
@@ -1054,31 +1496,40 @@ function App() {
                   ))}
                 </section>
               )}
-              <nav className="routine-navigation" aria-label="任务导航">
-                <button type="button" className={'routine-navigation-row' + (view === 'routines' ? ' selected' : '')}
-                  aria-current={view === 'routines' ? 'page' : undefined}
-                  title="查看所有 Bot 的定时任务" onClick={() => setView('routines')}>
-                  <span className="routine-navigation-icon"><Icon name="calendar" size={16} /></span>
-                  <span className="routine-navigation-label">全部定时任务</span>
-                </button>
-              </nav>
+              {archivedGroups.length > 0 && (
+                <section className="archived-bot-list" aria-label="已归档的群聊">
+                  <div className="archived-bot-heading">已归档的群聊</div>
+                  {archivedGroups.map(group => (
+                    <div className="archived-bot-row" key={group.id}>
+                      <div className="archived-bot-select archived-group-label">
+                        <GroupAvatar group={group} bots={currentSnapshot.bots} />
+                        <span>{group.title}</span>
+                      </div>
+                      <button type="button" className="restore-inline-button" aria-label={'恢复群聊 ' + group.title}
+                        onClick={() => void restoreGroup(group.id)}>恢复</button>
+                    </div>
+                  ))}
+                </section>
+              )}
             </>
           )}
         </div>
 
         <div className="sidebar-footer">
           <button type="button" className={'account-button' + (view === 'settings' ? ' selected' : '')}
-            aria-label="设置" title="设置" onClick={openSettings}>
+            aria-label="设置" title="设置" onClick={() => openSettings()}>
             <span className="account-dot"><img className="app-brand-avatar" src={appAvatarUrl} alt="Rambo" /></span>
           </button>
-          <div className="runtime-mini" title={runtimeLabel(currentSnapshot.runtime.status)}>
-            <span className={'status-dot status-' + (currentSnapshot.runtime.status || 'stopped')} />
-            <span>Codex</span>
-          </div>
+          <button type="button" className={'sidebar-connectors-button' + (view === 'connectors' ? ' selected' : '')}
+            aria-label="连接应用" title="连接应用" aria-current={view === 'connectors' ? 'page' : undefined}
+            onClick={openConnectors}>
+            <Icon name="connectors" size={16} />
+            <span>连接应用</span>
+          </button>
         </div>
       </aside>
 
-      <main className="main-pane">
+      <main className={'main-pane' + (view === 'chat' || view === 'group-chat' ? ' chat-surface' : '')}>
         <div className="main-titlebar-spacer" aria-hidden="true" />
         <header className="chat-header">
           {shouldShowReturnToChat(view) && (
@@ -1088,11 +1539,64 @@ function App() {
             </button>
           )}
           {view === 'chat' && currentBot && (
-            <div className="current-bot-pill">
-              <Avatar value={currentBot.avatar} size="small" />
-              <span>{currentBot.name}</span>
-              <span className="current-bot-pill-chevron"><Icon name="chevron" size={13} /></span>
-            </div>
+            <span
+              className={'current-bot-pill-shell' + (currentVoiceError ? ' current-bot-pill-shell-error' : '')}
+              role={currentVoiceError ? 'group' : undefined}
+              aria-label={currentVoiceError ? `${currentVoiceError.title}：${currentVoiceError.detail}` : undefined}
+            >
+              <button type="button"
+                ref={headerPillRef}
+                className={'current-bot-pill current-bot-pill-button' +
+                  (currentVoice ? ' current-bot-pill-voice' : '')}
+                aria-label={currentVoiceError ? `${currentVoiceError.title}：${currentVoiceError.detail}` : currentVoiceLabel ?? `打开 ${currentBot.name} 设置`}
+                aria-disabled={currentVoice ? 'true' : undefined}
+                title={currentVoiceError ? `${currentVoiceError.title}：${currentVoiceError.detail}` : currentVoiceLabel ?? '打开 Bot 设置'}
+                data-voice-state={currentVoice?.state}
+                data-voice-color={currentVoice ? parseRobotAvatar(currentBot.avatar).color : undefined}
+                style={currentVoice ? voiceAccentStyle(currentBot.avatar) : undefined}
+                onClick={() => {
+                  if (!currentVoice) openBotSettings(currentBot);
+                }}>
+                <span className="current-bot-avatar">
+                  <Avatar value={currentBot.avatar} size="sidebar" animated={Boolean(currentVoice)} />
+                  {currentVoice?.state === 'connecting' && (
+                    <span className="chat-voice-connect-loader" aria-hidden="true">
+                      <span className="chat-voice-connect-orbit" />
+                      <span className="chat-voice-connect-core" />
+                    </span>
+                  )}
+                </span>
+                <span className="current-bot-name">{currentBot.name}</span>
+                {(currentVoice?.state === 'live' || currentVoice?.state === 'stopping') && (
+                  <VoiceWaveform
+                    state={currentVoice.state}
+                    levels={currentVoice.state === 'live' ? readVoiceLevels : undefined}
+                  />
+                )}
+                {currentVoiceError && (
+                  <span className="current-bot-voice-error">
+                    <span className="current-bot-voice-error-title">{currentVoiceError.title}</span>
+                    <span className="current-bot-voice-error-detail">{currentVoiceError.detail}</span>
+                  </span>
+                )}
+                <span className="current-bot-pill-chevron"><Icon name="chevron" size={13} /></span>
+              </button>
+              {currentVoice?.state === 'live' && (
+                <button type="button" className="chat-voice-end-button"
+                  aria-label="结束当前语音通话" title="结束语音"
+                  onClick={() => void stopVoice(currentVoice.chatId, '用户点击了结束语音')}>
+                  <Icon name="close" size={15} />
+                </button>
+              )}
+              {currentVoiceError && currentChat && (
+                <button type="button" className="current-bot-voice-retry"
+                  aria-label="重新拨号"
+                  title="重新拨号"
+                  onClick={() => void startVoice(currentChat)}>
+                  <Icon name="voice" size={16} />
+                </button>
+              )}
+            </span>
           )}
           {view === 'group-chat' && currentGroup && (
             <div className="current-bot-pill">
@@ -1125,9 +1629,10 @@ function App() {
             onAdd={botIds => addGroupMembers(currentGroup.id, botIds)}
           />
         ) : view === 'group-chat' && currentGroup ? (
-          <GroupChatPage key={currentGroup.id} group={currentGroup} bots={currentSnapshot.bots} messages={groupMessages}
-            loading={loadingGroupMessages} models={modelOptions} modelError={modelOptionsError}
-            onUpdateChat={(chatId, patch) => window.rambo.updateChat(chatId, patch)}
+            <GroupChatPage key={currentGroup.id} group={currentGroup} bots={currentSnapshot.bots} messages={groupMessages}
+            runtime={currentSnapshot.groupRuntimes[currentGroup.id] ?? null}
+            enteringMessageIds={enteringMessageIds}
+            loading={loadingGroupMessages}
             onError={error => setAppError(error)} onSend={async text => {
               setAppError(null);
               try { await window.rambo.sendGroup(currentGroup.id, text); }
@@ -1137,8 +1642,61 @@ function App() {
           <div className="page-loading">找不到这个群聊</div>
         ) : view === 'settings' ? (
           <AccountSettingsPage
+            activeTab={systemSettingsTab}
+            onTabChange={setSystemSettingsTab}
             runtime={currentSnapshot.runtime}
+            codexHome={currentSnapshot.codexHome}
+            notificationUnavailable={currentSnapshot.notifications.unavailableMessage}
             launchAtLogin={currentSnapshot.settings.launchAtLogin !== 'false'}
+            globalModel={currentSnapshot.settings.defaultBotModel ?? ''}
+            globalPermission={permissionModeFromSetting(currentSnapshot.settings.defaultBotPermission)}
+            executionDefaultsReady={currentSnapshot.executionDefaults.ready}
+            executionDefaultsError={currentSnapshot.executionDefaults.error}
+            resources={currentSnapshot.botResources}
+            globalResourceIds={currentSnapshot.globalResourceIds}
+            globalDefaultResourceIds={currentSnapshot.globalDefaultResourceIds}
+            directMcpServers={currentSnapshot.directMcpServers}
+            playwrightVerifiedAt={currentSnapshot.settings.playwrightVerifiedAt ?? ''}
+            models={modelOptions}
+            modelError={modelOptionsError}
+            bots={currentSnapshot.bots}
+            routines={currentSnapshot.routines}
+            runs={currentSnapshot.routineRuns}
+            onSetGlobalModel={value => window.rambo.setSetting('defaultBotModel', value)}
+            onSetGlobalPermission={value => window.rambo.setSetting('defaultBotPermission', value)}
+            onSetGlobalResource={async (resourceId, included) => {
+              await window.rambo.setGlobalResource(resourceId, included);
+              setSnapshot(await window.rambo.snapshot());
+            }}
+            onImportLocalSkill={async () => {
+              const imported = await window.rambo.importLocalSkill();
+              setSnapshot(await window.rambo.snapshot());
+              return imported;
+            }}
+            onAddDirectMcp={async input => {
+              const added = await window.rambo.addDirectMcp(input);
+              setSnapshot(await window.rambo.snapshot());
+              return added;
+            }}
+            onSetDirectMcpEnabled={async (id, enabled) => {
+              const server = await window.rambo.setDirectMcpEnabled(id, enabled);
+              setSnapshot(await window.rambo.snapshot());
+              return server;
+            }}
+            onDeleteDirectMcp={async id => {
+              await window.rambo.deleteDirectMcp(id);
+              setSnapshot(await window.rambo.snapshot());
+            }}
+            onSetGlobalDefaultResource={async (resourceId, enabled) => {
+              await window.rambo.setGlobalDefaultResource(resourceId, enabled);
+              setSnapshot(await window.rambo.snapshot());
+            }}
+            onVerifyPlaywrightConnection={async () => {
+              const result = await window.rambo.verifyPlaywrightConnection();
+              setSnapshot(await window.rambo.snapshot());
+              return result;
+            }}
+            onCancelPlaywrightVerification={() => window.rambo.cancelPlaywrightVerification()}
             onSetLaunchAtLogin={async enabled => {
               const previous = currentSnapshot.settings.launchAtLogin;
               setSnapshot(current => current
@@ -1157,13 +1715,6 @@ function App() {
                 throw error;
               }
             }}
-          />
-        ) : view === 'routines' ? (
-          <RoutineListPage routines={currentSnapshot.routines} runs={currentSnapshot.routineRuns} bots={currentSnapshot.bots} />
-        ) : view === 'bot-settings' && settingsBot ? (
-          <BotSettingsPage bot={settingsBot} routines={currentSnapshot.routines} runs={currentSnapshot.routineRuns}
-            models={modelOptions} modelError={modelOptionsError}
-            onSave={saveBot} onApplyPermission={applyBotPermissionToChats}
             onSetRoutineStatus={async (routineId, status) => {
               await window.rambo.setRoutineStatus(routineId, status);
               setSnapshot(current => current ? {
@@ -1182,83 +1733,106 @@ function App() {
               setSnapshot(await window.rambo.snapshot());
               return run;
             }}
+          />
+        ) : view === 'connectors' ? (
+          <ConnectorsPage providers={currentSnapshot.connectorProviders}
+            connections={currentSnapshot.connections} grants={currentSnapshot.connectorGrants}
+            currentBotId={selectedBotId}
+            onConnect={provider => setConnectorDialog({ mode: 'connect', provider, connection: null })}
+            onManage={(provider, connection) => setConnectorDialog({ mode: 'manage', provider, connection })} />
+        ) : view === 'bot-settings' && settingsBot ? (
+          <BotSettingsPage key={settingsBot.id} bot={settingsBot}
+            models={modelOptions} modelError={modelOptionsError}
+            resources={currentSnapshot.botResources.filter(resource =>
+              currentSnapshot.globalResourceIds.includes(resource.id))}
+            routines={currentSnapshot.routines.filter(routine => routine.botId === settingsBot.id)}
+            runs={currentSnapshot.routineRuns}
+            onSave={saveBot} onUpdateExecution={updateBotExecutionConfig}
+            onSetResource={async (resourceId, enabled) => {
+              const bot = await window.rambo.setBotResource(settingsBot.id, resourceId, enabled);
+              setSnapshot(current => current
+                ? { ...current, bots: current.bots.map(item => item.id === bot.id ? bot : item) }
+                : current);
+            }}
             onSetArchived={setBotArchived} onRequestDelete={() => setDeletingBot(settingsBot)} />
         ) : view === 'chat' && !loading && !currentBot ? (
           <div className="empty-chat-workspace" />
         ) : view === 'chat' && currentBot && !currentChat ? (
           <NoChatWorkspace bot={currentBot} onOpen={() => void chooseBot(currentBot)} />
-        ) : view === 'chat' ? (
+        ) : view === 'chat' && currentBot ? (
           <div className="chat-workspace">
-            <div className="transcript-scroll" ref={scrollRef}>
+            <div className="transcript-scroll" ref={scrollRef}
+              onScroll={event => {
+                const element = event.currentTarget;
+                const followsLatest = element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+                transcriptFollowsLatestRef.current = followsLatest;
+              }}>
               {loadingMessages ? (
                 <div className="messages-loading" aria-label="正在读取聊天" />
               ) : (
                 <div className="message-column">
-                  {messages.map(message => {
-                    const turnMessages = message.turnId
-                      ? messages.filter(item => item.role === 'assistant' && item.turnId === message.turnId)
-                      : [];
-                    const hasFinal = turnMessages.some(item => item.phase === 'final_answer');
-                    const ownsTurnDetails = message.role === 'assistant' && !!message.turnId && (
-                      message.phase === 'final_answer' ||
-                      (!hasFinal && message.phase === null && turnMessages[turnMessages.length - 1]?.id === message.id)
-                    );
-                    return (
-                      <MessageRow
-                        key={message.id}
-                        message={message}
-                        activities={ownsTurnDetails
-                          ? activities.filter(activity => activity.turnId === message.turnId)
-                          : []}
-                      />
-                    );
-                  })}
-                  {currentChat && currentBot && isRunning && (
-                    <AgentRunningRow
-                      bot={currentBot}
-                      activities={activities.filter(activity =>
-                        activity.turnId === currentSnapshot.activeTurns[currentChat.id]
-                      )}
-                      elapsedSeconds={elapsedRunSeconds}
+                  {messages.map(message => (
+                    <MessageRow
+                      key={message.id}
+                      message={message}
+                      entering={enteringMessageIds.has(message.id)}
                     />
-                  )}
+                  ))}
                 </div>
               )}
             </div>
-            {currentChat && voice?.chatId === currentChat.id && (
-              <VoicePanel
-                voice={voice}
-                onStop={() => void stopVoice(currentChat.id, '用户点击了结束语音')}
-              />
-            )}
-            {currentChat && (
-              <Composer
-                key={currentChat.id}
-                chat={currentChat}
-                bot={currentBot!}
-                models={modelOptions}
-                modelsError={modelOptionsError}
-                busy={isRunning}
-                onUpdateChat={patch => updateChat(currentChat.id, patch)}
-                onSend={async text => {
-                  setAppError(null);
-                  try {
-                    await window.rambo.send(currentChat.id, text);
-                  } catch (error) {
-                    setAppError(toError(error));
-                    throw error;
-                  }
-                }}
-                onStop={async () => {
-                  setAppError(null);
-                  try { await window.rambo.interrupt(currentChat.id); }
-                  catch (error) { setAppError(toError(error)); }
-                }}
-                voiceState={voice?.chatId === currentChat.id ? voice.state : null}
-                onStartVoice={() => void startVoice(currentChat)}
-                onStopVoice={() => void stopVoice(currentChat.id, '用户点击了结束语音')}
-              />
-            )}
+            <ChatScrollbar scrollRef={scrollRef} />
+            <div className="chat-bottom-dock">
+              {currentChat && currentBot && (
+                <div className="chat-running-dock">
+                  <AgentRunningRow
+                    visible={isRunning || isStartingTurn}
+                    bots={[currentBot]}
+                    autoAnimate
+                    label={(() => {
+                      const latest = activities
+                        .filter(activity => activity.turnId === currentSnapshot.activeTurns[currentChat.id])
+                        .at(-1);
+                      if (isStartingTurn) return '正在读消息';
+                      return latest ? ACTIVITY_LABELS[latest.kind] : '正在思考';
+                    })()} />
+                </div>
+              )}
+              {currentChat && (
+                <>
+                  <Composer
+                    key={currentChat.id}
+                    busy={isRunning}
+                    disabled={Boolean(currentBotExecutionError)}
+                    disabledReason={currentBotExecutionError}
+                    placeholder={`发消息给 ${currentBot?.name ?? '机器人'}`}
+                    onSend={async text => {
+                      setAppError(null);
+                      try {
+                        transcriptFollowsLatestRef.current = true;
+                        await window.rambo.send(currentChat.id, text);
+                      } catch (error) {
+                        setAppError(toError(error));
+                        throw error;
+                      }
+                    }}
+                    onStop={async () => {
+                      setAppError(null);
+                      try { await window.rambo.interrupt(currentChat.id); }
+                      catch (error) { setAppError(toError(error)); }
+                    }}
+                    voiceState={voice?.chatId === currentChat.id ? voice.state : null}
+                    onStartVoice={() => void startVoice(currentChat)}
+                    onStopVoice={() => void stopVoice(currentChat.id, '用户点击了结束语音')}
+                  />
+                  {currentBotExecutionError && (
+                    <div className="form-error composer-readiness-error" role="status">
+                      {currentBotExecutionError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         ) : (
           <div className="page-loading">正在读取…</div>
@@ -1308,9 +1882,38 @@ function App() {
       {createOpen && (
         <CreateBotDialog
           busy={createBusy}
+          readinessError={currentSnapshot.executionDefaults.ready
+            ? null
+            : currentSnapshot.executionDefaults.error}
           onCancel={() => setCreateOpen(false)}
           onCreate={createBot}
         />
+      )}
+      {sidebarMenu && (
+        <div className="sidebar-context-menu" role="menu"
+          aria-label={`${sidebarMenu.kind === 'bot' ? sidebarMenu.bot.name : sidebarMenu.group.title} 会话菜单`}
+          style={{ left: sidebarMenu.x, top: sidebarMenu.y }}
+          onPointerDown={event => event.stopPropagation()}
+          onContextMenu={event => event.preventDefault()}>
+          <button type="button" role="menuitem"
+            onClick={() => void copySidebarChatId(sidebarMenu.conversationId)}>
+            <Icon name="copy" size={14} />
+            <span>复制对话 ID</span>
+          </button>
+          <button type="button" role="menuitem"
+            onClick={() => void archiveFromSidebar(sidebarMenu)}>
+            <Icon name="archive" size={14} />
+            <span>{sidebarMenu.kind === 'bot' ? '归档 Bot' : '归档群聊'}</span>
+          </button>
+          <button type="button" role="menuitem" className="danger"
+            onClick={() => deleteFromSidebar(sidebarMenu)}>
+            <Icon name="trash" size={14} />
+            <span>{sidebarMenu.kind === 'bot' ? '永久删除 Bot…' : '永久删除群聊…'}</span>
+          </button>
+        </div>
+      )}
+      {sidebarNotice && (
+        <div className="sidebar-notice" role="status">{sidebarNotice}</div>
       )}
       {deletingBot && (
         <ConfirmationDialog
@@ -1321,19 +1924,1033 @@ function App() {
           onConfirm={permanentlyDeleteBot}
         />
       )}
+      {deletingGroup && (
+        <ConfirmationDialog
+          title={`永久删除群聊「${deletingGroup.title}」？`}
+          description="将删除群聊消息、成员关系及该群聊专属的 Codex 会话线程。此操作不可撤销。"
+          confirmLabel="永久删除群聊"
+          onCancel={() => setDeletingGroup(null)}
+          onConfirm={permanentlyDeleteGroup}
+        />
+      )}
+      {connectorDialog && (
+        <ConnectorDialog
+          mode={connectorDialog.mode}
+          provider={connectorDialog.provider}
+          connection={connectorDialog.connection}
+          grants={currentSnapshot.connectorGrants}
+          bots={activeBots}
+          onClose={() => setConnectorDialog(null)}
+          onComplete={async input => {
+            const connection = await window.rambo.completeConnectorAuth(input);
+            setSnapshot(await window.rambo.snapshot());
+            setConnectorDialog({ mode: 'manage', provider: connectorDialog.provider, connection });
+          }}
+          onOAuthComplete={async connection => {
+            setSnapshot(await window.rambo.snapshot());
+            setConnectorDialog({ mode: 'manage', provider: connectorDialog.provider, connection });
+          }}
+          onGrant={async (botId, connectionId, granted) => {
+            await window.rambo.setConnectorGrant(botId, connectionId, granted);
+            setSnapshot(await window.rambo.snapshot());
+          }}
+          onRemove={async connection => {
+            await window.rambo.removeConnection(connection.id);
+            setSnapshot(await window.rambo.snapshot());
+            setConnectorDialog(null);
+          }}
+          onReconnect={async connection => {
+            const status = connection.status === 'ready' ? 'needsReconnect' : 'ready';
+            const updated = await window.rambo.setConnectionStatus(connection.id, status);
+            setSnapshot(await window.rambo.snapshot());
+            setConnectorDialog({ mode: 'manage', provider: connectorDialog.provider, connection: updated });
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function RoutineListPage({ routines, runs, bots }: { routines: RoutineListItem[]; runs: RoutineRun[]; bots: Bot[] }) {
-  const botNames = new Map(bots.map(bot => [bot.id, bot.name]));
+function ConnectorsPage({
+  providers,
+  connections,
+  grants,
+  currentBotId,
+  onConnect,
+  onManage
+}: {
+  providers: ConnectorProvider[];
+  connections: ConnectorConnection[];
+  grants: ConnectorGrant[];
+  currentBotId: string | null;
+  onConnect: (provider: ConnectorProvider) => void;
+  onManage: (provider: ConnectorProvider, connection: ConnectorConnection) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<ConnectorCategory | 'all' | 'connected'>('all');
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const providerById = new Map(providers.map(provider => [provider.id, provider]));
+  const connectionsByProvider = new Map<string, ConnectorConnection[]>();
+  for (const connection of connections) {
+    const own = connectionsByProvider.get(connection.providerId);
+    if (own) own.push(connection);
+    else connectionsByProvider.set(connection.providerId, [connection]);
+  }
+  const sortedProviders = [...providers].sort((left, right) => {
+    const leftIndex = CONNECTOR_FEATURED_ORDER.indexOf(left.id);
+    const rightIndex = CONNECTOR_FEATURED_ORDER.indexOf(right.id);
+    return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+  });
+  const filtered = sortedProviders.filter(provider => {
+    const ownConnections = connectionsByProvider.get(provider.id) ?? [];
+    if (category === 'connected' && !ownConnections.length) return false;
+    if (category !== 'all' && category !== 'connected' && provider.category !== category) return false;
+    if (!normalizedQuery) return true;
+    return [provider.name, provider.description, provider.monogram, provider.category]
+      .some(value => value.toLocaleLowerCase().includes(normalizedQuery));
+  });
+  const isHomepage = category === 'all' && !normalizedQuery;
+  const featured = isHomepage
+    ? filtered.filter(provider => provider.id === 'gmail' || provider.id === 'qqmail')
+    : [];
+  const remaining = isHomepage ? filtered.filter(provider => !featured.includes(provider)) : filtered;
+  const categoryOrder: ConnectorCategory[] = [
+    'email', 'calendar', 'files', 'communication', 'productivity', 'developer', 'data', 'other'
+  ];
+  const providerCategories = new Set(providers.map(provider => provider.category));
+  const availableCategories = categoryOrder.filter(key => providerCategories.has(key));
+  const visibleCategories = availableCategories.slice(0, 5);
+  const overflowCategories = availableCategories.slice(5);
+  const remainingTitle = normalizedQuery
+    ? '搜索结果'
+    : category === 'connected'
+      ? '已连接的应用'
+      : category === 'all'
+        ? '所有应用'
+        : CONNECTOR_CATEGORY_LABELS[category];
+
   return (
-      <section className="settings-page routine-page" aria-label="所有 Bot 的定时任务">
+    <section className="connectors-page" aria-label="连接应用">
+      <div className="connectors-topbar">
+        <div className="connectors-heading">
+          <div className="eyebrow">RAMBO</div>
+          <h1>连接应用</h1>
+          <p>连接你的邮箱、日程与常用工具。应用账号授权一次，再按 Bot 分配访问权限。</p>
+        </div>
+        <label className="connector-search">
+          <Icon name="search" size={18} />
+          <span className="sr-only">搜索连接应用</span>
+          <input type="search" value={query} placeholder="搜索应用"
+            aria-label="搜索连接应用" onChange={event => setQuery(event.target.value)} />
+          {query && (
+            <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
+              <Icon name="close" size={14} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      <nav className="connector-category-pills" aria-label="连接应用分类">
+        {(['all', 'connected'] as const).map(key => (
+          <button type="button" key={key}
+            className={'connector-category-pill' + (category === key ? ' selected' : '')}
+            aria-pressed={category === key}
+            onClick={() => setCategory(key)}>
+            {CONNECTOR_CATEGORY_LABELS[key]}
+          </button>
+        ))}
+        {visibleCategories.map(key => (
+          <button type="button" key={key}
+            className={'connector-category-pill' + (category === key ? ' selected' : '')}
+            aria-pressed={category === key}
+            onClick={() => setCategory(key)}>
+            {CONNECTOR_CATEGORY_LABELS[key]}
+          </button>
+        ))}
+        {overflowCategories.length > 0 && (
+          <div className="connector-category-overflow"
+            onBlur={event => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCategoryMenuOpen(false);
+            }}
+            onKeyDown={event => {
+              if (event.key === 'Escape') setCategoryMenuOpen(false);
+            }}>
+            <button type="button"
+              className={'connector-category-pill connector-category-overflow-trigger' +
+                (overflowCategories.includes(category as ConnectorCategory) ? ' selected' : '')}
+              aria-haspopup="menu"
+              aria-pressed={overflowCategories.includes(category as ConnectorCategory)}
+              aria-expanded={categoryMenuOpen}
+              onClick={() => setCategoryMenuOpen(open => !open)}>
+              {overflowCategories.includes(category as ConnectorCategory)
+                ? CONNECTOR_CATEGORY_LABELS[category as ConnectorCategory]
+                : '更多'}
+              <Icon name="chevron" size={13} />
+            </button>
+            {categoryMenuOpen && (
+              <div className="connector-category-menu" role="menu" aria-label="更多应用分类">
+                {overflowCategories.map(key => (
+                  <button type="button" role="menuitemradio" aria-checked={category === key} key={key}
+                    onClick={() => { setCategory(key); setCategoryMenuOpen(false); }}>
+                    {CONNECTOR_CATEGORY_LABELS[key]}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </nav>
+
+      {featured.length > 0 && (
+        <ConnectorSection
+          title="推荐"
+          providers={featured}
+          providerById={providerById}
+          connectionsByProvider={connectionsByProvider}
+          grants={grants}
+          currentBotId={currentBotId}
+          onConnect={onConnect}
+          onManage={onManage}
+        />
+      )}
+
+      {remaining.length > 0 ? (
+        <ConnectorSection
+          title={remainingTitle}
+          providers={remaining}
+          providerById={providerById}
+          connectionsByProvider={connectionsByProvider}
+          grants={grants}
+          currentBotId={currentBotId}
+          onConnect={onConnect}
+          onManage={onManage}
+        />
+      ) : !featured.length ? (
+        <p className="connector-empty-results">{normalizedQuery ? '没有匹配的应用。' : '还没有已连接的应用。'}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function ConnectorSection({
+  title,
+  providers,
+  providerById,
+  connectionsByProvider,
+  grants,
+  currentBotId,
+  onConnect,
+  onManage
+}: {
+  title: string;
+  providers: ConnectorProvider[];
+  providerById: Map<string, ConnectorProvider>;
+  connectionsByProvider: Map<string, ConnectorConnection[]>;
+  grants: ConnectorGrant[];
+  currentBotId: string | null;
+  onConnect: (provider: ConnectorProvider) => void;
+  onManage: (provider: ConnectorProvider, connection: ConnectorConnection) => void;
+}) {
+  if (!providers.length) return null;
+  return (
+    <section className="connector-section" aria-label={title}>
+      <div className="connector-section-heading">
+        <h2>{title}</h2>
+      </div>
+      <div className="connector-card-list">
+        {providers.map(provider => (
+          <ConnectorCard
+            key={provider.id}
+            provider={providerById.get(provider.id) ?? provider}
+            connections={connectionsByProvider.get(provider.id) ?? []}
+            grants={grants}
+            currentBotId={currentBotId}
+            onConnect={onConnect}
+            onManage={onManage}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ConnectorCard({
+  provider,
+  connections,
+  grants,
+  currentBotId,
+  onConnect,
+  onManage
+}: {
+  provider: ConnectorProvider;
+  connections: ConnectorConnection[];
+  grants: ConnectorGrant[];
+  currentBotId: string | null;
+  onConnect: (provider: ConnectorProvider) => void;
+  onManage: (provider: ConnectorProvider, connection: ConnectorConnection) => void;
+}) {
+  const primaryConnection = connections[0] ?? null;
+  const connectionGrants = primaryConnection
+    ? grants.filter(grant => grant.connectionId === primaryConnection.id)
+    : [];
+  const grantCount = new Set(connectionGrants.map(grant => grant.botId)).size;
+  const currentBotGranted = currentBotId !== null && connectionGrants.some(grant => grant.botId === currentBotId);
+  const statusLabel = primaryConnection ? connectionStatusLabel(primaryConnection.status) : null;
+
+  return (
+    <article className={'connector-card' + (primaryConnection ? ' connected' : '')}>
+      <ConnectorProviderIcon provider={provider} className="connector-card-icon" />
+      <div className="connector-card-copy">
+        <div className="connector-card-title-row">
+          <h3>{provider.name}</h3>
+          {primaryConnection && (
+            <span className={'connector-status ' + primaryConnection.status}>
+              <span className="connector-status-dot" />
+              {statusLabel}
+            </span>
+          )}
+        </div>
+        <p>{primaryConnection
+          ? `${primaryConnection.displayName} · ${primaryConnection.accountLabel}`
+          : provider.description}</p>
+        {primaryConnection && (
+          <div className="connector-card-grant-summary">
+            <span>{grantCount ? `已授权给 ${grantCount} 个 Bot` : '尚未授权 Bot'}</span>
+            {currentBotId && !currentBotGranted && <span>当前 Bot 无访问权限</span>}
+          </div>
+        )}
+      </div>
+      <div className="connector-card-actions">
+        {primaryConnection ? (
+          <button type="button" className="connector-secondary-button"
+            onClick={() => onManage(provider, primaryConnection)}>管理</button>
+        ) : (
+          <button type="button" className="connector-primary-button"
+            disabled={!provider.available}
+            onClick={() => onConnect(provider)}>
+            {provider.available ? '连接' : '即将推出'}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+interface ConnectorProgressEntry {
+  phase: string;
+  message: string;
+  timestamp: number;
+}
+
+function appendConnectorProgress(
+  entries: ConnectorProgressEntry[],
+  entry: ConnectorProgressEntry
+): ConnectorProgressEntry[] {
+  const previous = entries[entries.length - 1];
+  if (previous?.phase === entry.phase && previous.message === entry.message) return entries;
+  return [...entries, entry].slice(-80);
+}
+
+function safeConnectorLogMessage(message: string): string {
+  return message
+    .replace(/\b[a-f0-9]{64}\b/giu, '<密钥已隐藏>')
+    .replace(/\/Users\/[^/\s]+/gu, '~')
+    .slice(0, 500);
+}
+
+function formatConnectorElapsed(startedAt: number | null, now: number): string {
+  if (startedAt === null) return '';
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+  return `已等待 ${minutes}:${seconds}`;
+}
+
+function ConnectorDialog({
+  mode,
+  provider,
+  connection,
+  grants,
+  bots,
+  onClose,
+  onComplete,
+  onOAuthComplete,
+  onGrant,
+  onRemove,
+  onReconnect
+}: {
+  mode: 'connect' | 'manage';
+  provider: ConnectorProvider;
+  connection: ConnectorConnection | null;
+  grants: ConnectorGrant[];
+  bots: Bot[];
+  onClose: () => void;
+  onComplete: (input: ConnectorCredentialInput) => Promise<void>;
+  onOAuthComplete: (connection: ConnectorConnection) => Promise<void>;
+  onGrant: (botId: string, connectionId: string, granted: boolean) => Promise<void>;
+  onRemove: (connection: ConnectorConnection) => Promise<void>;
+  onReconnect: (connection: ConnectorConnection) => Promise<void>;
+}) {
+  const titleId = useId();
+  const [grantedIds, setGrantedIds] = useState<Set<string>>(() => new Set(
+    connection ? grants.filter(grant => grant.connectionId === connection.id).map(grant => grant.botId) : []
+  ));
+  const [challenge, setChallenge] = useState<ConnectorAuthChallenge | null>(null);
+  const [displayName, setDisplayName] = useState(connection?.displayName ?? provider.name);
+  const [email, setEmail] = useState(connection?.accountLabel ?? '');
+  const [secret, setSecret] = useState('');
+  const [gmailClientId, setGmailClientId] = useState('');
+  const [gmailClientSecret, setGmailClientSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [oauthWaiting, setOauthWaiting] = useState(false);
+  const [connectorProgress, setConnectorProgress] = useState<string | null>(null);
+  const [connectorPhase, setConnectorPhase] = useState<string | null>(null);
+  const [canFinishCapture, setCanFinishCapture] = useState(false);
+  const [canContinueCapture, setCanContinueCapture] = useState(false);
+  const [captureFinishing, setCaptureFinishing] = useState(false);
+  const [connectorLog, setConnectorLog] = useState<ConnectorProgressEntry[]>([]);
+  const [connectorClock, setConnectorClock] = useState(Date.now());
+  const connectorStartedAtRef = useRef<number | null>(null);
+  const captureFinishingRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
+  const isManage = mode === 'manage' && connection;
+  useEffect(() => {
+    if (!connection) return;
+    setGrantedIds(new Set(
+      grants.filter(grant => grant.connectionId === connection.id).map(grant => grant.botId)
+    ));
+  }, [connection?.id, grants]);
+
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy && !oauthWaiting) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, oauthWaiting, onClose]);
+
+  useEffect(() => () => {
+    if (challenge?.providerId === 'gmail' || challenge?.providerId === 'wechat') {
+      void window.rambo.cancelConnectorAuth(challenge).catch(() => {});
+    }
+  }, [challenge?.connectionId]);
+
+  useEffect(() => window.rambo.onEvent(event => {
+    if (event.type === 'connectorAuthProgress' && event.connectionId === challenge?.connectionId) {
+      if (captureFinishingRef.current && event.phase === 'capturing' && connectorPhase !== 'resuming-capture') return;
+      setConnectorPhase(event.phase);
+      setCanFinishCapture(event.canFinishCapture === true);
+      setCanContinueCapture(event.canContinueCapture === true);
+      if (event.phase === 'finishing-capture' || event.phase === 'verifying') {
+        captureFinishingRef.current = true;
+        setCaptureFinishing(true);
+      } else if (event.phase === 'resuming-capture') {
+        captureFinishingRef.current = true;
+        setCaptureFinishing(true);
+      } else if (event.phase === 'awaiting-recapture' || event.phase === 'capturing') {
+        captureFinishingRef.current = false;
+        setCaptureFinishing(false);
+      } else if (event.phase === 'complete' || event.phase === 'failed') {
+        captureFinishingRef.current = false;
+        setCaptureFinishing(false);
+      }
+      const message = safeConnectorLogMessage(event.message);
+      setConnectorProgress(message);
+      setConnectorLog(current => appendConnectorProgress(current, {
+        phase: event.phase,
+        message,
+        timestamp: Date.now()
+      }));
+    }
+  }), [challenge?.connectionId, connectorPhase]);
+
+  useEffect(() => {
+    if (!oauthWaiting || provider.id !== 'wechat') return;
+    const timer = window.setInterval(() => setConnectorClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [oauthWaiting, provider.id]);
+
+  useEffect(() => {
+    if (mode !== 'connect' || provider.id === 'gmail') return;
+    let alive = true;
+    setBusy(true);
+    window.rambo.beginConnectorAuth(provider.id, displayName.trim() || provider.name)
+      .then(next => { if (alive) setChallenge(next.challenge); })
+      .catch(issue => { if (alive) setError(toError(issue)); })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+    // The challenge is created once when the connection sheet opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, provider.id]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!challenge) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onComplete({
+        challenge,
+        providerId: provider.id,
+        displayName: displayName.trim(),
+        email: email.trim(),
+        secret
+      });
+      setSecret('');
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startGmailOAuth = async () => {
+    cancelledRef.current = false;
+    setBusy(true);
+    setError(null);
+    try {
+      const started = await window.rambo.beginConnectorAuth(
+        provider.id,
+        displayName.trim() || provider.name,
+        {
+          clientId: gmailClientId.trim(),
+          clientSecret: gmailClientSecret.trim()
+        }
+      );
+      setChallenge(started.challenge);
+      setOauthWaiting(true);
+      setBusy(false);
+      const connection = await window.rambo.openConnectorAuth(started.challenge);
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      setBusy(true);
+      setGmailClientSecret('');
+      await onOAuthComplete(connection);
+    } catch (issue) {
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      setChallenge(null);
+      setError(toError(issue));
+    } finally {
+      if (!cancelledRef.current) setBusy(false);
+    }
+  };
+
+  const startWechatConnect = async () => {
+    cancelledRef.current = false;
+    captureFinishingRef.current = false;
+    const startedAt = Date.now();
+    connectorStartedAtRef.current = startedAt;
+    setConnectorClock(startedAt);
+    setBusy(true);
+    setError(null);
+    setConnectorPhase('starting');
+    setCanFinishCapture(false);
+    setCanContinueCapture(false);
+    setCaptureFinishing(false);
+    setConnectorProgress('正在准备本机微信连接…');
+    setConnectorLog([{
+      phase: 'starting',
+      message: '正在准备本机微信连接…',
+      timestamp: startedAt
+    }]);
+    try {
+      let activeChallenge = challenge;
+      if (!activeChallenge) {
+        const started = await window.rambo.beginConnectorAuth(
+          provider.id,
+          displayName.trim() || provider.name
+        );
+        activeChallenge = started.challenge;
+        setChallenge(activeChallenge);
+      }
+      setOauthWaiting(true);
+      setBusy(false);
+      const connection = await window.rambo.openConnectorAuth(activeChallenge);
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      captureFinishingRef.current = false;
+      setCaptureFinishing(false);
+      setCanFinishCapture(false);
+      setCanContinueCapture(false);
+      setBusy(true);
+      await onOAuthComplete(connection);
+    } catch (issue) {
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      captureFinishingRef.current = false;
+      setConnectorPhase('failed');
+      setCanFinishCapture(false);
+      setCanContinueCapture(false);
+      setCaptureFinishing(false);
+      const message = toError(issue);
+      setError(message);
+      const safeMessage = safeConnectorLogMessage(`连接失败：${message}`);
+      setConnectorProgress(safeMessage);
+      setConnectorLog(current => appendConnectorProgress(current, {
+        phase: 'failed',
+        message: safeMessage,
+        timestamp: Date.now()
+      }));
+    } finally {
+      if (!cancelledRef.current) setBusy(false);
+    }
+  };
+
+  const finishWechatCapture = async () => {
+    if (!challenge || !canFinishCapture || captureFinishingRef.current) return;
+    captureFinishingRef.current = true;
+    setCaptureFinishing(true);
+    setCanFinishCapture(false);
+    setCanContinueCapture(false);
+    setConnectorPhase('finishing-capture');
+    setError(null);
+    const message = '收到完成信号，正在结束本轮并验证候选密钥…';
+    setConnectorProgress(message);
+    setConnectorLog(current => appendConnectorProgress(current, {
+      phase: 'finishing-capture',
+      message,
+      timestamp: Date.now()
+    }));
+    try {
+      const requested = await window.rambo.finishWechatCapture(challenge);
+      if (!requested) throw new Error('密钥捕获尚未就绪，请等待“已就绪”状态后重试。');
+    } catch (issue) {
+      captureFinishingRef.current = false;
+      setCaptureFinishing(false);
+      setConnectorPhase('capturing');
+      setCanFinishCapture(true);
+      setError(toError(issue));
+    }
+  };
+
+  const continueWechatCapture = async () => {
+    if (!challenge || !canContinueCapture || captureFinishingRef.current) return;
+    captureFinishingRef.current = true;
+    setCaptureFinishing(true);
+    setCanContinueCapture(false);
+    setConnectorPhase('resuming-capture');
+    setError(null);
+    const message = '继续复用当前微信副本和管理员授权；请继续操作，完成后再结束本轮。';
+    setConnectorProgress(message);
+    setConnectorLog(current => appendConnectorProgress(current, {
+      phase: 'resuming-capture',
+      message,
+      timestamp: Date.now()
+    }));
+    try {
+      const requested = await window.rambo.continueWechatCapture(challenge);
+      if (!requested) throw new Error('当前没有可继续的捕获轮次，请等待密钥校验完成。');
+    } catch (issue) {
+      captureFinishingRef.current = false;
+      setCaptureFinishing(false);
+      setConnectorPhase('awaiting-recapture');
+      setCanContinueCapture(true);
+      setError(toError(issue));
+    }
+  };
+
+  const cancelOAuth = async () => {
+    cancelledRef.current = true;
+    captureFinishingRef.current = false;
+    setOauthWaiting(false);
+    setCanFinishCapture(false);
+    setCanContinueCapture(false);
+    setCaptureFinishing(false);
+    setError(null);
+    const cancelledAt = Date.now();
+    setConnectorProgress('已取消微信连接。');
+    setConnectorLog(current => appendConnectorProgress(current, {
+      phase: 'cancelled',
+      message: '已取消微信连接。',
+      timestamp: cancelledAt
+    }));
+    if (challenge?.providerId === 'gmail' || challenge?.providerId === 'wechat') {
+      await window.rambo.cancelConnectorAuth(challenge).catch(() => {});
+    }
+    setChallenge(null);
+  };
+
+  const verifyingWechat = provider.id === 'wechat' && oauthWaiting && (
+    captureFinishing || connectorPhase === 'finishing-capture' ||
+    connectorPhase === 'resuming-capture' || connectorPhase === 'verifying'
+  );
+
+  return (
+    <div className="modal-backdrop connector-modal-backdrop" onMouseDown={event => {
+      if (event.target === event.currentTarget && !busy && !oauthWaiting) onClose();
+    }}>
+      <section className="connector-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header className="connector-dialog-header">
+          <ConnectorProviderIcon provider={provider} className="connector-dialog-icon" />
+          <div>
+            <h2 id={titleId}>{provider.name}</h2>
+            <p>{isManage
+              ? '管理连接账号与 Bot 访问权限。'
+              : provider.id === 'gmail' ? '授权 Google 账号以连接 Gmail。' : provider.description}</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" disabled={busy && !oauthWaiting}
+            onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
+            <Icon name="close" size={18} />
+          </button>
+        </header>
+
+        {isManage && connection ? (
+          <>
+            <div className="connector-dialog-account">
+              <span className="connector-dialog-account-icon"><Icon name="account" size={18} /></span>
+              <span>
+                <strong>{connection.displayName}</strong>
+                <small>{connection.accountLabel}</small>
+              </span>
+              <span className={'connector-status ' + connection.status}>
+                <span className="connector-status-dot" />
+                {connectionStatusLabel(connection.status)}
+              </span>
+            </div>
+            <div className="connector-dialog-section">
+              <div className="connector-dialog-section-heading">
+                <h3>Bot 访问权限</h3>
+                <p>授权以整条连接为单位。新建 Bot 不会自动继承。</p>
+              </div>
+              <div className="connector-dialog-bots">
+                {bots.length ? bots.map(bot => {
+                  const granted = grantedIds.has(bot.id);
+                  return (
+                    <label key={bot.id} className={'connector-dialog-bot' + (granted ? ' granted' : '')}>
+                      <span className="connector-dialog-bot-identity">
+                        <Avatar value={bot.avatar} size="small" followOnHover={false} />
+                        <span>
+                          <strong>{bot.name}</strong>
+                          <small>{bot.role.trim() || '个人助手'}</small>
+                        </span>
+                      </span>
+                      <input type="checkbox" checked={granted} disabled={busy}
+                        aria-label={`${bot.name} 可使用 ${provider.name}`}
+                        onChange={event => {
+                          const nextGranted = event.target.checked;
+                          setGrantedIds(current => {
+                            const next = new Set(current);
+                            if (nextGranted) next.add(bot.id);
+                            else next.delete(bot.id);
+                            return next;
+                          });
+                          setBusy(true);
+                          setError(null);
+                          onGrant(bot.id, connection.id, nextGranted)
+                            .catch(issue => {
+                              setGrantedIds(current => {
+                                const next = new Set(current);
+                                if (nextGranted) next.delete(bot.id);
+                                else next.add(bot.id);
+                                return next;
+                              });
+                              setError(toError(issue));
+                            })
+                            .finally(() => setBusy(false));
+                        }} />
+                    </label>
+                  );
+                }) : <p className="connector-dialog-empty">还没有可授权的 Bot。</p>}
+              </div>
+            </div>
+            {error && <div className="form-error" role="alert">{error}</div>}
+            <footer className="connector-dialog-footer">
+              <button type="button" className="danger-button" disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  setError(null);
+                  onRemove(connection)
+                    .catch(issue => setError(toError(issue)))
+                    .finally(() => setBusy(false));
+                }}>断开连接</button>
+              <span className="connector-dialog-footer-spacer" />
+              <button type="button" className="primary-button" disabled={busy} onClick={onClose}>完成</button>
+            </footer>
+          </>
+        ) : provider.id === 'gmail' ? (
+          <>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
+              <div>
+                <strong>连接你自己的 Google OAuth 客户端</strong>
+                <p>Rambo 不内置 OAuth 凭据。这里填写 Desktop App 的 Client ID 与 Client Secret，凭据会使用应用本地密钥加密保存。</p>
+              </div>
+            </div>
+            <details className="connector-oauth-guide">
+              <summary>如何获取 OAuth 凭据</summary>
+              <ol>
+                <li>
+                  打开 <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+                    target="_blank" rel="noopener noreferrer">Google Cloud Console</a>，创建或选择一个项目，并启用 Gmail API。
+                </li>
+                <li>配置 OAuth 同意屏幕。个人使用可选择 External，并把当前 Gmail 加入测试用户。</li>
+                <li>
+                  进入 <a href="https://console.cloud.google.com/apis/credentials"
+                    target="_blank" rel="noopener noreferrer">Credentials</a>，选择 Create credentials → OAuth client ID。
+                </li>
+                <li>Application type 选择 Desktop app，创建后复制 Client ID 与 Client secret。</li>
+                <li>回到这里粘贴两项凭据，然后前往 Google 授权。Rambo 会自动使用临时本机回调，不需要手工配置回调端口。</li>
+              </ol>
+            </details>
+            <label className="settings-field">
+              <span>连接名称</span>
+              <input className="text-input" value={displayName} maxLength={120} disabled={busy || oauthWaiting}
+                placeholder="例如：个人 Gmail"
+                onChange={event => setDisplayName(event.target.value)} />
+            </label>
+            <label className="settings-field">
+              <span>OAuth Client ID</span>
+              <input className="text-input" value={gmailClientId} maxLength={500} disabled={busy || oauthWaiting}
+                autoComplete="off" spellCheck={false}
+                placeholder="xxxxxxxx.apps.googleusercontent.com"
+                onChange={event => setGmailClientId(event.target.value)} />
+            </label>
+            <label className="settings-field">
+              <span>OAuth Client Secret</span>
+              <input className="text-input" type="password" value={gmailClientSecret} maxLength={4096}
+                disabled={busy || oauthWaiting} autoComplete="new-password" spellCheck={false}
+                placeholder="输入 Google Desktop App 的 Client secret"
+                onChange={event => setGmailClientSecret(event.target.value)} />
+              <small className="field-hint">创建 OAuth 客户端时只会完整显示一次；两项凭据仅用于此连接及后续刷新令牌。</small>
+            </label>
+            {error && <div className="form-error" role="alert">{error}</div>}
+            {oauthWaiting && (
+              <p className="connector-auth-challenge" role="status">
+                已打开 Google 授权页，完成后会自动返回 Rambo。
+              </p>
+            )}
+            <footer className="connector-dialog-footer">
+              <button type="button" className="secondary-button" disabled={busy && !oauthWaiting}
+                onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
+                {oauthWaiting ? '取消授权' : '关闭'}
+              </button>
+              <span className="connector-dialog-footer-spacer" />
+              <button type="button" className="primary-button"
+                disabled={busy || oauthWaiting || !displayName.trim() ||
+                  !gmailClientId.trim() || !gmailClientSecret.trim()}
+                onClick={() => void startGmailOAuth()}>
+                {oauthWaiting ? '等待 Google 授权…' : '前往 Google 授权'}
+              </button>
+            </footer>
+          </>
+        ) : provider.id === 'wechat' ? (
+          <>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
+              <div>
+                <strong>读取本机微信</strong>
+                <p>Rambo 将读取此 Mac 上微信已保存的聊天消息。主微信保持腾讯官方签名；首次连接需要创建临时受管副本完成密钥捕获，验证后删除副本。</p>
+                <small>读取只在本机进行，不联网补取消息，不建立微信正文归档或媒体缓存。</small>
+              </div>
+            </div>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="check" size={20} /></span>
+              <div>
+                <strong>连接步骤</strong>
+                <p>Rambo 会检查微信 4.1.x 与官方签名，让你选择账号目录，然后在临时副本中捕获并验证数据库密钥。密钥不会交给 Bot，也不会写入日志。</p>
+                <small>首次使用会出现 macOS 管理员授权提示。密钥监听启动后会保持同一个微信副本和授权进程；请在副本中登录并打开聊天、图片或语音，完成一轮后点“我已完成操作，验证密钥”。如果仍缺少密钥，先点“继续补抓密钥”，再回到副本打开聊天或媒体；完成后再次点验证，不必重启或重新登录。</small>
+              </div>
+            </div>
+            {(oauthWaiting || connectorLog.length > 0) && (
+              <section className="connector-progress-panel" aria-label="微信连接日志">
+                <header className="connector-progress-heading" aria-busy={verifyingWechat}>
+                  <div className="connector-progress-current" role="status" aria-live="polite">
+                    {verifyingWechat && <span className="connector-progress-spinner" aria-hidden="true" />}
+                    <strong>{connectorProgress ?? '连接日志'}</strong>
+                  </div>
+                  <span>{oauthWaiting
+                    ? formatConnectorElapsed(connectorStartedAtRef.current, connectorClock)
+                    : '本机诊断'}</span>
+                </header>
+                <ol className="connector-progress-log" role="log" aria-live="polite" aria-relevant="additions"
+                  aria-label="微信连接阶段和诊断信息">
+                  {connectorLog.map((entry, index) => (
+                    <li key={`${entry.timestamp}-${index}`} data-phase={entry.phase}>
+                      <time dateTime={new Date(entry.timestamp).toISOString()}>
+                        {new Date(entry.timestamp).toLocaleTimeString('zh-CN', {
+                          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                        })}
+                      </time>
+                      <span>{entry.message}</span>
+                    </li>
+                  ))}
+                </ol>
+                <small className="connector-progress-footnote">只显示阶段、等待时长和密钥数量，不显示密钥内容或聊天正文。</small>
+              </section>
+            )}
+            {error && <div className="form-error" role="alert">{error}</div>}
+            <footer className="connector-dialog-footer">
+              <button type="button" className="secondary-button" disabled={busy && !oauthWaiting}
+                onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
+                {oauthWaiting ? '取消连接' : '取消'}
+              </button>
+              <span className="connector-dialog-footer-spacer" />
+              <button type="button" className="primary-button"
+                disabled={busy || !challenge || (oauthWaiting && ((!canFinishCapture && !canContinueCapture) || captureFinishing))}
+                onClick={() => {
+                  if (oauthWaiting && canContinueCapture) void continueWechatCapture();
+                  else if (oauthWaiting) void finishWechatCapture();
+                  else void startWechatConnect();
+                }}>
+                {oauthWaiting
+                  ? verifyingWechat
+                    ? connectorPhase === 'resuming-capture' ? '正在继续捕获…' : '正在验证数据库…'
+                    : canContinueCapture ? '继续补抓密钥'
+                      : canFinishCapture ? '我已完成操作，验证密钥' : '正在准备捕获…'
+                  : '连接微信'}
+              </button>
+            </footer>
+          </>
+        ) : (
+          <form className="connector-auth-form" onSubmit={event => void submit(event)}>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
+              <div>
+                <strong>QQ 邮箱连接说明</strong>
+                <p>需要先在 QQ 邮箱网页版生成授权码：<a href="https://mail.qq.com" target="_blank" rel="noopener noreferrer">打开 QQ 邮箱 → 设置 → 账户 → 开启 IMAP/SMTP → 生成授权码</a>。</p>
+                <small>注意：这不是 QQ 登录密码；授权码会使用应用本地密钥加密保存，不进入聊天上下文或日志。</small>
+              </div>
+            </div>
+            <label className="settings-field">
+              <span>连接名称</span>
+              <input className="text-input" value={displayName} maxLength={120} disabled={busy}
+                placeholder="例如：工作邮箱"
+                onChange={event => setDisplayName(event.target.value)} />
+            </label>
+            <label className="settings-field">
+              <span>QQ 邮箱地址</span>
+              <input className="text-input" type="email" value={email} maxLength={320} disabled={busy}
+                autoComplete="email" placeholder="name@qq.com"
+                onChange={event => setEmail(event.target.value)} />
+            </label>
+            <label className="settings-field">
+              <span>邮箱授权码</span>
+              <input className="text-input" type="password" value={secret} maxLength={512} disabled={busy}
+                autoComplete="new-password" placeholder="输入 QQ 邮箱生成的授权码"
+                onChange={event => setSecret(event.target.value)} />
+              <small className="field-hint">保存前会验证 QQ 邮箱 IMAP 与 SMTP；授权码会使用应用本地密钥加密保存。</small>
+            </label>
+            {error && <div className="form-error" role="alert">{error}</div>}
+            <footer className="connector-dialog-footer">
+              <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>取消</button>
+              <button type="submit" className="primary-button"
+                disabled={busy || !challenge || !displayName.trim() || !email.trim() || !secret.trim()}>
+                {busy ? '正在验证并保存…' : '保存连接'}
+              </button>
+            </footer>
+          </form>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function connectionStatusLabel(status: ConnectorConnection['status']): string {
+  return {
+    ready: '已连接',
+    needsReconnect: '需要重新连接',
+    expired: '授权已过期',
+    disabled: '已停用'
+  }[status];
+}
+
+function RoutineListPage({
+  routines,
+  runs,
+  bots,
+  onSetRoutineStatus,
+  onRunRoutineNow,
+  onStopRoutineRun
+}: {
+  routines: RoutineListItem[];
+  runs: RoutineRun[];
+  bots: Bot[];
+  onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
+  onRunRoutineNow: (id: string) => Promise<RoutineRun>;
+  onStopRoutineRun: (id: string) => Promise<RoutineRun>;
+}) {
+  const [routineBusy, setRoutineBusy] = useState<string | null>(null);
+  const [routineMessage, setRoutineMessage] = useState<string | null>(null);
+  const botsById = new Map(bots.map(bot => [bot.id, bot]));
+  const routinesByBot = new Map<string, RoutineListItem[]>();
+  for (const routine of routines) {
+    const botRoutines = routinesByBot.get(routine.botId);
+    if (botRoutines) botRoutines.push(routine);
+    else routinesByBot.set(routine.botId, [routine]);
+  }
+
+  const changeRoutine = async (routine: RoutineListItem) => {
+    setRoutineBusy(routine.id);
+    setRoutineMessage(null);
+    try {
+      await onSetRoutineStatus(routine.id, routine.status === 'active' ? 'paused' : 'active');
+      setRoutineMessage(routine.status === 'active'
+        ? '定时计划已暂停'
+        : routine.lastRun?.status === 'needs_user'
+          ? '已检查上次运行记录，定时计划已恢复；该次仍保留为中断且结果未确认。'
+          : '定时计划已恢复');
+    } catch (issue) {
+      setRoutineMessage(toError(issue));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
+  const runRoutine = async (routine: RoutineListItem) => {
+    setRoutineBusy(routine.id);
+    setRoutineMessage(null);
+    try {
+      const run = await onRunRoutineNow(routine.id);
+      setRoutineMessage(`已立即发起运行 · ${routineRunStatusLabel(run.status)}`);
+    } catch (issue) {
+      setRoutineMessage(toError(issue));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
+  const stopRoutine = async (routine: RoutineListItem) => {
+    const run = runs.find(item => item.routineId === routine.id &&
+      (item.status === 'running' || item.status === 'pending'));
+    if (!run) return;
+    setRoutineBusy(routine.id);
+    setRoutineMessage(null);
+    try {
+      const stopped = await onStopRoutineRun(run.id);
+      setRoutineMessage(stopped.status === 'interrupted' ? '本次执行已停止' : '执行已经结束');
+    } catch (issue) {
+      setRoutineMessage(toError(issue));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
+  const pauseAndStopRoutine = async (routine: RoutineListItem) => {
+    const run = runs.find(item => item.routineId === routine.id &&
+      (item.status === 'running' || item.status === 'pending'));
+    setRoutineBusy(routine.id);
+    setRoutineMessage(null);
+    try {
+      await onSetRoutineStatus(routine.id, 'paused');
+      if (run) await onStopRoutineRun(run.id);
+      setRoutineMessage('定时计划已暂停，本次执行已停止');
+    } catch (issue) {
+      setRoutineMessage(toError(issue));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
+  return (
+    <section className="settings-page routine-page" aria-label="所有 Bot 的定时任务">
       <div className="settings-page-heading">
         <div>
           <div className="eyebrow">自动化</div>
-          <h1>全部 Bot 的定时任务</h1>
-          <p>查看每个 Bot 管理的任务。</p>
+          <h1>定时任务</h1>
+          <p>集中查看和管理所有 Bot 的计划与运行记录。</p>
         </div>
       </div>
       {routines.length === 0 ? (
@@ -1345,22 +2962,81 @@ function RoutineListPage({ routines, runs, bots }: { routines: RoutineListItem[]
           </div>
         </div>
       ) : (
-        <ul className="routine-list" aria-label="已保存的定时任务">
-          {routines.map(routine => (
-            <li className="routine-list-item" key={routine.id}>
-              <div className="routine-list-copy">
-                <strong>{routine.title}</strong>
-                <span>{botNames.get(routine.botId) ?? 'Bot 已不存在'} · {routine.definition.schedule}</span>
-                <p>{routine.definition.instruction}</p>
-                <RoutineRunSummary routine={routine} runs={runs} />
-              </div>
-              <span className={'routine-status routine-status-' + routine.status}>
-                {routine.status === 'active' ? routineLabel(routine) : '已暂停'}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <div className="routine-bot-groups" aria-label="按 Bot 分组的定时任务">
+          {[...routinesByBot].map(([botId, botRoutines]) => {
+            const bot = botsById.get(botId);
+            const botName = bot?.name ?? 'Bot 已不存在';
+            const configError = bot
+              ? botExecutionConfigError(bot)
+              : '定时任务所属 Bot 不存在。';
+            return (
+              <section className="routine-bot-group" key={botId} data-bot-id={botId}
+                aria-label={`${botName} 的定时任务`}>
+                <div className="routine-bot-group-heading">
+                  <div className="routine-bot-group-identity">
+                    {bot
+                      ? <Avatar value={bot.avatar} size="small" />
+                      : <span className="routine-bot-group-missing-avatar"><Icon name="account" size={13} /></span>}
+                    <h2>{botName}</h2>
+                  </div>
+                  <span className="routine-bot-group-count">{botRoutines.length} 个任务</span>
+                </div>
+                  <ul className="routine-list" aria-label={`${botName} 管理的定时任务`}>
+                  {botRoutines.map(routine => (
+                    <li className="routine-list-item" key={routine.id}>
+                      <div className="routine-list-copy">
+                        <strong>{routine.title}</strong>
+                        <div className="routine-list-meta">
+                          <span>{routineScheduleLabel(routine)}</span>
+                          <span className="routine-execution-mode">
+                            {routineExecutionLabel(routine.definition.execution.mode)}
+                          </span>
+                        </div>
+                        <p>{routine.definition.instruction}</p>
+                        <RoutineRunSummary routine={routine} runs={runs} />
+                      </div>
+                        <div className="routine-actions">
+                          <RoutineStatus routine={routine} />
+                          {(routine.definition.kind === 'recurring' || routine.lastRun?.status === 'needs_user') && (
+                            <button type="button" className="routine-action-button" disabled={routineBusy === routine.id}
+                              onClick={() => void changeRoutine(routine)}>
+                              {routineBusy === routine.id ? '处理中…' : routine.status === 'active' ? '暂停' :
+                                routine.lastRun?.status === 'needs_user' ? '已检查，恢复计划' : '恢复'}
+                            </button>
+                          )}
+                          {runs.some(item => item.routineId === routine.id &&
+                            (item.status === 'running' || item.status === 'pending')) && (
+                            <button type="button" className="routine-action-button"
+                              disabled={routineBusy === routine.id}
+                              onClick={() => void stopRoutine(routine)}>停止本次</button>
+                          )}
+                          {routine.definition.kind === 'recurring' && routine.status === 'active' &&
+                            runs.some(item => item.routineId === routine.id &&
+                              (item.status === 'running' || item.status === 'pending')) && (
+                            <button type="button" className="routine-action-button"
+                              disabled={routineBusy === routine.id}
+                              onClick={() => void pauseAndStopRoutine(routine)}>暂停并停止本次</button>
+                          )}
+                          <button type="button" className="routine-action-button"
+                            disabled={Boolean(configError) || routineBusy === routine.id || routine.status === 'paused' ||
+                              routine.lastRun?.status === 'running' || routine.lastRun?.status === 'pending' ||
+                              routine.lastRun?.status === 'needs_user'}
+                            title={configError
+                              ? configError
+                              : routine.lastRun?.status === 'needs_user'
+                                ? '请先检查上次运行结果并恢复计划'
+                              : undefined}
+                            onClick={() => void runRoutine(routine)}>立即运行</button>
+                        </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
       )}
+      {routineMessage && <div className="routine-message" role="status">{routineMessage}</div>}
     </section>
   );
 }
@@ -1376,6 +3052,36 @@ function routineLabel(routine: RoutineListItem): string {
     return routine.nextRunAt ? `等待执行 · ${timestampLabel(routine.nextRunAt)}` : '等待手动运行';
   }
   return routine.nextRunAt ? `下次 ${timestampLabel(routine.nextRunAt)}` : '等待触发';
+}
+
+function routineExecutionLabel(mode: RoutineListItem['definition']['execution']['mode']): string {
+  if (mode === 'script') return '脚本执行';
+  if (mode === 'hybrid') return '判断 + 脚本';
+  return '对话执行';
+}
+
+function routineScheduleLabel(routine: RoutineListItem): string {
+  const { definition } = routine;
+  if (!definition.times.length) return definition.schedule;
+  const times = definition.times.join('、');
+  return definition.schedule.includes(times)
+    ? definition.schedule
+    : `${definition.schedule}｜${times}`;
+}
+
+function RoutineStatus({ routine }: { routine: RoutineListItem }) {
+  return (
+    <>
+      <span className={'routine-status routine-status-' + routine.status}>
+        {routine.status === 'active' ? routineLabel(routine) : '已暂停'}
+      </span>
+      {routine.statusReason && (
+        <span className="routine-status-reason" role="status">
+          {routine.statusReason}
+        </span>
+      )}
+    </>
+  );
 }
 
 function RoutineRunSummary({ routine, runs }: { routine: RoutineListItem; runs: RoutineRun[] }) {
@@ -1412,7 +3118,7 @@ function RoutineRunEntry({ run }: { run: RoutineRun }) {
 function routineRunStatusLabel(status: RoutineRun['status']): string {
   return {
     pending: '等待执行', running: '执行中', succeeded: '成功', failed: '失败',
-    interrupted: '已中断', skipped: '已跳过', missed: '已错过'
+    interrupted: '已中断', needs_user: '等待你确认', skipped: '已跳过', missed: '已错过'
   }[status];
 }
 
@@ -1573,10 +3279,10 @@ function AddGroupMembersPage({ group, bots, onCancel, onAdd }: {
   );
 }
 
-function GroupChatPage({ group, bots, messages, loading, models, modelError, onUpdateChat, onError, onSend }: {
-  group: GroupChat; bots: Bot[]; messages: GroupMessage[]; loading: boolean; models: ModelOption[];
-  modelError: string | null;
-  onUpdateChat: (chatId: string, patch: { model?: string | null; permission?: PermissionMode | null }) => Promise<void>;
+function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loading, onError, onSend }: {
+  group: GroupChat; bots: Bot[]; messages: GroupMessage[]; runtime: GroupRuntimeState | null;
+  enteringMessageIds: Set<string>;
+  loading: boolean;
   onError: (error: string | null) => void;
   onSend: (text: string) => Promise<void>;
 }) {
@@ -1584,41 +3290,42 @@ function GroupChatPage({ group, bots, messages, loading, models, modelError, onU
     .map(id => bots.find(bot => bot.id === id))
     .filter((bot): bot is Bot => Boolean(bot));
   const activeMembers = members.filter(bot => !bot.archived);
-  const [memberChats, setMemberChats] = useState<Chat[]>([]);
-  const [memberChatsLoading, setMemberChatsLoading] = useState(true);
-  const memberIdsKey = group.memberIds.join(':');
+  const hasUnreadyMembers = activeMembers.some(bot => botExecutionConfigError(bot) !== null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let current = true;
-    setMemberChatsLoading(true);
-    window.rambo.groupMemberChats(group.id).then(chats => {
-      if (!current) return;
-      setMemberChats(chats);
-      onError(null);
-    }).catch(error => {
-      if (current) onError(toError(error));
-    }).finally(() => {
-      if (current) setMemberChatsLoading(false);
-    });
-    return () => { current = false; };
-  }, [group.id, memberIdsKey]);
+    const element = scrollRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [messages, runtime?.members]);
 
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
-
-  const updateMemberChat = async (chatId: string, patch: { model?: string | null; permission?: PermissionMode | null }) => {
-    await onUpdateChat(chatId, patch);
-    setMemberChats(current => current.map(chat => chat.id === chatId ? { ...chat, ...patch } : chat));
-  };
+  const runningMembers = runtime?.members
+    .map(member => ({ member, bot: bots.find(bot => bot.id === member.botId) }))
+    .filter((item): item is { member: GroupRuntimeMember; bot: Bot } => Boolean(item.bot)) ?? [];
+  const latestActivity = runningMembers
+    .filter(item => item.member.phase === 'working' && item.member.activityKind)
+    .sort((a, b) => (a.member.activityUpdatedAt ?? '').localeCompare(b.member.activityUpdatedAt ?? ''))
+    .at(-1);
+  const runningLabel = latestActivity?.member.activityKind
+    ? ACTIVITY_LABELS[latestActivity.member.activityKind]
+    : runningMembers.some(item => item.member.phase === 'starting')
+      ? '正在读消息'
+    : runningMembers.length > 0 && runningMembers.every(item => item.member.phase === 'judging')
+      ? '正在判断'
+      : '正在思考';
 
   return (
-    <section className="chat-workspace" aria-label={group.title}>
+      <section className="chat-workspace" aria-label={group.title}>
       <div className="transcript-scroll" ref={scrollRef} aria-label="群聊消息">
         {loading ? <div className="messages-loading" aria-label="正在读取群聊" /> : messages.length > 0 ? (
           <div className="message-column">
-            {messages.map(message => <GroupMessageRow key={message.id} message={message} bots={bots} />)}
+            {messages.map(message => (
+              <GroupMessageRow
+                key={message.id}
+                message={message}
+                bots={bots}
+                entering={enteringMessageIds.has(message.id)}
+              />
+            ))}
           </div>
         ) : (
           <div className="conversation-empty-state">
@@ -1627,24 +3334,62 @@ function GroupChatPage({ group, bots, messages, loading, models, modelError, onU
           </div>
         )}
       </div>
-      <Composer chat={null} bot={null} groupId={group.id} groupBots={activeMembers} groupChats={memberChats}
-        groupSettingsDisabled={memberChatsLoading} onUpdateGroupChat={updateMemberChat}
-        models={models} modelsError={modelError} busy={false}
-        disabled={activeMembers.length === 0} placeholder="发送群聊消息…" ariaLabel="群聊消息输入框"
-        settingsNote={activeMembers.length === 0 ? '请恢复至少一个成员 Bot 后再发送。' : '每个成员 Bot 使用自己的模型和权限设置。'}
-        onSend={onSend} />
+      <ChatScrollbar scrollRef={scrollRef} />
+      <div className="chat-bottom-dock">
+        <div className="chat-running-dock">
+          <AgentRunningRow
+            visible={runningMembers.length > 0}
+            bots={runningMembers.map(item => item.bot)}
+            autoAnimate
+            label={runningLabel} />
+        </div>
+        <Composer groupBots={activeMembers} busy={false}
+          disabled={activeMembers.length === 0}
+          disabledReason={activeMembers.length === 0 ? '群聊中没有活跃的 Bot' : null}
+          placeholder="发送群聊消息…" ariaLabel="群聊消息输入框"
+          onSend={onSend} />
+        {hasUnreadyMembers && (
+          <div className="form-error composer-readiness-error" role="status">
+            群聊中有 Bot 尚未完成“模型与权限”配置。普通消息和 @everyone 需要所有活跃成员配置完成；也可以 @名字 指定已配置的 Bot。
+          </div>
+        )}
+      </div>
     </section>
   );
 }
 
-function GroupMessageRow({ message, bots }: { message: GroupMessage; bots: Bot[] }) {
+function GroupMessageRow({ message, bots, entering = false }: {
+  message: GroupMessage;
+  bots: Bot[];
+  entering?: boolean;
+}) {
+  if (message.role === 'system') {
+    return (
+      <div className="chat-system-notice" role="status">
+        <span className="chat-system-notice-icon"><Icon name="check" size={12} /></span>
+        <strong>{message.text}</strong>
+      </div>
+    );
+  }
   const sender = message.senderBotId ? bots.find(bot => bot.id === message.senderBotId) : undefined;
-  const roleLabel = message.role === 'assistant' ? sender?.name ?? message.senderName ?? '已删除的 Bot' : '系统';
+  const roleLabel = message.role === 'assistant' ? sender?.name ?? '已删除的 Bot' : '系统';
   return (
-    <article className={'message-row message-' + message.role}>
-      <div className="message-content">
+    <article
+      className={'message-row message-' + message.role +
+        (message.role === 'assistant' ? ' message-with-avatar' : '') +
+        (entering ? ' message-entering' : '')}
+      data-message-id={message.id}
+    >
+      {message.role === 'assistant' && (
+        <span className="message-avatar" aria-hidden="true">
+          {sender
+            ? <Avatar value={sender.avatar} size="small" followOnHover={false} />
+            : <span className="message-avatar-fallback"><Icon name="users" size={12} /></span>}
+        </span>
+      )}
+      <div className={'message-content' + (message.content ? ' message-content-rich' : '')}>
         {message.role !== 'user' && <div className="message-author">{roleLabel}</div>}
-        <div className="message-text">{message.text}</div>
+        <div className="message-text"><StageAwareMessageContent message={message} /></div>
         {(message.status === 'failed' || message.status === 'interrupted') && (
           <div className="message-status">{message.status === 'failed' ? '未完成' : '已停止'}</div>
         )}
@@ -1680,187 +3425,411 @@ const ACTIVITY_LABELS: Record<TurnActivity['kind'], string> = {
 };
 
 function AgentRunningRow({
-  bot,
-  activities,
-  elapsedSeconds
+  bots,
+  label,
+  visible = true,
+  autoAnimate = false
 }: {
-  bot: Bot;
-  activities: TurnActivity[];
-  elapsedSeconds: number;
+  bots: Bot[];
+  label: string;
+  visible?: boolean;
+  autoAnimate?: boolean;
 }) {
-  const latest = activities[activities.length - 1];
-  const label = latest ? ACTIVITY_LABELS[latest.kind] : '正在思考';
+  const visibleBots = bots.slice(-3);
+  const overflow = bots.slice(0, -3);
   return (
-    <div className="agent-running-row" role="status" aria-live="polite" aria-label={label}>
-      <span className="agent-running-avatar">
-        <Avatar value={bot.avatar} size="regular" />
-        <span className="agent-running-ring" aria-hidden="true" />
+    <div
+      className={'agent-running-row' + (visible ? '' : ' agent-running-row-hidden')}
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      aria-hidden={!visible}
+    >
+      <span className="agent-running-avatars" aria-hidden="true">
+        {visibleBots.map(bot => (
+          <span className="agent-running-avatar" key={bot.id} title={bot.name}>
+            <Avatar
+              value={bot.avatar}
+              size="small"
+              animated={autoAnimate}
+              followOnHover={false}
+            />
+          </span>
+        ))}
+        {overflow.length > 0 && (
+          <span className="agent-running-overflow" title={overflow.map(bot => bot.name).join('、')}>
+            +{overflow.length}
+          </span>
+        )}
       </span>
-      <span className="agent-running-copy">
-        <span className="agent-running-shimmer">{label}</span>
-        <span className="agent-running-meta">{bot.name}{elapsedSeconds > 0 ? ` · ${elapsedSeconds} 秒` : ''}</span>
-      </span>
+      <span className="agent-running-shimmer" key={label}>{label}</span>
     </div>
   );
 }
 
-function activityTitle(activity: TurnActivity): string {
-  if (activity.title.trim()) return activity.title;
-  return activity.kind === 'reasoning' ? '思考过程' : '操作';
-}
+function VoiceWaveform({
+  state = 'live',
+  levels
+}: {
+  state?: 'live' | 'stopping';
+  levels?: (barCount: number) => { levels: number[]; speech: boolean } | null;
+}) {
+  const barsRef = useRef<HTMLSpanElement>(null);
+  const barCount = 13;
 
-function activityDetailLabel(activity: TurnActivity): string {
-  if (activity.status === 'running') return '进行中';
-  if (activity.status === 'failed') return '失败';
-  if (activity.status === 'declined') return '已拒绝';
-  if (activity.status === 'unknown') return '未知状态';
-  return '已完成';
-}
+  useLayoutEffect(() => {
+    const container = barsRef.current;
+    if (!container) return;
+    const bars = [...container.children] as HTMLElement[];
+    const resetBars = () => {
+      container.dataset.voiceActivity = 'idle';
+      for (const bar of bars) bar.style.transform = '';
+    };
+    if (!levels || state !== 'live') {
+      resetBars();
+      return;
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      resetBars();
+      return;
+    }
+    const smoother = createVoiceWaveformSmoother(barCount);
+    let frame = 0;
+    let retryTimer = 0;
+    let metered = false;
+    let lastTime = performance.now();
 
-function MessageRow({ message, activities }: { message: Message; activities: TurnActivity[] }) {
-  const roleLabel = message.role === 'user' ? '你' : message.role === 'assistant' ? 'Bot' : '系统';
+    const tick = (now: number) => {
+      const sampled = levels(bars.length);
+      if (sampled === null) {
+        if (!metered) {
+          retryTimer = window.setTimeout(() => {
+            frame = window.requestAnimationFrame(tick);
+          }, 120);
+        }
+        return;
+      }
+      if (!metered) {
+        metered = true;
+        for (const bar of bars) bar.style.animation = 'none';
+      }
+      const delta = Math.min(48, Math.max(8, now - lastTime));
+      lastTime = now;
+      const next = smoother.next(sampled.levels, sampled.speech, delta);
+      for (let index = 0; index < bars.length; index += 1) {
+        bars[index].style.transform = `scaleY(${next.levels[index].toFixed(3)})`;
+      }
+      container.dataset.voiceActivity = next.activity;
+      frame = window.requestAnimationFrame(tick);
+    };
+
+    frame = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(retryTimer);
+    };
+  }, [levels, state]);
+
   return (
-    <article className={'message-row message-' + message.role}>
-      <div className="message-content">
-        {message.role !== 'user' && <div className="message-author">{roleLabel}</div>}
-        <div className="message-text">{message.text}</div>
+    <span
+      ref={barsRef}
+      className={`voice-waveform voice-waveform-call voice-waveform-${state}`}
+      data-state={state}
+      aria-hidden="true"
+    >
+      {Array.from({ length: barCount }, (_, index) => (
+        <span
+          className="voice-waveform-bar"
+          key={index}
+        />
+      ))}
+    </span>
+  );
+}
+
+function ChatScrollbar({ scrollRef }: { scrollRef: React.RefObject<HTMLDivElement | null> }) {
+  const [metrics, setMetrics] = useState({ overflow: false, height: 0, offset: 0 });
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    let frame = 0;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const { clientHeight, scrollHeight, scrollTop } = element;
+        const overflow = scrollHeight > clientHeight + 1 && clientHeight > 0;
+        const height = overflow
+          ? Math.max(26, Math.round(clientHeight * (clientHeight / scrollHeight)))
+          : 0;
+        const maxOffset = Math.max(0, clientHeight - height);
+        const offset = overflow && scrollHeight > clientHeight
+          ? Math.round((scrollTop / (scrollHeight - clientHeight)) * maxOffset)
+          : 0;
+        setMetrics(current => current.overflow === overflow &&
+          current.height === height && current.offset === offset
+          ? current
+          : { overflow, height, offset });
+      });
+    };
+
+    const observeContent = () => {
+      resizeObserver?.disconnect();
+      resizeObserver = new ResizeObserver(measure);
+      resizeObserver.observe(element);
+      if (element.firstElementChild instanceof Element) {
+        resizeObserver.observe(element.firstElementChild);
+      }
+      measure();
+    };
+
+    const mutationObserver = new MutationObserver(observeContent);
+    mutationObserver.observe(element, { childList: true });
+    element.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    observeContent();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver.disconnect();
+      element.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+  }, [scrollRef]);
+
+  return (
+    <div className="chat-scrollbar" data-overflow={metrics.overflow ? 'true' : 'false'} aria-hidden="true">
+      <span
+        className="chat-scrollbar-thumb"
+        style={metrics.overflow ? { height: metrics.height, transform: `translateY(${metrics.offset}px)` } : undefined}
+      />
+    </div>
+  );
+}
+
+function MessageRow({
+  message,
+  entering = false
+}: { message: Message; entering?: boolean }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const isVoiceTranscript = message.source === 'voice';
+  const voiceStreaming = isVoiceTranscript && message.status === 'streaming';
+  const voiceFragments = useVoiceTranscriptFragments(message.text, voiceStreaming);
+
+  if (message.role === 'system') {
+    return (
+      <div className="chat-system-notice" role="status">
+        <span className="chat-system-notice-icon"><Icon name="check" size={12} /></span>
+        <strong>{message.text}</strong>
+      </div>
+    );
+  }
+  return (
+    <article
+      className={'message-row message-' + message.role +
+        (entering ? ' message-entering' : '') +
+        (voiceStreaming ? ' message-voice-streaming' : '')}
+      data-message-id={message.id}
+    >
+      <div
+        ref={contentRef}
+        className={'message-content' + (message.content ? ' message-content-rich' : '')}
+        data-voice-streaming={voiceStreaming ? 'true' : undefined}
+      >
+        <div className="message-text">
+          {isVoiceTranscript
+            ? <VoiceTranscriptText
+                text={message.text}
+                fragments={voiceFragments}
+                loading={voiceStreaming}
+                role={message.role}
+              />
+            : <StageAwareMessageContent message={message} />}
+        </div>
         {(message.status === 'failed' || message.status === 'interrupted') && (
           <div className="message-status">
             {message.status === 'failed' ? '未完成' : '已停止'}
           </div>
         )}
-        {activities.length > 0 && (
-          <details className="message-activities">
-            <summary>
-              思考与操作
-              <span>{activities.length}</span>
-            </summary>
-            <div className="message-activity-list">
-              {activities.map(activity => (
-                <section className={`message-activity activity-${activity.kind}`} key={activity.id}>
-                  <div className="message-activity-heading">
-                    <strong>{activityTitle(activity)}</strong>
-                    <span>{activityDetailLabel(activity)}</span>
-                  </div>
-                  {activity.detail.trim() && (
-                    <pre className="message-activity-detail">{activity.detail}</pre>
-                  )}
-                </section>
-              ))}
-            </div>
-          </details>
+        {message.role === 'user' && message.dispatchStatus && message.dispatchStatus !== 'dispatched' && (
+          <div className="message-status">
+            {message.dispatchStatus === 'queued' ? '排队中，等待派发' :
+              message.dispatchStatus === 'needs_user' ? '发送结果未确认，请检查后决定是否重发' :
+                message.dispatchStatus === 'failed' ? '发送失败' : null}
+          </div>
         )}
       </div>
     </article>
   );
 }
 
-function VoicePanel({ voice, onStop }: { voice: LiveVoiceUi; onStop: () => void }) {
-  const label = voice.state === 'connecting'
-    ? '正在连接 Live'
-    : voice.state === 'live'
-      ? 'Live · 正在聆听'
-      : voice.state === 'stopping'
-        ? '正在结束语音'
-        : '语音连接异常';
+function useVoiceTranscriptFragments(text: string, streaming: boolean): VoiceTranscriptFragment[] {
+  const previousTextRef = useRef('');
+  const sequenceRef = useRef(0);
+  const fragmentsRef = useRef<VoiceTranscriptFragment[]>([]);
+  if (!streaming) {
+    previousTextRef.current = '';
+    fragmentsRef.current = [];
+    return fragmentsRef.current;
+  }
+  const previousText = previousTextRef.current;
+  if (text === previousText) return fragmentsRef.current;
+  const extendsPrevious = text.startsWith(previousText);
+  const appendedText = extendsPrevious ? text.slice(previousText.length) : text;
+  previousTextRef.current = text;
+  if (!appendedText) return fragmentsRef.current;
+  const fragment = { text: appendedText, sequence: ++sequenceRef.current };
+  fragmentsRef.current = extendsPrevious
+    ? [...fragmentsRef.current, fragment]
+    : [fragment];
+  return fragmentsRef.current;
+}
+
+function VoiceTranscriptText({ text, fragments, loading, role }: {
+  text: string;
+  fragments?: VoiceTranscriptFragment[];
+  loading: boolean;
+  role: 'user' | 'assistant';
+}) {
+  const animatedSuffix = fragments?.map(fragment => fragment.text).join('') ?? '';
+  const visibleFragments = animatedSuffix && text.endsWith(animatedSuffix) ? fragments ?? [] : [];
+  const prefix = visibleFragments.length ? text.slice(0, -animatedSuffix.length) : text;
   return (
-    <section className={'voice-panel voice-panel-' + voice.state} aria-label={label}>
-      <div className="voice-panel-main">
-        <span className="voice-pulse" aria-hidden="true" />
-        <div className="voice-panel-copy">
-          <strong>{label}</strong>
-          <span>
-            {voice.error
-              ? voice.error
-              : voice.transcript
-                ? voice.transcript
-                : voice.state === 'live'
-                  ? '说话即可，Bot 会在本聊天中回答。'
-                  : '麦克风与音频只用于当前私聊。'}
-          </span>
-        </div>
-        <button type="button" className="voice-end-button" onClick={onStop}
-          disabled={voice.state === 'stopping'} aria-label="结束语音">
-          <Icon name="close" size={14} />
-          <span>{voice.state === 'stopping' ? '结束中' : '结束'}</span>
-        </button>
-      </div>
-    </section>
+    <span className="voice-transcript-text">
+      {prefix}
+      {visibleFragments.map(fragment => (
+        <span key={fragment.sequence} className="voice-transcript-fragment">{fragment.text}</span>
+      ))}
+      {loading && (
+        <span
+          className="voice-transcript-progress"
+          role="status"
+          aria-label={role === 'assistant' ? '语音回复生成中' : '语音转写生成中'}
+        >
+          <span className="voice-transcript-caret" />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function StageAwareMessageContent({ message }: { message: Message | GroupMessage }) {
+  const stageKey = `${message.turnId ?? ''}:${message.itemId ?? message.id}:${message.phase ?? ''}`;
+  const previousStageKeyRef = useRef(stageKey);
+  const [animationSequence, setAnimationSequence] = useState(0);
+
+  useLayoutEffect(() => {
+    if (previousStageKeyRef.current === stageKey) return;
+    previousStageKeyRef.current = stageKey;
+    setAnimationSequence(current => current + 1);
+  }, [stageKey]);
+
+  return (
+    <div
+      key={animationSequence}
+      className={animationSequence > 0 ? 'message-stage-transition' : undefined}
+    >
+      <MessageContentView message={message} />
+    </div>
   );
 }
 
 function Composer({
-  chat,
-  bot,
-  groupId,
   groupBots,
-  groupChats,
-  groupSettingsDisabled = false,
-  models,
-  modelsError,
   busy,
-  onUpdateChat,
-  onUpdateGroupChat,
   onSend,
   onStop,
   voiceState,
   onStartVoice,
   onStopVoice,
   disabled = false,
-  placeholder = '发消息给 Bot',
-  ariaLabel = '消息',
-  settingsNote = '下轮生效'
+  disabledReason,
+  placeholder = '发消息给机器人',
+  ariaLabel = '消息'
 }: {
-  chat: Chat | null;
-  bot: Bot | null;
-  groupId?: string;
   groupBots?: Bot[];
-  groupChats?: Chat[];
-  groupSettingsDisabled?: boolean;
-  models: ModelOption[];
-  modelsError: string | null;
   busy: boolean;
-  onUpdateChat?: (patch: { model?: string | null; permission?: PermissionMode | null }) => Promise<void>;
-  onUpdateGroupChat?: (chatId: string, patch: { model?: string | null; permission?: PermissionMode | null }) => Promise<void>;
   onSend: (text: string) => Promise<void>;
   onStop?: () => Promise<void>;
   voiceState?: VoiceState | null;
   onStartVoice?: () => void;
   onStopVoice?: () => void;
   disabled?: boolean;
+  disabledReason?: string | null;
   placeholder?: string;
   ariaLabel?: string;
-  settingsNote?: string;
 }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const [updatingSettings, setUpdatingSettings] = useState(false);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [focused, setFocused] = useState(false);
+  const draftRef = useRef('');
+  const [mention, setMention] = useState<ReturnType<typeof mentionRange>>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+  const mentionListId = useId();
   const canSend = Boolean(draft.trim()) && !sending && !disabled;
-  const inheritedModel = chat && bot ? inheritedChatModel(bot) : null;
-  const selectedModel = chat && bot ? selectedChatModel(chat, bot) : null;
+  const options = groupBots && mention ? mentionOptions(groupBots, mention.query) : [];
+  const mentionOpen = Boolean(mention && options.length);
+  const activeMentionIndex = options.length ? Math.min(mentionIndex, options.length - 1) : 0;
 
-  const updateSettings = async (patch: { model?: string | null; permission?: PermissionMode | null }) => {
-    if (!onUpdateChat) return;
-    setUpdatingSettings(true);
-    setSettingsError(null);
-    try { await onUpdateChat(patch); }
-    catch (error) { setSettingsError(toError(error)); }
-    finally { setUpdatingSettings(false); }
+  useLayoutEffect(() => {
+    const caret = pendingCaretRef.current;
+    if (caret === null || !textareaRef.current) return;
+    pendingCaretRef.current = null;
+    const element = textareaRef.current;
+    element.focus();
+    element.setSelectionRange(caret, caret);
+    element.style.height = 'auto';
+    element.style.height = Math.min(element.scrollHeight, 180) + 'px';
+  }, [draft]);
+
+  useEffect(() => {
+    if (mentionIndex >= options.length) setMentionIndex(Math.max(0, options.length - 1));
+  }, [mentionIndex, options.length]);
+
+  const syncMention = (value: string, caret: number | null) => {
+    if (!groupBots) {
+      setMention(null);
+      return;
+    }
+    setMention(mentionRange(value, caret));
+    setMentionIndex(0);
+  };
+
+  const chooseMention = (option: MentionOption) => {
+    if (!mention) return;
+    const next = insertMention(draft, mention, option.name);
+    pendingCaretRef.current = next.caret;
+    setDraft(next.value);
+    draftRef.current = next.value;
+    setMention(null);
+    setMentionIndex(0);
   };
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    const text = draft.trim();
-    if (!text || sending) return;
+    const text = (event ? draft : draftRef.current).trim();
+    if (!text || sending || disabled) return;
+    const textarea = textareaRef.current;
     setSending(true);
+    setDraft('');
+    draftRef.current = '';
+    setMention(null);
+    if (textarea) textarea.style.height = 'auto';
     try {
       await onSend(text);
-      setDraft('');
-      if (textareaRef.current) textareaRef.current.style.height = 'auto';
     } catch {
       // The draft stays in the composer so the user can review or retry it.
+      setDraft(text);
+      draftRef.current = text;
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
+      }
     } finally {
       setSending(false);
       textareaRef.current?.focus();
@@ -1868,6 +3837,26 @@ function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen && !event.nativeEvent.isComposing) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex(current => {
+          const next = event.key === 'ArrowDown' ? current + 1 : current - 1;
+          return (next + options.length) % options.length;
+        });
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        chooseMention(options[activeMentionIndex]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMention(null);
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void submit();
@@ -1876,45 +3865,12 @@ function Composer({
 
   return (
     <div className="composer-dock">
-      <form className="composer" onSubmit={event => void submit(event)}>
-        <div className="composer-settings-row">
-          {chat && bot && inheritedModel && selectedModel ? <>
-            <label className="composer-setting">
-              <span>权限</span>
-              <select aria-label="当前聊天权限" disabled={updatingSettings} value={chat.permission ?? ''}
-                title={chat.permission === null ? `继承 Bot · ${PERMISSION_LABELS[bot.permission]}` : '仅此聊天的权限覆盖'}
-                onChange={event => void updateSettings({ permission: event.target.value === '' ? null : event.target.value as PermissionMode })}>
-                <option value="">继承 Bot · {PERMISSION_LABELS[bot.permission]}</option>
-                <option value="fullAccess">完全访问</option>
-                <option value="workspaceWrite">工作区写入</option>
-                <option value="readOnly">只读</option>
-              </select>
-            </label>
-            <label className="composer-setting model-setting">
-              <span>模型</span>
-              <select aria-label="当前聊天模型" disabled={updatingSettings} value={chat.model ?? ''}
-                title={`下轮生效 · ${modelSourceLabel(selectedModel.source)} · ${modelLabel(selectedModel.id, models)}`}
-                onChange={event => void updateSettings({ model: event.target.value || null })}>
-                <option value="">
-                  {inheritedModel.source === 'bot'
-                    ? `继承 · ${modelLabel(inheritedModel.id, models)} · Bot 默认`
-                    : `继承 · ${modelSourceLabel(inheritedModel.source)}`}
-                </option>
-                {chat.model && !models.some(option => option.id === chat.model) && (
-                  <option value={chat.model}>当前聊天 · {chat.model}</option>
-                )}
-                {models.map(option => (
-                  <option value={option.id} key={option.id}>{option.label}{option.isDefault ? ' · 产品默认' : ''}</option>
-                ))}
-              </select>
-            </label>
-            <span className="composer-setting-hint">{settingsNote}</span>
-          </> : groupBots && groupChats && onUpdateGroupChat ? (
-            <GroupComposerSettings groupId={groupId ?? ''} bots={groupBots} chats={groupChats}
-              models={models} disabled={disabled || groupSettingsDisabled}
-              onUpdateChat={onUpdateGroupChat} onError={setSettingsError} />
-          ) : <span className="composer-setting-hint">{settingsNote}</span>}
-        </div>
+      <form className={'composer' + (focused ? ' composer-focused' : '')}
+        onSubmit={event => void submit(event)}
+        onFocusCapture={() => setFocused(true)}
+        onBlurCapture={event => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
+        }}>
         <div className="composer-input-row">
           <textarea
             ref={textareaRef}
@@ -1922,11 +3878,24 @@ function Composer({
             rows={1}
             placeholder={placeholder}
             aria-label={ariaLabel}
+            role={groupBots ? 'combobox' : undefined}
+            aria-autocomplete={groupBots ? 'list' : undefined}
+            aria-controls={mentionOpen ? mentionListId : undefined}
+            aria-expanded={groupBots ? mentionOpen : undefined}
+            aria-activedescendant={mentionOpen ? `${mentionListId}-${activeMentionIndex}` : undefined}
             disabled={disabled}
+            title={disabled ? disabledReason ?? undefined : undefined}
             onChange={event => {
-              setDraft(event.target.value);
+              const value = event.target.value;
+              setDraft(value);
+              draftRef.current = value;
+              syncMention(value, event.target.selectionStart);
               event.target.style.height = 'auto';
               event.target.style.height = Math.min(event.target.scrollHeight, 180) + 'px';
+            }}
+            onSelect={event => {
+              if (mentionOpen) return;
+              syncMention(event.currentTarget.value, event.currentTarget.selectionStart);
             }}
             onKeyDown={onKeyDown}
           />
@@ -1935,8 +3904,10 @@ function Composer({
               <button type="button"
                 className={'voice-button' + (voiceState === 'live' ? ' voice-button-live' : '')}
                 aria-label={voiceState ? '结束语音' : '开始语音'}
-                title={voiceState ? '结束语音' : '开始 Codex Live 语音'}
-                disabled={voiceState === 'connecting' || voiceState === 'stopping'}
+                disabled={disabled || voiceState === 'connecting' || voiceState === 'stopping'}
+                title={disabled
+                  ? disabledReason ?? '当前配置尚未就绪'
+                  : voiceState ? '结束语音' : '开始 Codex Live 语音'}
                 onClick={voiceState ? onStopVoice : onStartVoice}>
                 <Icon name="voice" size={17} />
               </button>
@@ -1945,7 +3916,6 @@ function Composer({
               <button type="button" className="stop-button" aria-label="停止任务" title="停止"
                 onClick={() => void onStop()}>
                 <Icon name="stop" size={14} />
-                <span>停止</span>
               </button>
             )}
             <button type="submit" className="send-button" disabled={!canSend}
@@ -1954,13 +3924,38 @@ function Composer({
             </button>
           </div>
         </div>
+        {mentionOpen && (
+          <div className="mention-menu" id={mentionListId} role="listbox" aria-label="选择要提及的群聊成员">
+            {options.map((option, index) => (
+              <button
+                key={option.key}
+                id={`${mentionListId}-${index}`}
+                type="button"
+                role="option"
+                aria-selected={index === activeMentionIndex}
+                className={'mention-option' + (index === activeMentionIndex ? ' mention-option-active' : '')}
+                onMouseDown={event => event.preventDefault()}
+                onMouseEnter={() => setMentionIndex(index)}
+                onClick={() => chooseMention(option)}
+              >
+                <span className="mention-option-avatar" aria-hidden="true">
+                  {option.kind === 'everyone'
+                    ? <Icon name="users" size={15} />
+                    : <Avatar
+                        value={groupBots?.find(bot => bot.id === option.botId)?.avatar ?? ''}
+                        size="small"
+                        followOnHover={false}
+                      />}
+                </span>
+                <span className="mention-option-copy">
+                  <strong>@{option.name}</strong>
+                  <span>{option.detail}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </form>
-      <div className="composer-caption">Enter 发送 · Shift + Enter 换行</div>
-      {(settingsError || modelsError) && (
-        <div className="composer-setting-error" role="status">
-          {settingsError ?? `暂时无法读取模型目录：${modelsError}`}
-        </div>
-      )}
     </div>
   );
 }
@@ -1978,10 +3973,12 @@ function NoChatWorkspace({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
 
 function CreateBotDialog({
   busy,
+  readinessError,
   onCancel,
   onCreate
 }: {
   busy: boolean;
+  readinessError: string | null;
   onCancel: () => void;
   onCreate: (name: string, avatar: string) => Promise<void>;
 }) {
@@ -2024,7 +4021,9 @@ function CreateBotDialog({
           </button>
         </div>
         <form onSubmit={event => void submit(event)}>
-          <Avatar value={avatar} size="preview" />
+          <div className="avatar-preview-stage" data-avatar-follow-region="">
+            <Avatar value={avatar} size="preview" followOnHover />
+          </div>
           <input
             ref={nameRef}
             id="new-bot-name"
@@ -2037,10 +4036,12 @@ function CreateBotDialog({
             onChange={event => { setName(event.target.value); setError(null); }}
           />
           <AvatarPicker value={avatar} onChange={setAvatar} disabled={busy} />
+          {readinessError && <div className="form-error" role="status">{readinessError}</div>}
           {error && <div className="form-error" role="alert">{error}</div>}
           <div className="dialog-actions">
             <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>取消</button>
-            <button type="submit" className="primary-button" disabled={busy || !name.trim()}>
+            <button type="submit" className="primary-button"
+              disabled={busy || !name.trim() || Boolean(readinessError)}>
               {busy ? '正在创建…' : '创建'}
             </button>
           </div>
@@ -2099,30 +4100,143 @@ function ConfirmationDialog({
   );
 }
 
+function AutoSaveIndicator({ state, error }: { state: AutoSaveState; error?: string | null }) {
+  if (error) return <span className="autosave-indicator autosave-error" role="alert">{error}</span>;
+  if (state === 'idle') return null;
+  const label = {
+    pending: '等待保存…',
+    saving: '正在自动保存…',
+    saved: '已自动保存',
+    error: '保存失败'
+  }[state];
+  return <span className={'autosave-indicator' + (state === 'saved' ? ' autosave-complete' : '')} role="status">{label}</span>;
+}
+
+const RESOURCE_KIND_LABELS: Record<BotResource['kind'], string> = {
+  skill: 'Skill',
+  mcp: 'MCP',
+  app: 'App',
+  plugin: 'Plugin'
+};
+
+function ResourceRows({
+  resources,
+  enabledIds = [],
+  onToggle,
+  action,
+  onDelete,
+  canDelete,
+  deleteLabel = '删除',
+  detail
+}: {
+  resources: BotResource[];
+  enabledIds?: string[];
+  onToggle?: (resourceId: string, enabled: boolean) => Promise<void>;
+  action?: (resource: BotResource) => ReactNode;
+  onDelete?: (resource: BotResource) => void;
+  canDelete?: (resource: BotResource) => boolean;
+  deleteLabel?: string;
+  detail?: (resource: BotResource) => ReactNode;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  if (!resources.length) return <div className="memory-empty-state" role="status">目录中暂无资源。</div>;
+  return (
+    <>
+      {error && <div className="form-error" role="alert">{error}</div>}
+      <ul className="resource-list" aria-label="资源列表">
+        {resources.map(resource => {
+          const enabled = enabledIds.includes(resource.id);
+          return (
+            <li className="resource-row" data-resource-id={resource.id} key={resource.id}>
+              <div className="resource-copy">
+                <div className="resource-title-line">
+                  <strong>{resource.name}</strong>
+                  <span className="resource-kind">{RESOURCE_KIND_LABELS[resource.kind]}</span>
+                  {resource.bundled && <span className="resource-kind">内置</span>}
+                </div>
+                <span>{resource.description || '暂无说明'}</span>
+                <small>来源：{resource.source}</small>
+                {detail?.(resource)}
+              </div>
+              <span className="resource-row-actions">
+                {onToggle && (
+                  <label className="settings-toggle-row resource-toggle">
+                    <span className="sr-only">启用 {resource.name}</span>
+                    <input type="checkbox" aria-label={`启用 ${resource.name}`} checked={enabled}
+                      disabled={busyId === resource.id}
+                      onChange={event => {
+                        const next = event.target.checked;
+                        setBusyId(resource.id);
+                        setError(null);
+                        void onToggle(resource.id, next)
+                          .catch(issue => setError(toError(issue)))
+                          .finally(() => setBusyId(null));
+                      }} />
+                  </label>
+                )}
+                {action?.(resource)}
+                {onDelete && (!canDelete || canDelete(resource)) && (
+                  confirmingDeleteId === resource.id ? (
+                    <span className="resource-delete-confirmation">
+                      <span>删除后不可恢复</span>
+                      <button type="button" className="danger-button resource-action"
+                        onClick={() => {
+                          setConfirmingDeleteId(null);
+                          onDelete(resource);
+                        }}>确认删除</button>
+                      <button type="button" className="secondary-button resource-action"
+                        onClick={() => setConfirmingDeleteId(null)}>取消</button>
+                    </span>
+                  ) : (
+                    <button type="button" className="danger-button resource-action"
+                      onClick={() => setConfirmingDeleteId(resource.id)}>{deleteLabel}</button>
+                  )
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+function BotResourceList({
+  resources,
+  enabledIds,
+  onToggle
+}: {
+  resources: BotResource[];
+  enabledIds: string[];
+  onToggle: (resourceId: string, enabled: boolean) => Promise<void>;
+}) {
+  return <ResourceRows resources={resources} enabledIds={enabledIds} onToggle={onToggle} />;
+}
+
 function BotSettingsPage({
   bot,
-  routines,
-  runs,
+  resources,
   models,
   modelError,
+  routines,
+  runs,
   onSave,
-  onApplyPermission,
-  onSetRoutineStatus,
-  onRunRoutineNow,
-  onStopRoutineRun,
+  onUpdateExecution,
+  onSetResource,
   onSetArchived,
   onRequestDelete
 }: {
   bot: Bot;
-  routines: RoutineListItem[];
-  runs: RoutineRun[];
+  resources: BotResource[];
   models: ModelOption[];
   modelError: string | null;
-  onSave: (id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'model' | 'permission'>>) => Promise<void>;
-  onApplyPermission: (id: string, permission: PermissionMode) => Promise<void>;
-  onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
-  onRunRoutineNow: (id: string) => Promise<RoutineRun>;
-  onStopRoutineRun: (id: string) => Promise<RoutineRun>;
+  routines: RoutineListItem[];
+  runs: RoutineRun[];
+  onSave: (id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>) => Promise<void>;
+  onUpdateExecution: (id: string, patch: { model: string; permission: PermissionMode }) => Promise<void>;
+  onSetResource: (resourceId: string, enabled: boolean) => Promise<void>;
   onSetArchived: (id: string, archived: boolean) => Promise<void>;
   onRequestDelete: () => void;
 }) {
@@ -2130,66 +4244,105 @@ function BotSettingsPage({
   const [avatar, setAvatar] = useState(bot.avatar);
   const [role, setRole] = useState(bot.role);
   const [instructions, setInstructions] = useState(bot.instructions);
-  const [model, setModel] = useState(bot.model ?? '');
-  const [permission, setPermission] = useState<PermissionMode>(bot.permission);
+  const [botModel, setBotModel] = useState(bot.model);
+  const [botPermission, setBotPermission] = useState<PermissionMode>(bot.permission);
   const [saving, setSaving] = useState(false);
-  const [applyingPermission, setApplyingPermission] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<AutoSaveState>('idle');
+  const [saveScope, setSaveScope] = useState<'profile' | 'session' | null>(null);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [permissionApplied, setPermissionApplied] = useState(false);
-  const [routineBusy, setRoutineBusy] = useState<string | null>(null);
-  const [routineMessage, setRoutineMessage] = useState<string | null>(null);
-  const botRoutines = routines.filter(routine => routine.botId === bot.id);
+  const [activeTab, setActiveTab] = useState<'profile' | 'model' | 'resources' | 'memory' | 'routines' | 'manage'>('profile');
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveVersionRef = useRef(0);
+  const profileTimersRef = useRef<Partial<Record<'name' | 'role' | 'instructions', number>>>({});
+
+  const enqueueSave = (write: () => Promise<void>, scope: 'profile' | 'session') => {
+    const version = ++saveVersionRef.current;
+    setSaveScope(scope);
+    setSaving(true);
+    setSaveStatus('saving');
+    setError(null);
+    const request = saveQueueRef.current.then(write);
+    saveQueueRef.current = request.then(() => undefined, () => undefined);
+    void request.then(() => {
+      if (version !== saveVersionRef.current) return;
+      setSaving(false);
+      setSaveStatus('saved');
+    }, issue => {
+      if (version !== saveVersionRef.current) return;
+      setSaving(false);
+      setSaveStatus('error');
+      setError(toError(issue));
+    });
+  };
+
+  const saveBotChange = (patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>) => {
+    enqueueSave(() => onSave(bot.id, patch), 'profile');
+  };
+
+  const saveExecutionChange = (patch: { model?: string; permission?: PermissionMode }) => {
+    const nextModel = patch.model ?? botModel;
+    const nextPermission = patch.permission ?? botPermission;
+    setBotModel(nextModel);
+    setBotPermission(nextPermission);
+    if (!nextModel.trim()) {
+      setSaveStatus('error');
+      setError('Bot 模型不能为空');
+      return;
+    }
+    enqueueSave(() => onUpdateExecution(bot.id, {
+      model: nextModel,
+      permission: nextPermission
+    }), 'session');
+  };
+
+  const scheduleProfileSave = (field: 'name' | 'role' | 'instructions', value: string) => {
+    const previous = profileTimersRef.current[field];
+    if (previous !== undefined) window.clearTimeout(previous);
+    setSaveScope('profile');
+    setError(null);
+    if (field === 'name' && !value.trim()) {
+      setSaveStatus('error');
+      setError('Bot 名称不能为空，当前修改尚未保存。');
+      delete profileTimersRef.current[field];
+      return;
+    }
+    setSaveStatus('pending');
+    profileTimersRef.current[field] = window.setTimeout(() => {
+      delete profileTimersRef.current[field];
+      saveBotChange({ [field]: field === 'name' ? value.trim() : value });
+    }, 420);
+  };
+
+  const flushProfileSave = (field: 'name' | 'role' | 'instructions', value: string) => {
+    const timer = profileTimersRef.current[field];
+    if (timer === undefined) return;
+    if (timer !== undefined) window.clearTimeout(timer);
+    delete profileTimersRef.current[field];
+    if (field === 'name' && !value.trim()) return;
+    saveBotChange({ [field]: field === 'name' ? value.trim() : value });
+  };
+
+  useEffect(() => () => {
+    for (const timer of Object.values(profileTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+  }, []);
+
+  useEffect(() => {
+    setBotModel(bot.model);
+    setBotPermission(bot.permission);
+  }, [bot.id, bot.model, bot.permission]);
 
   useEffect(() => {
     setName(bot.name);
     setAvatar(bot.avatar);
     setRole(bot.role);
     setInstructions(bot.instructions);
-    setModel(bot.model ?? '');
-    setPermission(bot.permission);
-    setSaved(false);
-    setPermissionApplied(false);
+    setActiveTab('profile');
+    setSaveStatus('idle');
+    setSaveScope(null);
   }, [bot.id]);
-
-  const save = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    setSaved(false);
-    setPermissionApplied(false);
-    try {
-      await onSave(bot.id, {
-        name: name.trim() || bot.name,
-        avatar,
-        role,
-        instructions,
-        model: model || null,
-        permission
-      });
-      setSaved(true);
-    } catch (issue) {
-      setError(toError(issue));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const applyPermission = async () => {
-    setApplyingPermission(true);
-    setError(null);
-    setSaved(false);
-    setPermissionApplied(false);
-    try {
-      await onApplyPermission(bot.id, permission);
-      setPermissionApplied(true);
-    } catch (issue) {
-      setError(toError(issue));
-    } finally {
-      setApplyingPermission(false);
-    }
-  };
 
   const changeArchived = async () => {
     setLifecycleBusy(true);
@@ -2199,200 +4352,171 @@ function BotSettingsPage({
     finally { setLifecycleBusy(false); }
   };
 
-  const changeRoutine = async (routine: RoutineListItem) => {
-    setRoutineBusy(routine.id);
-    setRoutineMessage(null);
-    try {
-      await onSetRoutineStatus(routine.id, routine.status === 'active' ? 'paused' : 'active');
-      setRoutineMessage(routine.status === 'active' ? '定时计划已暂停' : '定时计划已恢复');
-    } catch (issue) {
-      setRoutineMessage(toError(issue));
-    } finally {
-      setRoutineBusy(null);
-    }
-  };
-
-  const runRoutine = async (routine: RoutineListItem) => {
-    setRoutineBusy(routine.id);
-    setRoutineMessage(null);
-    try {
-      const run = await onRunRoutineNow(routine.id);
-      setRoutineMessage(`已立即发起运行 · ${routineRunStatusLabel(run.status)}`);
-    } catch (issue) {
-      setRoutineMessage(toError(issue));
-    } finally {
-      setRoutineBusy(null);
-    }
-  };
-
-  const stopRoutine = async (routine: RoutineListItem) => {
-    const run = runs.find(item =>
-      item.routineId === routine.id && (item.status === 'running' || item.status === 'pending')
-    );
-    if (!run) return;
-    setRoutineBusy(routine.id);
-    setRoutineMessage(null);
-    try {
-      const stopped = await onStopRoutineRun(run.id);
-      setRoutineMessage(stopped.status === 'interrupted' ? '本次执行已停止' : '执行已经结束');
-    } catch (issue) {
-      setRoutineMessage(toError(issue));
-    } finally {
-      setRoutineBusy(null);
-    }
-  };
-
-  const pauseAndStopRoutine = async (routine: RoutineListItem) => {
-    const run = runs.find(item =>
-      item.routineId === routine.id && (item.status === 'running' || item.status === 'pending')
-    );
-    setRoutineBusy(routine.id);
-    setRoutineMessage(null);
-    try {
-      await onSetRoutineStatus(routine.id, 'paused');
-      if (run) await onStopRoutineRun(run.id);
-      setRoutineMessage('定时计划已暂停，本次执行已停止');
-    } catch (issue) {
-      setRoutineMessage(toError(issue));
-    } finally {
-      setRoutineBusy(null);
-    }
-  };
-
   return (
     <section className="settings-page bot-settings-page">
       <div className="settings-page-heading">
         <div>
           <div className="eyebrow">BOT</div>
-          <h1>Bot 资料</h1>
-          <p>名称、职责、默认模型与权限会用于这个 Bot 后续的新轮次。</p>
+          <h1>{bot.name}</h1>
+          <p>{bot.role.trim() || '管理这个 Bot 的资料、模型与权限、可用资源和长期记忆。'}</p>
         </div>
-        <Avatar value={bot.avatar} size="large" />
+        <Avatar value={avatar} size="large" followOnHover />
       </div>
-      <form className="settings-form" onSubmit={event => void save(event)}>
+      <div className="settings-tabs" role="tablist" aria-label="Bot 设置分类">
+        {([
+          ['profile', '基础资料'],
+          ['model', '模型与权限'],
+          ['resources', 'Skills 与 MCP'],
+          ['memory', '长期记忆'],
+          ['routines', '定时任务'],
+          ['manage', 'Bot 管理']
+        ] as const).map(([id, label]) => (
+          <button type="button" role="tab" key={id} id={`bot-tab-${id}`}
+            aria-selected={activeTab === id} aria-controls={`bot-panel-${id}`}
+            className={'settings-tab' + (activeTab === id ? ' selected' : '')}
+            onClick={() => setActiveTab(id)}>{label}</button>
+        ))}
+      </div>
+
+      {activeTab === 'profile' && (
+      <section className="settings-form settings-tab-panel" role="tabpanel"
+        id="bot-panel-profile" aria-labelledby="bot-tab-profile">
         <label className="settings-field">
           <span>名称</span>
           <input className="text-input" value={name} maxLength={80} required
-            onChange={event => { setName(event.target.value); setSaved(false); setPermissionApplied(false); }} />
+            onBlur={event => flushProfileSave('name', event.currentTarget.value)}
+            onChange={event => {
+              const value = event.target.value;
+              setName(value);
+              scheduleProfileSave('name', value);
+            }} />
         </label>
         <div className="settings-field">
           <span>头像</span>
+          <div className="avatar-preview-stage settings-avatar-preview-stage" data-avatar-follow-region="">
+            <Avatar value={avatar} size="preview" followOnHover />
+          </div>
           <AvatarPicker value={avatar} className="settings-avatar-picker"
-            onChange={value => { setAvatar(value); setSaved(false); setPermissionApplied(false); }} />
+            onChange={value => { setAvatar(value); saveBotChange({ avatar: value }); }} />
         </div>
         <label className="settings-field">
           <span>短职责</span>
           <input className="text-input" value={role} maxLength={160}
             placeholder="一句话说明这个 Bot 的职责"
-            onChange={event => { setRole(event.target.value); setSaved(false); setPermissionApplied(false); }} />
+            onBlur={event => flushProfileSave('role', event.currentTarget.value)}
+            onChange={event => {
+              const value = event.target.value;
+              setRole(value);
+              scheduleProfileSave('role', value);
+            }} />
         </label>
         <label className="settings-field">
           <span>长期指令</span>
           <textarea className="text-input settings-textarea" value={instructions} rows={5}
             placeholder="描述这个 Bot 长期遵循的工作方式"
-            onChange={event => { setInstructions(event.target.value); setSaved(false); setPermissionApplied(false); }} />
+            onBlur={event => flushProfileSave('instructions', event.currentTarget.value)}
+            onChange={event => {
+              const value = event.target.value;
+              setInstructions(value);
+              scheduleProfileSave('instructions', value);
+            }} />
         </label>
-        <label className="settings-field">
-          <span>默认模型</span>
-          <select className="text-input select-input" value={model}
-            onChange={event => { setModel(event.target.value); setSaved(false); setPermissionApplied(false); }}>
-            <option value="">使用本机配置，发送时解析</option>
-            {models.map(option => (
-              <option value={option.id} key={option.id}>
-                {option.label}{option.isDefault ? ' · 产品默认' : ''}
-              </option>
-            ))}
-          </select>
-          <small className="field-hint">“产品默认”来自模型目录标记；Bot 为空时实际请求模型在发送时解析。</small>
-          {modelError && <small className="field-hint">暂时无法读取模型列表：{modelError}</small>}
+        <label className="settings-toggle-row" data-testid="bot-notifications-toggle">
+          <span>
+            <strong>新回复提醒</strong>
+            <span>窗口未显示这条私聊时发送系统通知；正在查看的私聊不重复提醒。</span>
+          </span>
+          <input type="checkbox" aria-label="新回复提醒"
+            checked={bot.notificationsEnabled}
+            disabled={saving}
+            onChange={event => saveBotChange({ notificationsEnabled: event.target.checked })} />
         </label>
-        <fieldset className="permission-fieldset" disabled={saving || applyingPermission}>
-          <legend>权限</legend>
-          <PermissionOption value="fullAccess" selected={permission} onSelect={value => { setPermission(value); setSaved(false); setPermissionApplied(false); }}
-            title="完全访问" description="允许 Codex 在本机执行，不限制于 Bot 工作区。" />
-          <PermissionOption value="workspaceWrite" selected={permission} onSelect={value => { setPermission(value); setSaved(false); setPermissionApplied(false); }}
-            title="工作区写入" description="允许在 Bot 工作区读写，并使用网络。" />
-          <PermissionOption value="readOnly" selected={permission} onSelect={value => { setPermission(value); setSaved(false); setPermissionApplied(false); }}
-            title="只读" description="不允许写入文件。" />
-          <div className="apply-permission-row">
-            <span className="field-hint">将当前权限保存为 Bot 默认，并覆盖此 Bot 的全部已有聊天。</span>
-            <button type="button" className="secondary-button" disabled={saving || applyingPermission}
-              onClick={() => void applyPermission()}>
-              {applyingPermission ? '正在应用…' : '保存权限并应用到全部聊天'}
-            </button>
+        <div className="settings-autosave-row">
+          <AutoSaveIndicator state={saveScope === 'profile' ? saveStatus : 'idle'}
+            error={saveScope === 'profile' ? error : null} />
+          <span className="field-hint">正在执行的轮次继续使用启动时的配置。</span>
+        </div>
+      </section>
+      )}
+
+      {activeTab === 'model' && (
+      <section className="settings-form settings-tab-panel conversation-settings-form" role="tabpanel"
+        id="bot-panel-model" aria-labelledby="bot-tab-model">
+        <fieldset className="conversation-settings-card">
+          <legend>Bot 执行配置</legend>
+          <p className="field-hint">这个 Bot 的唯一私聊、群聊执行和定时任务都使用这里的模型与权限。修改只影响后续轮次。</p>
+          <label className="settings-field">
+            <span>Bot 模型</span>
+            <span className="select-input-control">
+                  <select className="text-input select-input" aria-label="Bot 模型" value={botModel}
+                    disabled={!models.length}
+                onChange={event => saveExecutionChange({ model: event.target.value })}>
+                {!models.length && <option value="" disabled>模型列表暂不可用</option>}
+                {botModel && !models.some(option => option.id === botModel) && (
+                  <option value={botModel}>当前配置 · {botModel}</option>
+                )}
+                {models.map(option => (
+                  <option value={option.id} key={option.id}>
+                    {option.label}{option.isDefault ? ' · 产品默认' : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+            </span>
+            {modelError && <small className="field-hint">暂时无法读取模型列表：{modelError}</small>}
+          </label>
+          <fieldset className="permission-fieldset conversation-permission-fieldset">
+            <legend>Bot 权限</legend>
+            <div className="permission-choice-grid">
+              <PermissionOption name="bot-permission" value="fullAccess" selected={botPermission}
+                onSelect={value => saveExecutionChange({ permission: value })}
+                title="完全访问" description="允许 Codex 在本机执行，不限制于 Bot 工作区。" />
+              <PermissionOption name="bot-permission" value="workspaceWrite" selected={botPermission}
+                onSelect={value => saveExecutionChange({ permission: value })}
+                title="工作区写入" description="允许在 Bot 工作区读写，并使用网络。" />
+              <PermissionOption name="bot-permission" value="readOnly" selected={botPermission}
+                onSelect={value => saveExecutionChange({ permission: value })}
+                title="只读" description="不允许写入文件。" />
+            </div>
+          </fieldset>
+          <div className="conversation-settings-actions">
+            <span className="field-hint">执行中的轮次继续使用启动时的配置。</span>
+            <AutoSaveIndicator state={saveScope === 'session' ? saveStatus : 'idle'}
+              error={saveScope === 'session' ? error : null} />
           </div>
         </fieldset>
-        {(error || saved || permissionApplied) && (
-          <div className={error ? 'form-error' : 'form-saved'} role="status">
-            {error ?? (permissionApplied ? 'Bot 默认权限已保存，并已应用到全部已有聊天。执行中的轮次仍按启动时权限继续。' : '已保存')}
-          </div>
-        )}
-        <div className="settings-save-row">
-          <span className="field-hint">正在执行的轮次继续使用启动时的配置。</span>
-          <button type="submit" className="primary-button" disabled={saving || applyingPermission}>
-            {saving ? '正在保存…' : '保存资料'}
-          </button>
-        </div>
-      </form>
-      <section className="bot-routines-section" aria-label={bot.name + ' 的定时任务'}>
-        <div className="settings-page-heading">
-          <div>
-            <h2>定时任务</h2>
-            <p>此 Bot 管理的任务。</p>
-          </div>
-        </div>
-        {botRoutines.length ? (
-          <ul className="routine-list" aria-label={bot.name + ' 管理的定时任务'}>
-            {botRoutines.map(routine => (
-              <li className="routine-list-item" key={routine.id}>
-                <div className="routine-list-copy">
-                  <strong>{routine.title}</strong>
-                  <span>{routine.definition.schedule}</span>
-                  <p>{routine.definition.instruction}</p>
-                  <RoutineRunSummary routine={routine} runs={runs} />
-                </div>
-                <div className="routine-actions">
-                  <span className={'routine-status routine-status-' + routine.status}>
-                    {routine.status === 'active' ? routineLabel(routine) : '已暂停'}
-                  </span>
-                  {routine.definition.kind === 'recurring' && (
-                    <button type="button" className="routine-action-button" disabled={routineBusy === routine.id}
-                      onClick={() => void changeRoutine(routine)}>
-                      {routineBusy === routine.id ? '处理中…' : routine.status === 'active' ? '暂停' : '恢复'}
-                    </button>
-                  )}
-                  {runs.some(item => item.routineId === routine.id &&
-                    (item.status === 'running' || item.status === 'pending')) && (
-                    <button type="button" className="routine-action-button"
-                      disabled={routineBusy === routine.id}
-                      onClick={() => void stopRoutine(routine)}>停止本次</button>
-                  )}
-                  {routine.definition.kind === 'recurring' && routine.status === 'active' &&
-                    runs.some(item => item.routineId === routine.id &&
-                      (item.status === 'running' || item.status === 'pending')) && (
-                    <button type="button" className="routine-action-button"
-                      disabled={routineBusy === routine.id}
-                      onClick={() => void pauseAndStopRoutine(routine)}>暂停并停止本次</button>
-                  )}
-                  <button type="button" className="routine-action-button"
-                    disabled={routineBusy === routine.id || routine.status === 'paused' ||
-                      routine.lastRun?.status === 'running' || routine.lastRun?.status === 'pending'}
-                    onClick={() => void runRoutine(routine)}>立即运行</button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="routine-empty-state" role="status">
-            <span className="routine-empty-icon"><Icon name="calendar" size={21} /></span>
-            <div><h2>暂无定时任务</h2><p>该 Bot 创建的定时任务会显示在这里。</p></div>
-          </div>
-        )}
-        {routineMessage && <div className="routine-message" role="status">{routineMessage}</div>}
       </section>
-      <MemoryManager botId={bot.id} title="Bot 专属长期记忆"
-        description="这个 Bot 可自动整理保存自己的长期记忆；你也可以在这里查看、编辑或删除。其他 Bot 不会读取这些条目。" />
-      <section className="bot-lifecycle-section" aria-label="Bot 归档和删除">
+      )}
+
+      {activeTab === 'resources' && (
+      <section className="settings-form settings-tab-panel" role="tabpanel"
+        id="bot-panel-resources" aria-labelledby="bot-tab-resources">
+        <p className="field-hint">这里只显示系统全局可选目录中的 Skills、MCP、Apps 与 Plugins。每个开关只作用于当前 Bot，创建时的状态复制自全局初值。</p>
+        <BotResourceList resources={resources} enabledIds={bot.resourceIds}
+          onToggle={onSetResource} />
+        <div className="settings-autosave-row">
+          <AutoSaveIndicator state={saveScope === 'session' ? saveStatus : 'idle'}
+            error={saveScope === 'session' ? error : null} />
+        </div>
+      </section>
+      )}
+
+      {activeTab === 'memory' && (
+      <div className="settings-tab-panel" role="tabpanel"
+        id="bot-panel-memory" aria-labelledby="bot-tab-memory">
+        <MemoryManager botId={bot.id} title="Bot 专属长期记忆"
+          description="这个 Bot 可自动整理保存自己的长期记忆；你也可以在这里查看、编辑或删除。其他 Bot 不会读取这些条目。" />
+      </div>
+      )}
+
+      {activeTab === 'routines' && (
+      <BotRoutineList routines={routines} runs={runs} />
+      )}
+
+      {activeTab === 'manage' && (
+      <section className="bot-lifecycle-section settings-tab-panel" role="tabpanel"
+        id="bot-panel-manage" aria-labelledby="bot-tab-manage"
+        aria-label="Bot 归档和删除">
         <div>
           <h2>{bot.archived ? '已归档的 Bot' : 'Bot 管理'}</h2>
           <p>{bot.archived
@@ -2400,34 +4524,80 @@ function BotSettingsPage({
             : '归档会从主列表隐藏此 Bot、保留聊天和记忆，并暂停它的自动例程。'}</p>
         </div>
         <div className="bot-lifecycle-actions">
-          <button type="button" className="secondary-button" disabled={lifecycleBusy || saving || applyingPermission}
+          <button type="button" className="secondary-button" disabled={lifecycleBusy || saving}
             onClick={() => void changeArchived()}>
             {lifecycleBusy ? '正在更新…' : bot.archived ? '恢复 Bot' : '归档 Bot'}
           </button>
-          <button type="button" className="danger-button" disabled={lifecycleBusy || saving || applyingPermission}
+          <button type="button" className="danger-button" disabled={lifecycleBusy || saving}
             onClick={onRequestDelete}>永久删除 Bot…</button>
         </div>
       </section>
+      )}
+    </section>
+  );
+}
+
+function BotRoutineList({ routines, runs }: { routines: RoutineListItem[]; runs: RoutineRun[] }) {
+  return (
+    <section className="settings-tab-panel bot-routines-section" role="tabpanel"
+      id="bot-panel-routines" aria-labelledby="bot-tab-routines"
+      data-routine-scope="bot">
+      <div className="settings-section-title">
+        <div>
+          <h2 id="bot-routines-heading">当前 Bot 的定时任务</h2>
+          <p>查看这个 Bot 的计划、执行内容、状态和最近运行记录；暂停、恢复和立即运行统一在系统设置中操作。</p>
+        </div>
+      </div>
+      {routines.length === 0 ? (
+        <div className="routine-empty-state" role="status">
+          <span className="routine-empty-icon"><Icon name="calendar" size={21} /></span>
+          <div>
+            <h2>暂无定时任务</h2>
+            <p>这个 Bot 创建的任务会自动出现在这里；全部任务仍可在系统设置中统一管理。</p>
+          </div>
+        </div>
+      ) : (
+        <ul className="routine-list" aria-label={`${routines.length} 个当前 Bot 的定时任务`}>
+          {routines.map(routine => (
+            <li className="routine-list-item" key={routine.id}>
+              <div className="routine-list-copy">
+                <strong>{routine.title}</strong>
+                <div className="routine-list-meta">
+                  <span>{routineScheduleLabel(routine)}</span>
+                  <span className="routine-execution-mode">
+                    {routineExecutionLabel(routine.definition.execution.mode)}
+                  </span>
+                </div>
+                <p>{routine.definition.instruction}</p>
+                <RoutineRunSummary routine={routine} runs={runs} />
+              </div>
+              <RoutineStatus routine={routine} />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
 
 function PermissionOption({
+  name = 'permission',
   value,
   selected,
   onSelect,
   title,
   description
 }: {
+  name?: string;
   value: PermissionMode;
-  selected: PermissionMode;
+  selected: PermissionMode | '' | null;
   onSelect: (value: PermissionMode) => void;
   title: string;
   description: string;
 }) {
   return (
     <label className={'permission-option' + (selected === value ? ' selected' : '')}>
-      <input type="radio" name="permission" value={value} checked={selected === value}
+      <input type="radio" name={name} value={value} checked={selected === value}
         onChange={() => onSelect(value)} />
       <span className="permission-copy">
         <strong>{title}</strong>
@@ -2440,12 +4610,15 @@ function PermissionOption({
 function MemoryManager({ botId, title, description }: { botId: string | null; title: string; description: string }) {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [draft, setDraft] = useState('');
+  const [draftMemoryId, setDraftMemoryId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<AutoSaveState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const saveInFlightRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -2467,43 +4640,65 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
     return () => { active = false; unsubscribe(); };
   }, [botId]);
 
-  const save = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim() || saving) return;
+  const saveDraft = async (text = draft, id = draftMemoryId) => {
+    if (!text.trim() || saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setSaving(true);
+    setSaveStatus('saving');
     setError(null);
     setNotice(null);
     try {
-      const memory = await window.rambo.saveMemory({ botId, text: draft });
+      const memory = await window.rambo.saveMemory({ id: id ?? undefined, botId, text });
       setMemories(current => current.some(item => item.id === memory.id)
         ? current.map(item => item.id === memory.id ? memory : item)
         : [...current, memory].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
-      setDraft('');
-      setNotice('已保存到长期记忆。');
+      setDraftMemoryId(memory.id);
+      if (draft === text) {
+        setDraft('');
+        setDraftMemoryId(null);
+      }
+      setSaveStatus('saved');
     } catch (issue) {
       setError(toError(issue));
+      setSaveStatus('error');
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   };
 
-  const saveEdit = async (memory: Memory) => {
-    if (!editText.trim() || saving) return;
+  const saveEdit = async (memory: Memory, text = editText) => {
+    if (!text.trim() || text === memory.text || saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setSaving(true);
+    setSaveStatus('saving');
     setError(null);
     setNotice(null);
     try {
-      const updated = await window.rambo.saveMemory({ id: memory.id, botId, text: editText });
+      const updated = await window.rambo.saveMemory({ id: memory.id, botId, text });
       setMemories(current => current.map(item => item.id === updated.id ? updated : item));
-      setEditingId(null);
-      setEditText('');
-      setNotice('记忆已更新。');
+      setSaveStatus('saved');
     } catch (issue) {
       setError(toError(issue));
+      setSaveStatus('error');
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!draft.trim() || saving) return;
+    const timer = window.setTimeout(() => void saveDraft(draft, draftMemoryId), 500);
+    return () => window.clearTimeout(timer);
+  }, [draft, draftMemoryId, saving, botId]);
+
+  useEffect(() => {
+    const memory = memories.find(item => item.id === editingId);
+    if (!memory || !editText.trim() || editText === memory.text || saving) return;
+    const timer = window.setTimeout(() => void saveEdit(memory, editText), 500);
+    return () => window.clearTimeout(timer);
+  }, [editingId, editText, memories, saving, botId]);
 
   const remove = async (memory: Memory) => {
     setSaving(true);
@@ -2513,9 +4708,11 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
       await window.rambo.deleteMemory(memory.id);
       setMemories(current => current.filter(item => item.id !== memory.id));
       if (editingId === memory.id) { setEditingId(null); setEditText(''); }
+      setSaveStatus('saved');
       setNotice('记忆已删除。');
     } catch (issue) {
       setError(toError(issue));
+      setSaveStatus('error');
     } finally {
       setSaving(false);
     }
@@ -2529,21 +4726,23 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
           <p>{description}</p>
         </div>
       </div>
-      <form className="memory-create-form" onSubmit={event => void save(event)}>
+      <div className="memory-create-form">
         <label className="settings-field">
           <span>新增一条长期记忆</span>
           <textarea className="text-input memory-textarea" rows={3} maxLength={20_000} value={draft}
             placeholder="写下适合长期保留的偏好、事实或目标"
-            onChange={event => setDraft(event.target.value)} />
+            onChange={event => {
+              setDraft(event.target.value);
+              setSaveStatus(event.target.value.trim() ? 'pending' : 'idle');
+              setError(null);
+            }}
+            onBlur={() => { if (draft.trim()) void saveDraft(draft, draftMemoryId); }} />
         </label>
         <div className="memory-form-actions">
-          <span className="field-hint">Bot 自动整理保存无需逐项批准；删除后不提供历史或撤销。</span>
-          <button type="submit" className="secondary-button" disabled={saving || !draft.trim()}>
-            {saving ? '正在保存…' : '保存记忆'}
-          </button>
+          <span className="field-hint">留空时不会创建条目。</span>
+          {!editingId && <AutoSaveIndicator state={saveStatus} error={error} />}
         </div>
-      </form>
-      {error && <div className="form-error" role="alert">{error}</div>}
+      </div>
       {notice && <div className="form-saved" role="status">{notice}</div>}
       {loading ? <div className="memory-empty-state" role="status">正在读取长期记忆…</div>
         : memories.length ? (
@@ -2553,12 +4752,19 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
                 {editingId === memory.id ? (
                   <div className="memory-edit-form">
                     <textarea className="text-input memory-textarea" rows={3} maxLength={20_000} value={editText}
-                      aria-label="编辑长期记忆" onChange={event => setEditText(event.target.value)} />
+                      aria-label="编辑长期记忆" onChange={event => {
+                        setEditText(event.target.value);
+                        setSaveStatus('pending');
+                        setError(null);
+                      }}
+                      onBlur={() => {
+                        const current = memories.find(item => item.id === editingId);
+                        if (current) void saveEdit(current, editText);
+                      }} />
                     <div className="memory-item-actions">
                       <button type="button" className="secondary-button" disabled={saving}
-                        onClick={() => { setEditingId(null); setEditText(''); }}>取消</button>
-                      <button type="button" className="primary-button" disabled={saving || !editText.trim()}
-                        onClick={() => void saveEdit(memory)}>{saving ? '正在保存…' : '保存修改'}</button>
+                        onClick={() => { setEditingId(null); setEditText(''); setSaveStatus('idle'); }}>完成编辑</button>
+                      {editingId === memory.id && <AutoSaveIndicator state={saveStatus} error={error} />}
                     </div>
                   </div>
                 ) : (
@@ -2583,16 +4789,151 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
   );
 }
 
-function AccountSettingsPage({ runtime, launchAtLogin, onSetLaunchAtLogin }: {
+function AccountSettingsPage({
+  activeTab,
+  onTabChange,
+  runtime,
+  codexHome,
+  notificationUnavailable,
+  launchAtLogin,
+  globalModel,
+  globalPermission,
+  executionDefaultsReady,
+  executionDefaultsError,
+  resources,
+  globalResourceIds,
+  globalDefaultResourceIds,
+  directMcpServers,
+  playwrightVerifiedAt,
+  models,
+  modelError,
+  bots,
+  routines,
+  runs,
+  onSetGlobalModel,
+  onSetGlobalPermission,
+  onSetGlobalResource,
+  onSetGlobalDefaultResource,
+  onImportLocalSkill,
+  onAddDirectMcp,
+  onSetDirectMcpEnabled,
+  onDeleteDirectMcp,
+  onVerifyPlaywrightConnection,
+  onCancelPlaywrightVerification,
+  onSetLaunchAtLogin,
+  onSetRoutineStatus,
+  onRunRoutineNow,
+  onStopRoutineRun
+}: {
+  activeTab: SystemSettingsTab;
+  onTabChange: (tab: SystemSettingsTab) => void;
   runtime: RuntimeState;
+  codexHome: string;
+  notificationUnavailable: string | null;
   launchAtLogin: boolean;
+  globalModel: string;
+  globalPermission: PermissionMode | null;
+  executionDefaultsReady: boolean;
+  executionDefaultsError: string | null;
+  resources: BotResource[];
+  globalResourceIds: string[];
+  globalDefaultResourceIds: string[];
+  directMcpServers: DirectMcpServer[];
+  playwrightVerifiedAt: string;
+  models: ModelOption[];
+  modelError: string | null;
+  bots: Bot[];
+  routines: RoutineListItem[];
+  runs: RoutineRun[];
+  onSetGlobalModel: (model: string) => Promise<void>;
+  onSetGlobalPermission: (permission: PermissionMode) => Promise<void>;
+  onSetGlobalResource: (resourceId: string, included: boolean) => Promise<void>;
+  onSetGlobalDefaultResource: (resourceId: string, enabled: boolean) => Promise<void>;
+  onImportLocalSkill: () => Promise<{ resourceId: string; name: string }>;
+  onAddDirectMcp: (input: {
+    name: string; description?: string; transport: 'stdio' | 'http';
+    command?: string; args?: string[]; cwd?: string; url?: string;
+    headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean;
+  }) => Promise<{ resourceId: string; server: DirectMcpServer }>;
+  onSetDirectMcpEnabled: (id: string, enabled: boolean) => Promise<DirectMcpServer>;
+  onDeleteDirectMcp: (id: string) => Promise<void>;
+  onVerifyPlaywrightConnection: () => Promise<PlaywrightVerificationResult>;
+  onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
+  onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
+  onRunRoutineNow: (id: string) => Promise<RoutineRun>;
+  onStopRoutineRun: (id: string) => Promise<RoutineRun>;
 }) {
   const [account, setAccount] = useState<AccountState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [globalModelDraft, setGlobalModelDraft] = useState(globalModel);
+  const [globalPermissionDraft, setGlobalPermissionDraft] = useState<PermissionMode | null>(globalPermission);
+  const [modelSaveState, setModelSaveState] = useState<AutoSaveState>('idle');
+  const [modelSaveError, setModelSaveError] = useState<string | null>(null);
+  const [permissionSaveState, setPermissionSaveState] = useState<AutoSaveState>('idle');
+  const [permissionSaveError, setPermissionSaveError] = useState<string | null>(null);
+  const [resourceQuery, setResourceQuery] = useState('');
+  const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [resourceImportNotice, setResourceImportNotice] = useState<string | null>(null);
+  const [resourceImportError, setResourceImportError] = useState<string | null>(null);
+  const [importingSkill, setImportingSkill] = useState(false);
+  const [mcpFormOpen, setMcpFormOpen] = useState(false);
+  const [mcpName, setMcpName] = useState('');
+  const [mcpDescription, setMcpDescription] = useState('');
+  const [mcpTransport, setMcpTransport] = useState<'stdio' | 'http'>('stdio');
+  const [mcpCommand, setMcpCommand] = useState('');
+  const [mcpArgs, setMcpArgs] = useState('');
+  const [mcpCwd, setMcpCwd] = useState('');
+  const [mcpUrl, setMcpUrl] = useState('');
+  const [mcpHeaders, setMcpHeaders] = useState('');
+  const [mcpEnv, setMcpEnv] = useState('');
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
+  const [playwrightVerifying, setPlaywrightVerifying] = useState(false);
+  const [playwrightProgress, setPlaywrightProgress] = useState('');
+  const [playwrightVerificationError, setPlaywrightVerificationError] = useState<string | null>(null);
+  const modelWriteSequenceRef = useRef(0);
+  const modelWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const permissionWriteSequenceRef = useRef(0);
+  const permissionWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  const globalSaveError = modelSaveError ?? permissionSaveError;
+  const globalSaveState: AutoSaveState = globalSaveError || modelSaveState === 'error' || permissionSaveState === 'error'
+    ? 'error'
+    : modelSaveState === 'saving' || permissionSaveState === 'saving'
+      ? 'saving'
+      : modelSaveState === 'saved' || permissionSaveState === 'saved'
+        ? 'saved'
+        : 'idle';
+
+  useEffect(() => {
+    if (modelWriteSequenceRef.current === 0) setGlobalModelDraft(globalModel);
+  }, [globalModel]);
+
+  useEffect(() => {
+    if (permissionWriteSequenceRef.current === 0) setGlobalPermissionDraft(globalPermission);
+  }, [globalPermission]);
+
+  useEffect(() => {
+    if (modelSaveState !== 'saved') return;
+    const timer = window.setTimeout(() => setModelSaveState('idle'), 2400);
+    return () => window.clearTimeout(timer);
+  }, [modelSaveState]);
+
+  useEffect(() => {
+    if (permissionSaveState !== 'saved') return;
+    const timer = window.setTimeout(() => setPermissionSaveState('idle'), 2400);
+    return () => window.clearTimeout(timer);
+  }, [permissionSaveState]);
+
+  useEffect(() => window.rambo.onEvent(event => {
+    if (event.type !== 'playwrightVerificationProgress') return;
+    setPlaywrightProgress(event.message);
+    if (event.phase === 'verified') setPlaywrightVerificationError(null);
+  }), []);
 
   useEffect(() => {
     let active = true;
@@ -2609,6 +4950,135 @@ function AccountSettingsPage({ runtime, launchAtLogin, onSetLaunchAtLogin }: {
     });
     return () => { active = false; };
   }, []);
+
+  const updateGlobalModel = async (value: string) => {
+    const sequence = ++modelWriteSequenceRef.current;
+    setGlobalModelDraft(value);
+    setModelSaveError(null);
+    setModelSaveState('saving');
+    try {
+      const write = modelWriteQueueRef.current.then(() => onSetGlobalModel(value));
+      modelWriteQueueRef.current = write.then(() => undefined, () => undefined);
+      await write;
+      if (sequence === modelWriteSequenceRef.current) {
+        modelWriteSequenceRef.current = 0;
+        setModelSaveState('saved');
+      }
+    } catch (issue) {
+      if (sequence === modelWriteSequenceRef.current) {
+        modelWriteSequenceRef.current = 0;
+        setGlobalModelDraft(globalModel);
+        setModelSaveState('error');
+        setModelSaveError(toError(issue));
+      }
+    }
+  };
+
+  const updateGlobalPermission = async (value: PermissionMode) => {
+    const sequence = ++permissionWriteSequenceRef.current;
+    setGlobalPermissionDraft(value);
+    setPermissionSaveError(null);
+    setPermissionSaveState('saving');
+    try {
+      const write = permissionWriteQueueRef.current.then(() => onSetGlobalPermission(value));
+      permissionWriteQueueRef.current = write.then(() => undefined, () => undefined);
+      await write;
+      if (sequence === permissionWriteSequenceRef.current) {
+        permissionWriteSequenceRef.current = 0;
+        setPermissionSaveState('saved');
+      }
+    } catch (issue) {
+      if (sequence === permissionWriteSequenceRef.current) {
+        permissionWriteSequenceRef.current = 0;
+        setGlobalPermissionDraft(globalPermission);
+        setPermissionSaveState('error');
+        setPermissionSaveError(toError(issue));
+      }
+    }
+  };
+
+  const verifyPlaywrightConnection = async () => {
+    setPlaywrightVerifying(true);
+    setPlaywrightVerificationError(null);
+    setPlaywrightProgress('正在启动 Playwright MCP 并连接 Chrome 扩展…');
+    try {
+      await onVerifyPlaywrightConnection();
+      setPlaywrightProgress('Chrome 标签页连接与只读检查已完成；页面内容未保存。');
+    } catch (issue) {
+      setPlaywrightVerificationError(toError(issue));
+      setPlaywrightProgress('');
+    } finally {
+      setPlaywrightVerifying(false);
+    }
+  };
+
+  const importSkill = async () => {
+    setImportingSkill(true);
+    setResourceImportError(null);
+    setResourceImportNotice(null);
+    try {
+      const imported = await onImportLocalSkill();
+      setResourceImportNotice(`已导入 ${imported.name} 到全局可选目录；已有 Bot 默认关闭。`);
+    } catch (issue) {
+      setResourceImportError(toError(issue));
+    } finally {
+      setImportingSkill(false);
+    }
+  };
+
+  const parseMcpKeyValues = (value: string, label: string): Record<string, string> | undefined => {
+    const text = value.trim();
+    if (!text) return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); }
+    catch { throw new Error(`${label}必须是 JSON 键值对象。`); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${label}必须是 JSON 键值对象。`);
+    }
+    return parsed as Record<string, string>;
+  };
+
+  const addMcp = async () => {
+    setMcpSaving(true);
+    setResourceImportError(null);
+    setResourceImportNotice(null);
+    try {
+      const added = await onAddDirectMcp({
+        name: mcpName.trim(),
+        description: mcpDescription.trim() || undefined,
+        transport: mcpTransport,
+        ...(mcpTransport === 'stdio' ? {
+          command: mcpCommand.trim(),
+          args: mcpArgs.split('\n').map(value => value.trim()).filter(Boolean),
+          cwd: mcpCwd.trim() || undefined,
+          env: parseMcpKeyValues(mcpEnv, '环境变量')
+        } : {
+          url: mcpUrl.trim(),
+          headers: parseMcpKeyValues(mcpHeaders, 'HTTP headers')
+        }),
+        enabled: false
+      });
+      setResourceImportNotice(`已添加 ${added.server.name} 到全局可选目录；已有 Bot 默认关闭。`);
+      setMcpFormOpen(false);
+      setMcpName('');
+      setMcpDescription('');
+      setMcpCommand('');
+      setMcpArgs('');
+      setMcpCwd('');
+      setMcpUrl('');
+      setMcpHeaders('');
+      setMcpEnv('');
+    } catch (issue) {
+      setResourceImportError(toError(issue));
+    } finally {
+      setMcpSaving(false);
+    }
+  };
+
+  const cancelPlaywrightConnectionVerification = async () => {
+    setPlaywrightProgress('正在取消 Chrome 连接验证…');
+    await onCancelPlaywrightVerification().catch(() => {});
+  };
 
   const login = async () => {
     setBusy(true);
@@ -2638,90 +5108,420 @@ function AccountSettingsPage({ runtime, launchAtLogin, onSetLaunchAtLogin }: {
     }
   };
 
+  const tabs: Array<[SystemSettingsTab, string]> = [
+    ['general', '常规'],
+    ['model', '新建 Bot 初值'],
+    ['resources', 'Skills 与 MCP'],
+    ['routines', '定时任务']
+  ];
+
   return (
-    <section className="settings-page">
+    <section className="settings-page system-settings-page" aria-label="系统设置">
       <div className="settings-page-heading">
         <div>
           <div className="eyebrow">RAMBO</div>
-          <h1>设置</h1>
-          <p>查看本机 Codex 连接和账号状态。</p>
+          <h1>系统设置</h1>
+          <p>集中管理全局模型、权限和全部定时任务。</p>
         </div>
       </div>
-      <div className="settings-section">
-        <div className="settings-section-title">
-          <div>
-            <h2>账号</h2>
-            <p>Rambo 使用本机 Codex 登录状态。</p>
+      <div className="settings-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类">
+        {tabs.map(([id, label]) => (
+          <button type="button" role="tab" key={id} id={'system-tab-' + id}
+            aria-selected={activeTab === id} aria-controls={'system-panel-' + id}
+            className={'settings-tab' + (activeTab === id ? ' selected' : '')}
+            onClick={() => onTabChange(id)}>{label}</button>
+        ))}
+      </div>
+
+      {activeTab === 'general' && (
+        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-general" aria-labelledby="system-tab-general">
+          <div className="settings-section">
+            <div className="settings-section-title">
+              <div><h2>账号</h2><p>Rambo 使用本机 Codex 登录状态。</p></div>
+            </div>
+            <div className="account-card">
+              <div className="account-avatar">C</div>
+              <div className="account-copy">
+                <strong>{loading ? '正在读取账号状态…' : error ? '无法读取账号状态' : account?.requiresLogin ? '尚未登录' : account?.email || account?.type || '已连接账号'}</strong>
+                <span>{account?.type ? '登录方式：' + account.type : '账号状态来自本机 Codex'}</span>
+              </div>
+              {account?.requiresLogin && (
+                <button type="button" className="secondary-button" disabled={busy} onClick={() => void login()}>登录</button>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="account-card">
-          <div className="account-avatar">C</div>
-          <div className="account-copy">
-            <strong>{loading ? '正在读取账号状态…' : error ? '无法读取账号状态' : account?.requiresLogin ? '尚未登录' : account?.email || account?.type || '已连接账号'}</strong>
-            <span>{account?.type ? '登录方式：' + account.type : '账号状态来自本机 Codex'}</span>
+          <div className="settings-section">
+            <div className="settings-section-title">
+              <div><h2>启动</h2><p>登录 macOS 后启动 Rambo，让本机任务继续运行。</p></div>
+            </div>
+            <label className="settings-toggle-row">
+              <span><strong>登录时启动</strong><span>关闭 Rambo 窗口不会停止任务；退出 Rambo 才会停止本机服务。</span></span>
+              <input type="checkbox" aria-label="登录时启动" checked={launchAtLogin} disabled={busy}
+                onChange={event => {
+                  const enabled = event.target.checked;
+                  setBusy(true);
+                  setError(null);
+                  setNotice(null);
+                  void onSetLaunchAtLogin(enabled).then(() => {
+                    setNotice(enabled ? '已开启登录时启动。' : '已关闭登录时启动。');
+                  }).catch(issue => {
+                    setError(toError(issue));
+                  }).finally(() => {
+                    setBusy(false);
+                  });
+                }} />
+            </label>
           </div>
-          {account?.requiresLogin && (
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => void login()}>
-              登录
-            </button>
+          <MemoryManager botId={null} title="关于我"
+            description="所有 Bot 可参考的共用个人资料。此处条目与各 Bot 的专属记忆分开管理。" />
+          <div className="settings-section">
+            <div className="settings-section-title">
+              <div><h2>Codex 运行时</h2><p>使用本机 Codex，登录态共用，会话独立保存。</p></div>
+            </div>
+            <div className="runtime-card">
+              <div className="runtime-card-status">
+                <span className={'status-dot status-' + runtime.status} />
+                <strong>{runtimeLabel(runtime.status)}</strong>
+                <span className="runtime-version">版本 {runtime.version || '未知'}</span>
+                <button type="button" className="secondary-button runtime-restart-button" disabled={busy || runtime.status === 'starting'}
+                  onClick={() => void restart()}>{busy ? '处理中…' : '重启运行时'}</button>
+              </div>
+              <div className="runtime-home-row" aria-label="Codex Home">
+                <span className="runtime-home-label">Codex Home</span>
+                <code className="runtime-home-path" title={codexHome}>{codexHome || '未知'}</code>
+              </div>
+              {notificationUnavailable && (
+                <div className="runtime-notification-status" role="status">{notificationUnavailable}</div>
+              )}
+              {runtime.error && <div className="runtime-error">{runtime.error}</div>}
+            </div>
+          </div>
+          {(error || notice) && (
+            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+              {error ?? notice}
+            </div>
           )}
         </div>
-      </div>
-      <div className="settings-section">
-        <div className="settings-section-title">
-          <div>
-            <h2>启动</h2>
-            <p>登录 macOS 后启动 Rambo，让本机任务继续运行。</p>
+      )}
+
+      {activeTab === 'model' && (
+        <section className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-model" aria-labelledby="system-tab-model">
+          <div className="settings-section-title">
+            <div><h2>新建 Bot 初值</h2><p>只决定之后新建 Bot 复制到的具体模型与权限。已有 Bot 完全独立，修改这里不会影响它们。</p></div>
           </div>
-        </div>
-        <label className="settings-toggle-row">
-          <span>
-            <strong>登录时启动</strong>
-            <span>关闭 Rambo 窗口不会停止任务；退出 Rambo 才会停止本机服务。</span>
-          </span>
-          <input type="checkbox" aria-label="登录时启动" checked={launchAtLogin} disabled={busy}
-            onChange={event => {
-              const enabled = event.target.checked;
-              setBusy(true);
-              setError(null);
-              setNotice(null);
-              void onSetLaunchAtLogin(enabled).then(() => {
-                setNotice(enabled ? '已开启登录时启动。' : '已关闭登录时启动。');
-              }).catch(issue => {
-                setError(toError(issue));
-              }).finally(() => {
-                setBusy(false);
-              });
-            }} />
-        </label>
-      </div>
-      <MemoryManager botId={null} title="关于我"
-        description="所有 Bot 可参考的共用个人资料。此处条目与各 Bot 的专属记忆分开管理。" />
-      <div className="settings-section">
-        <div className="settings-section-title">
-          <div>
-            <h2>Codex 运行时</h2>
-            <p>Bot 的文字聊天通过本机随包运行时处理。</p>
+          {!executionDefaultsReady && (
+            <div className="form-error" role="status">
+              {executionDefaultsError ?? '模型配置尚未就绪。'}
+            </div>
+          )}
+          <div className="global-defaults-grid">
+            <section className="global-default-card global-model-card">
+              <label className="settings-field global-model-field">
+                <span>新建 Bot 模型</span>
+                <span className="select-input-control">
+                  <select className="text-input select-input" aria-label="新建 Bot 模型" value={globalModelDraft}
+                    disabled={!models.length}
+                    onChange={event => void updateGlobalModel(event.target.value)}>
+                    {!models.length && <option value="" disabled>模型列表暂不可用</option>}
+                    {globalModelDraft && !models.some(option => option.id === globalModelDraft) && (
+                      <option value={globalModelDraft}>当前配置 · {globalModelDraft}</option>
+                    )}
+                    {models.map(option => (
+                      <option value={option.id} key={option.id}>
+                        {option.label}{option.isDefault ? ' · 产品默认' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+                </span>
+                <small className="field-hint">创建 Bot 时复制为一个明确值，之后互不联动。</small>
+                {modelError && <small className="field-hint">暂时无法读取模型列表：{modelError}</small>}
+              </label>
+            </section>
+            <section className="global-default-card global-permission-card" aria-labelledby="global-permission-title">
+              <div className="global-default-card-heading">
+                <h3 id="global-permission-title">新建 Bot 权限</h3>
+                <p className="field-hint">创建 Bot 时复制为一个明确权限，之后互不联动。</p>
+              </div>
+              <fieldset className="permission-fieldset global-permission-fieldset">
+                <legend className="sr-only">新建 Bot 权限</legend>
+                <div className="permission-choice-grid global-permission-options">
+                  <PermissionOption name="global-permission" value="fullAccess" selected={globalPermissionDraft}
+                    onSelect={value => void updateGlobalPermission(value)}
+                    title="完全访问" description="允许 Codex 在本机执行，不限制于 Bot 工作区。" />
+                  <PermissionOption name="global-permission" value="workspaceWrite" selected={globalPermissionDraft}
+                    onSelect={value => void updateGlobalPermission(value)}
+                    title="工作区写入" description="允许在 Bot 工作区读写，并使用网络。" />
+                  <PermissionOption name="global-permission" value="readOnly" selected={globalPermissionDraft}
+                    onSelect={value => void updateGlobalPermission(value)}
+                    title="只读" description="不允许写入文件。" />
+                </div>
+              </fieldset>
+            </section>
           </div>
-        </div>
-        <div className="runtime-card">
-          <div className="runtime-card-status">
-            <span className={'status-dot status-' + runtime.status} />
-            <strong>{runtimeLabel(runtime.status)}</strong>
-            <span className="runtime-version">版本 {runtime.version || '未知'}</span>
+          {(globalSaveState === 'saving' || globalSaveState === 'saved' || globalSaveState === 'error') && (
+            <div className="settings-autosave-row global-default-save-status">
+              <AutoSaveIndicator state={globalSaveState} error={globalSaveError} />
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeTab === 'resources' && (
+        <section className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-resources" aria-labelledby="system-tab-resources">
+          <div className="settings-section-title">
+            <div>
+              <h2>全局可选目录</h2>
+              <p>这里决定所有 Bot 能看见哪些资源。目录旁的开关只用于之后新建 Bot 的初始状态；已有 Bot 的开关保持独立。</p>
+              <p>首次使用 Playwright 时运行 Chrome 连接检查，并在扩展页确认一个标签。检查只读取一次页面快照，不保存标题、地址或正文；Bot 实际使用时若扩展再次请求授权或选择标签，需在 Chrome 完成确认。</p>
+            </div>
           </div>
-          {runtime.error && <div className="runtime-error">{runtime.error}</div>}
-          <button type="button" className="secondary-button" disabled={busy || runtime.status === 'starting'}
-            onClick={() => void restart()}>
-            {busy ? '处理中…' : '重启运行时'}
-          </button>
-        </div>
-      </div>
-      {(error || notice) && (
-        <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-          {error ?? notice}
+          <div className="resource-import-actions">
+            <button type="button" className="secondary-button"
+              disabled={importingSkill}
+              onClick={() => void importSkill()}>
+              {importingSkill ? '正在导入…' : '导入本地 Skill'}
+            </button>
+            <button type="button" className="secondary-button"
+              aria-expanded={mcpFormOpen}
+              onClick={() => {
+                setResourceImportError(null);
+                setMcpFormOpen(value => !value);
+              }}>
+              {mcpFormOpen ? '收起直连 MCP' : '添加直连 MCP'}
+            </button>
+          </div>
+          {resourceImportNotice && (
+            <div className="form-saved settings-message" role="status">{resourceImportNotice}</div>
+          )}
+          {resourceImportError && (
+            <div className="form-error settings-message" role="alert">{resourceImportError}</div>
+          )}
+          {mcpFormOpen && (
+            <form className="direct-mcp-form" onSubmit={event => {
+              event.preventDefault();
+              void addMcp();
+            }}>
+              <div className="direct-mcp-form-heading">
+                <div>
+                  <h3>添加直连 MCP</h3>
+                  <p>只保存连接定义，不下载或安装服务器软件。headers 与环境变量值会使用应用本地密钥加密保存，保存后不再回显。</p>
+                </div>
+              </div>
+              <div className="direct-mcp-form-grid">
+                <label className="settings-field">
+                  <span>名称</span>
+                  <input className="text-input" required value={mcpName}
+                    placeholder="例如 local-files"
+                    onChange={event => setMcpName(event.target.value)} />
+                </label>
+                <label className="settings-field">
+                  <span>说明（可选）</span>
+                  <input className="text-input" value={mcpDescription}
+                    placeholder="显示在全局资源目录中"
+                    onChange={event => setMcpDescription(event.target.value)} />
+                </label>
+              </div>
+              <label className="settings-field">
+                <span>连接方式</span>
+                <span className="select-input-control">
+                  <select className="text-input select-input" value={mcpTransport}
+                    onChange={event => setMcpTransport(event.target.value as 'stdio' | 'http')}>
+                    <option value="stdio">stdio · 本机命令</option>
+                    <option value="http">HTTP · 远程地址</option>
+                  </select>
+                  <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+                </span>
+              </label>
+              {mcpTransport === 'stdio' ? (
+                <>
+                  <label className="settings-field">
+                    <span>Command</span>
+                    <input className="text-input" required value={mcpCommand}
+                      placeholder="例如 /usr/local/bin/my-mcp-server"
+                      onChange={event => setMcpCommand(event.target.value)} />
+                  </label>
+                  <label className="settings-field">
+                    <span>参数（每行一个）</span>
+                    <textarea className="text-input settings-textarea" rows={3} value={mcpArgs}
+                      placeholder={'--root\n/Users/me/Documents'}
+                      onChange={event => setMcpArgs(event.target.value)} />
+                  </label>
+                  <label className="settings-field">
+                    <span>工作目录（可选）</span>
+                    <input className="text-input" value={mcpCwd}
+                      onChange={event => setMcpCwd(event.target.value)} />
+                  </label>
+                  <label className="settings-field">
+                    <span>环境变量 JSON（可选）</span>
+                    <textarea className="text-input settings-textarea" rows={3} value={mcpEnv}
+                      placeholder={'{"API_KEY":"仅加密保存"}'}
+                      onChange={event => setMcpEnv(event.target.value)} />
+                    <small className="field-hint">值不会进入产品 Store、快照或普通日志。</small>
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="settings-field">
+                    <span>URL</span>
+                    <input className="text-input" required value={mcpUrl}
+                      placeholder="https://example.com/mcp"
+                      onChange={event => setMcpUrl(event.target.value)} />
+                  </label>
+                  <label className="settings-field">
+                    <span>HTTP headers JSON（可选）</span>
+                    <textarea className="text-input settings-textarea" rows={3} value={mcpHeaders}
+                      placeholder={'{"Authorization":"仅加密保存"}'}
+                      onChange={event => setMcpHeaders(event.target.value)} />
+                    <small className="field-hint">不要在 URL 中嵌入账号或密码。</small>
+                  </label>
+                </>
+              )}
+              <div className="direct-mcp-form-actions">
+                <button type="button" className="secondary-button" disabled={mcpSaving}
+                  onClick={() => setMcpFormOpen(false)}>取消</button>
+                <button type="submit" className="primary-button"
+                  disabled={mcpSaving || !mcpName.trim() ||
+                    (mcpTransport === 'stdio' ? !mcpCommand.trim() : !mcpUrl.trim())}>
+                  {mcpSaving ? '正在保存…' : '保存到全局可选目录'}
+                </button>
+              </div>
+            </form>
+          )}
+          <ResourceRows
+            resources={resources.filter(resource => globalResourceIds.includes(resource.id))}
+            enabledIds={globalDefaultResourceIds}
+            onToggle={onSetGlobalDefaultResource}
+            detail={resource => {
+              const server = directMcpServers.find(item =>
+                `mcp:${item.name.toLocaleLowerCase()}` === resource.id);
+              if (!server) return null;
+              const secretKeys = [...server.headerKeys, ...server.envKeys];
+              return (
+                <span className="direct-mcp-meta">
+                  {server.transport === 'stdio'
+                    ? `stdio · ${server.command}`
+                    : `http · ${server.url}`}
+                  {secretKeys.length ? ` · 已有安全凭证：${secretKeys.join('、')}` : ''}
+                </span>
+              );
+            }}
+            onDelete={resource => {
+              const server = directMcpServers.find(item =>
+                `mcp:${item.name.toLocaleLowerCase()}` === resource.id);
+              if (!server) return;
+              setMcpBusyId(resource.id);
+              setResourceImportError(null);
+              setResourceImportNotice(null);
+              void onDeleteDirectMcp(server.id)
+                .then(() => setResourceImportNotice(`已删除直连 MCP ${server.name} 的定义。`))
+                .catch(issue => setResourceImportError(toError(issue)))
+                .finally(() => setMcpBusyId(null));
+            }}
+            canDelete={resource => directMcpServers.some(server =>
+              `mcp:${server.name.toLocaleLowerCase()}` === resource.id)}
+            deleteLabel="删除定义"
+            action={resource => (
+              <>
+                {resource.id === 'mcp:playwright' && (
+                  <div className="playwright-resource-setup">
+                    <span className={playwrightVerificationError ? 'playwright-setup-error' : ''}
+                      role={playwrightVerificationError ? 'alert' : 'status'}>
+                      {playwrightVerifying
+                        ? playwrightProgress || '正在等待 Chrome 标签页…'
+                        : playwrightVerificationError
+                          ? playwrightVerificationError
+                          : playwrightProgress || (playwrightVerifiedAt
+                            ? '最近一次 Chrome 连接检查已通过'
+                            : '尚未验证 Chrome 扩展连接')}
+                    </span>
+                    <button type="button" className="secondary-button resource-action"
+                      onClick={() => void (playwrightVerifying
+                        ? cancelPlaywrightConnectionVerification()
+                        : verifyPlaywrightConnection())}>
+                      {playwrightVerifying ? '取消验证' : '验证 Chrome 连接'}
+                    </button>
+                  </div>
+                )}
+                <button type="button" className="secondary-button resource-action"
+                  disabled={playwrightVerifying || mcpBusyId === resource.id}
+                  onClick={() => void onSetGlobalResource(resource.id, false)}>
+                  移出可选
+                </button>
+                {directMcpServers.some(server =>
+                  `mcp:${server.name.toLocaleLowerCase()}` === resource.id) && (
+                  <>
+                    {(() => {
+                      const server = directMcpServers.find(item =>
+                        `mcp:${item.name.toLocaleLowerCase()}` === resource.id)!;
+                      return (
+                        <button type="button" className="secondary-button resource-action"
+                          disabled={mcpBusyId === resource.id}
+                          onClick={() => {
+                            setMcpBusyId(resource.id);
+                            setResourceImportError(null);
+                            setResourceImportNotice(null);
+                            void onSetDirectMcpEnabled(server.id, !server.enabled)
+                              .then(updated => setResourceImportNotice(
+                                `已${updated.enabled ? '启用' : '停用'}直连 MCP ${updated.name} 的定义。`))
+                              .catch(issue => setResourceImportError(toError(issue)))
+                              .finally(() => setMcpBusyId(null));
+                          }}>
+                          {server.enabled ? '停用定义' : '启用定义'}
+                        </button>
+                      );
+                    })()}
+                  </>
+                )}
+              </>
+            )} />
+          <section className="resource-discovery">
+            <button type="button" className="resource-discovery-toggle"
+              aria-expanded={discoverOpen}
+              onClick={() => setDiscoverOpen(value => !value)}>
+              <span>发现目录</span>
+              <span>{resources.filter(resource => !globalResourceIds.includes(resource.id)).length} 项</span>
+              <Icon name="chevron" size={14} />
+            </button>
+            {discoverOpen && (
+              <div className="resource-discovery-body">
+                <label className="settings-field">
+                  <span>搜索资源</span>
+                  <input className="text-input" value={resourceQuery}
+                    placeholder="名称、说明、来源或类型"
+                    onChange={event => setResourceQuery(event.target.value)} />
+                </label>
+                <ResourceRows
+                  resources={resources.filter(resource =>
+                    !globalResourceIds.includes(resource.id) &&
+                    (!resourceQuery.trim() || [
+                      resource.name, resource.description, resource.source,
+                      RESOURCE_KIND_LABELS[resource.kind]
+                    ].some(value => value.toLocaleLowerCase().includes(resourceQuery.trim().toLocaleLowerCase()))))}
+                  action={resource => (
+                    <button type="button" className="secondary-button resource-action"
+                      onClick={() => void onSetGlobalResource(resource.id, true)}>
+                      加入可选目录
+                    </button>
+                  )} />
+              </div>
+            )}
+          </section>
+        </section>
+      )}
+
+      {activeTab === 'routines' && (
+        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-routines" aria-labelledby="system-tab-routines">
+          <RoutineListPage routines={routines} runs={runs} bots={bots}
+            onSetRoutineStatus={onSetRoutineStatus} onRunRoutineNow={onRunRoutineNow}
+            onStopRoutineRun={onStopRoutineRun} />
         </div>
       )}
+
     </section>
   );
 }

@@ -17,10 +17,10 @@ function copyProjectForValidator() {
     'tests/acceptance/validate-catalog.mjs',
     'tests/backend/bot-data.test.mjs',
     'tests/backend/chat-list-model.test.mjs',
-    'tests/backend/group-composer-settings.test.mjs',
     'tests/backend/host.test.mjs',
     'tests/backend/management-actions.test.mjs',
     'tests/backend/store.test.mjs',
+    'tests/e2e/media-preview.spec.mjs',
     'tests/e2e/private-chat.spec.mjs',
     'tests/e2e/group-chat.spec.mjs'
   ]) {
@@ -36,15 +36,15 @@ function validate(rootDirectory) {
   });
 }
 
-test('the catalog covers all 113 rules without treating unimplemented gaps as passing tests', () => {
+test('the catalog covers every confirmed rule without treating unimplemented gaps as passing tests', () => {
+  const catalog = JSON.parse(readFileSync(join(root, 'tests/acceptance/catalog.json'), 'utf8'));
+  const ruleCount = catalog.ruleAcceptance.length;
   const result = validate(root);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /"rules": 113/);
-  assert.match(result.stdout, /"acceptancePlans": 113/);
-  assert.match(result.stdout, /"acceptanceScenarios": 113/);
-  assert.match(result.stdout, /"mappedRules": 113/);
-  const catalog = JSON.parse(readFileSync(join(root, 'tests/acceptance/catalog.json'), 'utf8'));
-  assert.equal(catalog.ruleAcceptance.length, 113);
+  assert.match(result.stdout, new RegExp(`"rules": ${ruleCount}`));
+  assert.match(result.stdout, new RegExp(`"acceptancePlans": ${ruleCount}`));
+  assert.match(result.stdout, new RegExp(`"acceptanceScenarios": ${ruleCount}`));
+  assert.match(result.stdout, new RegExp(`"mappedRules": ${ruleCount}`));
   assert.ok(catalog.ruleAcceptance.every(item =>
     item.scenarios.length > 0 &&
     item.scenarios.every(scenario => scenario.steps.length >= 2) &&
@@ -59,7 +59,7 @@ test('the catalog covers all 113 rules without treating unimplemented gaps as pa
 test('every acceptance plan keeps concrete steps for every matrix rule', () => {
   const catalog = JSON.parse(readFileSync(join(root, 'tests/acceptance/catalog.json'), 'utf8'));
   const accepted = new Set(catalog.ruleAcceptance.map(item => item.rule));
-  assert.equal(accepted.size, 113);
+  assert.equal(accepted.size, catalog.ruleAcceptance.length);
   for (const item of catalog.ruleAcceptance) {
     const scenario = item.scenarios[0];
     assert.ok(scenario.steps.length >= 2, `${item.rule} 只有泛化步骤`);
@@ -197,21 +197,23 @@ test('the catalog keeps the current implementation boundary explicit', () => {
     .concat(catalog.releaseSuites.flatMap(item => item.rules))
     .filter(rule => !implementedRules.has(rule)));
 
-  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 84);
-  assert.equal(catalog.cases.filter(item => item.status === 'not_implemented').length, 89);
-  assert.equal(implementedRules.size, 39);
-  assert.equal(uncoveredRules.size, 74);
+  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 109);
+  assert.ok(catalog.cases.filter(item => item.status === 'not_implemented').length >=
+    new Set(catalog.cases.filter(item => item.status === 'not_implemented').flatMap(item => item.rules)).size);
+  assert.equal(implementedRules.size, 49);
+  assert.ok([...uncoveredRules].every(rule => anyGapRules.has(rule)),
+    'Every rule without implemented evidence must have an explicit gap case');
   assert.deepEqual(
     [...implementedRules].filter(rule => anyGapRules.has(rule)).sort(),
-    ['A01', 'A02', 'A04', 'A05', 'B05', 'B06', 'B08', 'B09', 'B10', 'B12', 'B13', 'G01', 'O01', 'P03', 'R13'].sort(),
+    ['A01', 'A02', 'A04', 'A05', 'B05', 'B06', 'B08', 'B09', 'B10', 'B12', 'B13', 'G01', 'O01', 'P03', 'R11', 'R13', 'R16', 'R17', 'S02', 'V01', 'V07'].sort(),
     '只有部分证据的规则必须同时保留显式缺口'
   );
   assert.deepEqual(
     [...implementedRules].filter(rule => !anyGapRules.has(rule)).sort(),
     [
-      'B01', 'B02', 'B03', 'B04', 'B07', 'G02', 'G03', 'G04',
+      'B01', 'B02', 'B03', 'B04', 'B07', 'F05', 'G02', 'G03', 'G04', 'G13',
       'M01', 'M02', 'M03', 'M04', 'M05', 'P01',
-      'R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R11', 'R14', 'R16', 'T02'
+      'O04', 'R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R14', 'T02', 'T19', 'T20', 'T35'
     ].sort(),
     '当前已有实现证据但没有显式缺口的规则范围必须明确'
   );

@@ -1,8 +1,14 @@
 import { EventEmitter } from 'node:events';
-import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { constants, createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { access, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import { prepareRuntimeHome } from './runtime-home';
 import type { RuntimeState } from '../shared/contracts';
 
 interface RequestOutcome<T> { result?: T; error?: Error }
@@ -24,6 +30,157 @@ export type RuntimeProcessSpawner = (
   options: SpawnOptionsWithoutStdio
 ) => ChildProcessWithoutNullStreams;
 
+export type RuntimeLayout = {
+  binary: string;
+  pathDirectory: string;
+  version: string;
+  source: 'native' | 'cache';
+};
+
+export type RuntimeResolverDeps = {
+  homeDirectory?: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+  exists?: (path: string) => boolean;
+  isExecutable?: (path: string) => Promise<boolean>;
+  download?: (version: string, destination: string) => Promise<string>;
+  now?: () => number;
+  nativeCodexHome?: string;
+  ownedThreadIds?: () => readonly string[];
+};
+
+const DEFAULT_RUNTIME_VERSION = '0.164.0';
+const RUNTIME_ARCHIVE_SHA256 = '7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0';
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => (value.match(/^\d+\.\d+\.\d+/) ?? [value])[0]
+    .split('.').map(Number);
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+async function isExecutable(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readManagedRuntime(
+  candidate: string,
+  deps: RuntimeResolverDeps,
+  source: RuntimeLayout['source']
+): RuntimeLayout | null {
+  const manifestPath = join(candidate, 'codex-package.json');
+  if (!(deps.exists ?? existsSync)(manifestPath)) return null;
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const version = String(manifest.version ?? '');
+    const binaryName = basename(String(manifest.entrypoint ?? 'bin/codex'));
+    const binary = join(candidate, String(manifest.entrypoint ?? 'bin/codex'));
+    const pathDirectory = join(candidate, String(manifest.pathDir ?? 'codex-path'));
+    if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
+    if (binaryName !== 'codex-app-server' && !(source === 'native' && binaryName === 'codex')) return null;
+    return { binary, pathDirectory, version, source };
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveRuntimeLayout(
+  resourceRoot: string,
+  storeDirectory: string,
+  deps: RuntimeResolverDeps = {}
+): Promise<RuntimeLayout> {
+  const home = deps.homeDirectory ?? homedir();
+  const managedRoot = join(deps.nativeCodexHome ?? (deps.homeDirectory ? join(home, '.codex') : process.env.CODEX_HOME || join(home, '.codex')), 'packages/app-server-daemon/releases');
+  const cacheRoot = join(storeDirectory, 'runtime/codex');
+  const candidates: Array<{ root: string; source: 'native' | 'cache' }> = [];
+  if (deps.exists ? deps.exists(managedRoot) : existsSync(managedRoot)) {
+    const entries = await readDirectory(managedRoot);
+    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
+      candidates.push({ root: join(managedRoot, entry), source: 'native' });
+    }
+  }
+  if (deps.exists ? deps.exists(cacheRoot) : existsSync(cacheRoot)) {
+    const entries = await readDirectory(cacheRoot);
+    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
+      candidates.push({ root: join(cacheRoot, entry), source: 'cache' });
+    }
+  }
+  const packaged = join(resourceRoot, 'runtime/codex');
+  if (deps.exists ? deps.exists(packaged) : existsSync(packaged)) {
+    const entries = await readDirectory(packaged);
+    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
+      candidates.push({ root: join(packaged, entry), source: 'cache' });
+    }
+  }
+  for (const candidate of candidates) {
+    const layout = readManagedRuntime(candidate.root, deps, candidate.source);
+    if (!layout) continue;
+    const executable = deps.isExecutable ?? isExecutable;
+    if (!(await executable(layout.binary))) continue;
+    return layout;
+  }
+  const version = DEFAULT_RUNTIME_VERSION;
+  const destination = join(cacheRoot, version);
+  const download = deps.download ?? downloadRuntime;
+  await download(version, destination);
+  const layout = readManagedRuntime(destination, deps, 'cache');
+  if (!layout) throw new Error(`下载的 Codex 运行时布局无效：${destination}`);
+  return layout;
+}
+
+async function readDirectory(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch {
+    return [];
+  }
+}
+
+async function downloadRuntime(version: string, destination: string): Promise<string> {
+  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
+    throw new Error(`当前没有适用于 ${process.platform}-${process.arch} 的已校验 Codex 运行时`);
+  }
+  const expectedSha = version === DEFAULT_RUNTIME_VERSION ? RUNTIME_ARCHIVE_SHA256 : null;
+  if (!expectedSha) throw new Error(`没有可校验的 Codex 运行时版本：${version}`);
+  const temporary = await mkdtemp(join(tmpdir(), 'rambo-runtime-'));
+  try {
+    const archive = join(temporary, 'runtime.tar.gz');
+    const url = `https://github.com/openai/codex/releases/download/rust-v${version}/codex-app-server-package-aarch64-apple-darwin.tar.gz`;
+    const response = await fetch(url);
+    if (!response.ok || !response.body) throw new Error(`下载 Codex 运行时失败：${response.status}`);
+    await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), createWriteStream(archive));
+    const digest = createHash('sha256');
+    for await (const chunk of createReadStream(archive)) digest.update(chunk);
+    if (digest.digest('hex') !== expectedSha) throw new Error('Codex 运行时 SHA-256 不匹配');
+    const extracted = join(temporary, 'extracted');
+    await mkdir(extracted);
+    execFileSync('tar', ['-xzf', archive, '-C', extracted]);
+    if (!existsSync(join(extracted, 'codex-package.json'))) throw new Error('Codex 运行时归档布局无效');
+    await mkdir(dirname(destination), { recursive: true });
+    await rm(destination, { recursive: true, force: true });
+    await rename(extracted, destination);
+    await writeFile(join(destination, 'rambo-runtime.json'), JSON.stringify({
+      version,
+      sha256: expectedSha,
+      source: `openai/codex rust-v${version}`,
+      sessionSource: 'app-server'
+    }, null, 2));
+    return destination;
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
 function requestError(message: string, outcomeUnknown = false): Error {
   const error = new Error(message) as Error & { outcomeUnknown?: boolean };
   error.outcomeUnknown = outcomeUnknown;
@@ -35,7 +192,7 @@ function responseError(error: any): Error {
 }
 
 export class CodexRuntime extends EventEmitter {
-  state: RuntimeState = { status: 'stopped', version: '0.163.0', error: null };
+  state: RuntimeState = { status: 'stopped', version: '', error: null };
   private process: ChildProcessWithoutNullStreams | null = null;
   private pending = new Map<number, Pending>();
   private lateResponses = new Map<number, (outcome: RequestOutcome<any>) => void>();
@@ -46,7 +203,8 @@ export class CodexRuntime extends EventEmitter {
   constructor(
     private readonly resourceRoot: string,
     private readonly workingDirectory: string,
-    private readonly spawnProcess: RuntimeProcessSpawner = spawn
+    private readonly spawnProcess: RuntimeProcessSpawner = spawn,
+    private readonly resolverDeps: RuntimeResolverDeps = {}
   ) { super(); }
 
   private setState(status: RuntimeState['status'], error: string | null = null): void {
@@ -72,16 +230,36 @@ export class CodexRuntime extends EventEmitter {
   }
 
   private async startProcess(): Promise<void> {
-    const root = join(this.resourceRoot, 'runtime/codex', this.state.version);
-    const binary = join(root, 'bin/codex-app-server');
-    if (!existsSync(binary)) {
-      const error = '缺少随包 Codex 运行时，请先执行 npm run runtime:prepare';
-      this.setState('error', error);
-      throw new Error(error);
+    let layout: RuntimeLayout;
+    try {
+      layout = await resolveRuntimeLayout(
+        this.resourceRoot,
+        this.workingDirectory,
+        this.resolverDeps
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setState('error', message);
+      throw error;
     }
-    const child = this.spawnProcess(binary, ['--listen', 'stdio://', '--session-source', 'app-server'], {
+    let codexHome: string;
+    try {
+      const nativeHome = this.resolverDeps.nativeCodexHome ?? (this.resolverDeps.homeDirectory
+        ? join(this.resolverDeps.homeDirectory, '.codex')
+        : process.env.CODEX_HOME || join(homedir(), '.codex'));
+      codexHome = await prepareRuntimeHome(nativeHome, this.workingDirectory, this.resolverDeps.ownedThreadIds?.());
+    } catch (error) {
+      this.setState('error', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    this.state = { ...this.state, version: layout.version };
+    const args = basename(layout.binary) === 'codex'
+      ? ['app-server', '--listen', 'stdio://']
+      : ['--listen', 'stdio://', '--session-source', 'app-server'];
+    args.push('-c', 'cli_auth_credentials_store="file"', '-c', `sqlite_home=${JSON.stringify(codexHome)}`);
+    const child = this.spawnProcess(layout.binary, args, {
       cwd: this.workingDirectory,
-      env: { ...process.env, PATH: `${join(root, 'codex-path')}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+      env: { ...process.env, CODEX_HOME: codexHome, CODEX_SQLITE_HOME: codexHome, PATH: `${layout.pathDirectory}:${process.env.PATH ?? '/usr/bin:/bin'}` },
       stdio: ['pipe', 'pipe', 'pipe']
     });
     this.process = child;

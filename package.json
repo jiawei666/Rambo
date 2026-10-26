@@ -5,8 +5,9 @@
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "node scripts/desktop.mjs dev",
-    "build": "electron-vite build",
+    "dev": "node scripts/build-native-media.mjs && node scripts/desktop.mjs dev",
+    "build": "electron-vite build && node scripts/build-native-media.mjs --copy",
+    "test:wechat-live": "node scripts/run-wechat-live-diagnostic.mjs",
     "typecheck": "tsc --noEmit",
     "check:changes": "node scripts/change-checks.mjs",
     "test:backend": "node --test tests/backend/*.test.mjs",
@@ -27,19 +28,26 @@
     "icon:prepare": "node scripts/prepare-icon.mjs",
     "package:mac": "npm run icon:prepare && npm run build && electron-builder --mac --dir"
   },
-  "dependencies": {
-    "react": "19.3.1",
-    "react-dom": "19.3.1"
-  },
   "devDependencies": {
     "@playwright/test": "1.64.1",
+    "@types/hark": "^1.2.5",
     "@types/node": "^24.0.0",
+    "@types/nodemailer": "^7.0.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "42.11.15",
     "electron-builder": "^26.0.0",
     "electron-vite": "6.0.0",
+    "ffmpeg-static": "5.3.0",
+    "mermaid": "12.2.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "rehype-highlight": "7.0.2",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
     "typescript": "^5.9.0",
     "vite": "^7.0.0"
   },
@@ -49,17 +57,23 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "out/**/*",
+      "assets/branding/tray-frames/*.png",
+      "src/renderer/vendor/agent-robot-avatar/LICENSE",
+      "src/renderer/vendor/agent-robot-avatar/UPSTREAM.md",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "runtime/codex",
-        "to": "runtime/codex"
+        "from": "out/media-tools",
+        "to": "media-tools"
       }
     ],
     "mac": {
       "icon": "assets/branding/app.icns",
       "category": "public.app-category.productivity",
+      "identity": null,
+      "hardenedRuntime": false,
+      "notarize": false,
       "target": [
         "dir"
       ],
@@ -67,5 +81,13 @@
         "NSMicrophoneUsageDescription": "Rambo 使用麦克风进行已启用的唤醒与 Codex Live 对话。"
       }
     }
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.15",
+    "hark": "^1.2.3",
+    "imapflow": "^2.9.1",
+    "mailparser": "^3.12.3",
+    "nodemailer": "^10.2.1",
+    "pdfjs-dist": "6.4.299"
   }
 }

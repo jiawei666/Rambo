@@ -15,11 +15,11 @@ description: 用分层自动测试和少量真实环境验证 Rambo 产品决策
 | 功能完成 | `npm run verify:feature -- --rules ...` | 当前功能规则的有效测试证据；可报告“功能当前可用” |
 | 定向回归 | `npm run verify:regression -- --issue ...` | 原问题及影响范围；不证明其他规则 |
 | 候选版本 | `npm run verify:candidate` | 全部自动测试、稳定 `.app` 和必要的真实依赖 smoke |
-| 发布验收 | `npm run accept:release` | 113 条规则、4 条核心旅程和发布套件完整审核 |
+| 发布验收 | `npm run accept:release` | 当前全部规则、4 条核心旅程和发布套件完整审核 |
 
-`tests/acceptance/catalog.json` 分成两层：`ruleAcceptance` 保存每条规则的完整用户场景、断言、证据要求和剩余工作；`cases` 只登记能产生局部证据的测试。两层不能混用。当前顶层边界是 4 条用户旅程 J1–J4 和 6 个发布套件；11 条 E 流程仅作为历史组合映射。
+`tests/acceptance/catalog.json` 分成两层：`ruleAcceptance` 保存每条规则的完整用户场景、断言、证据要求和剩余工作；`cases` 只登记能产生局部证据的测试。两层不能混用。当前顶层边界是 4 条用户旅程 J1–J4 和 7 个发布套件；11 条 E 流程仅作为历史组合映射。
 
-`tests/acceptance/rule-plans.mjs` 是 113 条完整场景的来源，`docs/acceptance-test-plan.md` 是可读计划。现有案例通过不等于整条规则通过；例如后端断言只能证明它实际检查的持久化或协议边界，不能替代真实 Electron、Live、外部服务或系统结论。
+`tests/acceptance/rule-plans.mjs` 是当前全部规则完整场景的来源，`docs/acceptance-test-plan.md` 是可读计划。规则数量以当前决策与矩阵编号集合为准（本轮为 142 条）。现有案例通过不等于整条规则通过；例如后端断言只能证明它实际检查的持久化或协议边界，不能替代真实 Electron、Live、外部服务或系统结论。
 
 ## 开始与分工
 

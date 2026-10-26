@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rambo · 圆脸头像预览</title>
+  <!-- Final avatar decision: one round face, no antenna, no hairstyles, colors only. -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1c1c1c;
+      background: #e8e7e3;
+      --pane: #fff;
+      --chrome: #fcfcfc;
+      --sidebar: #f5f5f5;
+      --elevated: #fff;
+      --hover: #1c1c1c0b;
+      --text: #1c1c1c;
+      --secondary: #1c1c1cad;
+      --tertiary: #1c1c1c85;
+      --border: #1c1c1c14;
+      --border-strong: #1c1c1c2e;
+      --accent: #1e86fc;
+      --face: #294983;
+      --shadow: #00000024;
+      font-size: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        color: #f4f4f4;
+        background: #171918;
+        --pane: #202220;
+        --chrome: #242624;
+        --sidebar: #1b1d1c;
+        --elevated: #292b29;
+        --hover: #ffffff0a;
+        --text: #f2f2f2;
+        --secondary: #f2f2f2a6;
+        --tertiary: #f2f2f27a;
+        --border: #ffffff14;
+        --border-strong: #ffffff32;
+        --shadow: #00000055;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { display: grid; min-height: 100vh; margin: 0; place-items: center; padding: 34px 24px 40px; }
+    button { color: inherit; font: inherit; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .app-window { display: grid; width: min(1120px, 100%); height: min(720px, calc(100vh - 74px)); min-height: 560px; overflow: hidden; grid-template-columns: 246px minmax(0, 1fr); border: 1px solid var(--border); border-radius: 13px; background: var(--pane); box-shadow: 0 24px 72px var(--shadow); }
+    .sidebar { display: flex; flex-direction: column; gap: 18px; padding: 21px 14px; background: var(--sidebar); }
+    .brand { display: flex; align-items: center; gap: 9px; padding: 0 7px; font-size: 14px; font-weight: 650; }
+    .brand-mark { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; background: #1c1c1c; color: white; font-size: 12px; }
+    .new-bot { min-height: 36px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--pane); text-align: left; padding: 0 11px; }
+    .side-label { padding: 8px 8px 2px; color: var(--tertiary); font-size: 11px; }
+    .bot-row { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px; border-radius: 8px; color: var(--secondary); font-size: 12px; }
+    .bot-row.active { background: var(--hover); color: var(--text); }
+    .bot-dot { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; background: var(--face); }
+    .chat { display: flex; min-width: 0; flex-direction: column; }
+    .chat-header { display: flex; height: 52px; align-items: center; gap: 9px; padding: 0 22px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; }
+    .chat-body { display: flex; flex: 1; flex-direction: column; justify-content: flex-end; gap: 13px; padding: 24px; }
+    .message { max-width: 60%; padding: 10px 13px; border-radius: 14px; background: var(--hover); color: var(--secondary); font-size: 12px; }
+    .message.user { align-self: flex-end; background: var(--text); color: var(--pane); }
+    .composer { height: 60px; margin: 0 22px 19px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--elevated); }
+    .scrim { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: #16171672; backdrop-filter: blur(2px); }
+    .picker { display: flex; width: min(520px, calc(100vw - 48px)); max-height: calc(100vh - 112px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--elevated); box-shadow: 0 20px 68px var(--shadow); }
+    .picker-header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px 16px; }
+    .picker-header h1 { margin: 0; font-size: 17px; font-weight: 620; line-height: 23px; }
+    .picker-header p { margin: 5px 0 0; color: var(--secondary); font-size: 12px; line-height: 18px; }
+    .close { width: 28px; height: 28px; flex: 0 0 28px; border: 0; border-radius: 7px; background: transparent; color: var(--secondary); cursor: pointer; font-size: 19px; line-height: 1; }
+    .close:hover { background: var(--hover); }
+    .picker-content { display: grid; min-height: 0; place-items: center; overflow: auto; padding: 2px 24px 25px; }
+    .preview-stage { display: flex; width: 100%; flex-direction: column; align-items: center; gap: 14px; padding: 20px 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--hover); text-align: center; }
+    .hero-avatar { width: 196px; height: 196px; }
+    .preview-copy h2 { margin: 0; font-size: 14px; font-weight: 600; }
+    .preview-copy p { margin: 5px 0 0; color: var(--secondary); font-size: 11px; line-height: 17px; }
+    .preview-copy .motion-note { margin-top: 7px; color: var(--tertiary); font-size: 10px; }
+    .motion-demo { min-height: 32px; margin-top: 12px; padding: 0 13px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--elevated); cursor: pointer; font-size: 12px; transition: background .18s ease, border-color .18s ease; }
+    .motion-demo:hover { background: var(--hover); }
+    .color-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-top: 4px; }
+    .color-cell { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; cursor: pointer; }
+    .color-cell.chosen { border-color: var(--border-strong); background: var(--pane); }
+    .color-swatch { display: block; width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 0 0 1px #00000012 inset; }
+    .picker-footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 24px; border-top: 1px solid var(--border); }
+    .preview-note { color: var(--tertiary); font-size: 11px; }
+    .footer-actions { display: flex; gap: 8px; }
+    .action { min-height: 32px; padding: 0 13px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--elevated); cursor: pointer; font-size: 12px; transition: background .18s ease, border-color .18s ease; }
+    .action:hover { background: var(--hover); }
+    .action.primary { border-color: var(--text); background: var(--text); color: var(--pane); }
+    .action.primary:hover { opacity: .86; }
+    agent-robot-avatar { display: block; overflow: visible; }
+    .toast { position: fixed; z-index: 4; right: 22px; bottom: 24px; max-width: min(380px, calc(100vw - 44px)); padding: 10px 14px; transform: translateY(8px); border: 1px solid var(--border); border-radius: 9px; background: var(--elevated); box-shadow: 0 8px 28px var(--shadow); color: var(--text); font-size: 12px; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+    .toast.visible { transform: translateY(0); opacity: 1; }
+    @media (max-width: 760px) {
+      body { padding: 12px 10px 24px; }
+      .app-window { height: calc(100vh - 24px); min-height: 500px; grid-template-columns: 54px minmax(0, 1fr); }
+      .sidebar { align-items: center; padding: 16px 6px; }
+      .brand { padding: 0; }
+      .brand-name, .new-bot, .side-label, .bot-row span:last-child { display: none; }
+      .bot-row { padding: 0; }
+      .picker { width: calc(100vw - 22px); max-height: calc(100vh - 40px); }
+      .picker-header { padding: 18px 17px 13px; }
+      .picker-content { padding: 0 17px 17px; }
+      .picker-footer { align-items: flex-start; flex-direction: column; padding: 11px 17px; }
+      .hero-avatar { width: 160px; height: 160px; }
+      .footer-actions { width: 100%; justify-content: flex-end; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window" aria-hidden="true">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">R</span><span class="brand-name">Rambo</span></div>
+      <button class="new-bot" type="button">＋　新建 Bot</button>
+      <div class="side-label">你的 Bot</div>
+      <div class="bot-row active"><span class="bot-dot"></span><span>Rambo</span></div>
+      <div class="bot-row"><span class="bot-dot" style="background:#8f59f9"></span><span>研究助理</span></div>
+      <div class="bot-row"><span class="bot-dot" style="background:#14c16f"></span><span>日程管家</span></div>
+      <div class="side-label">最近</div>
+      <div class="bot-row"><span class="bot-dot" style="background:#fd690f"></span><span>写作伙伴</span></div>
+    </aside>
+    <section class="chat">
+      <header class="chat-header"><span class="bot-dot"></span>Rambo</header>
+      <div class="chat-body"><div class="message">今天有什么需要我帮忙？</div><div class="message user">帮我规划一下本周安排。</div></div>
+      <div class="composer"></div>
+    </section>
+  </div>
+  <div class="scrim">
+    <main class="picker" aria-label="圆脸头像选择原型">
+      <header class="picker-header">
+        <div><h1>Bot 外观</h1><p>固定圆脸 · 不带天线 · 只调整颜色</p></div>
+        <button class="close" type="button" aria-label="关闭预览">×</button>
+      </header>
+      <section class="picker-content" aria-label="圆脸头像预览">
+        <div class="preview-stage">
+          <agent-robot-avatar id="hero" class="hero-avatar" data-avatar-role="hero"
+            aria-label="圆脸机器人头像"></agent-robot-avatar>
+          <div class="preview-copy">
+            <h2>圆形 Bot</h2>
+            <p>圆脸与眼睛保留原有表情</p>
+            <p class="motion-note">鼠标跟随 · 头部与眼睛同步</p>
+            <button class="motion-demo" type="button" data-motion-demo>播放头部动作</button>
+          </div>
+          <div id="color-row" class="color-row" role="group" aria-label="Bot 颜色"></div>
+        </div>
+      </section>
+      <footer class="picker-footer"><span class="preview-note">仅作外观预览，不会创建或修改 Bot</span><div class="footer-actions"><button class="action" type="button" data-toast="已关闭本次预览，没有修改 Bot。">取消</button><button class="action primary" type="button" data-apply>完成预览</button></div></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module">
+    const colors = [
+      ['black', '黑色', '#08090b'], ['brown', '棕色', '#a06b39'], ['red', '红色', '#fb2b3e'],
+      ['orange', '橙色', '#fd690f'], ['yellow', '黄色', '#f59312'], ['green', '绿色', '#14c16f'],
+      ['cyan', '青色', '#13b7a2'], ['blue', '蓝色', '#1e86fc'], ['violet', '紫色', '#8f59f9'],
+      ['magenta', '洋红', '#f93498'], ['gray', '灰色', '#959595']
+    ];
+    const hero = document.querySelector('#hero');
+    const colorRow = document.querySelector('#color-row');
+    const toast = document.querySelector('#toast');
+    let selectedColor = colors[7];
+    let toastTimer;
+
+    function renderColors() {
+      colorRow.innerHTML = colors.map(([id, label, value]) =>
+        `<button class="color-cell${id === selectedColor[0] ? ' chosen' : ''}" type="button"
+          data-color="${id}" aria-label="${label}" aria-pressed="${id === selectedColor[0]}"
+          title="${label}"><span class="color-swatch" style="background:${value}"></span></button>`
+      ).join('');
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('visible');
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 2400);
+    }
+
+    function applyColor(color) {
+      selectedColor = color;
+      hero.setAttribute('color', color[2]);
+      renderColors();
+    }
+
+    await import('../vendor/agent-robot-avatar/agent-robot-avatar.js');
+    await customElements.whenDefined('agent-robot-avatar');
+
+    hero.setAttribute('size', '196');
+    hero.setAttribute('auto-sleep', '0');
+    hero.setAttribute('wake-on', 'manual');
+    hero.setAttribute('motion', 'auto');
+    hero.setAttribute('press-squeeze', 'false');
+    hero.setAttribute('antenna-drag', 'false');
+    hero.setPointerFollow(true);
+    hero.setPressSqueeze(false);
+    hero.setAntennaDrag(false);
+    hero.setHeadRoundness(100);
+    const noAntenna = document.createElement('style');
+    noAntenna.textContent = '#antennaDot{display:none!important;pointer-events:none!important}';
+    hero.shadowRoot.append(noAntenna);
+    applyColor(selectedColor);
+
+    colorRow.addEventListener('click', event => {
+      const cell = event.target.closest('[data-color]');
+      if (!cell) return;
+      applyColor(colors.find(([id]) => id === cell.dataset.color));
+    });
+    document.querySelector('[data-motion-demo]').addEventListener('click', () => hero.play('success'));
+    document.querySelector('[data-apply]').addEventListener('click', () => showToast(`预览颜色：${selectedColor[1]}。没有写入 Bot 配置。`));
+    document.querySelectorAll('[data-toast], .close').forEach(button => button.addEventListener('click', () => showToast('这是独立预览，没有修改 Bot。')));
+  </script>
+</body>
+</html>

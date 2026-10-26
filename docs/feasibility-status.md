@@ -10,7 +10,7 @@
 | 复用 Codex 登录接 Voice | WebRTC 创建路径复用当前 ChatGPT 认证；直接 WebSocket 音频路径仍有独立 API Key 限制 | 优先显式 WebRTC + V3/audio，通过 App Server 管理认证与侧带 | 源码路径成立，账号及通话未验证 |
 | 自然语言主动挂断 | Live 可委派普通 Codex 回合；普通回合可调用宿主动态工具；stop 不替客户端关媒体 | 用委派接挂断工具，Rambo 实际释放麦克风、播放与连接 | 需适配并运行验证，不回退关键词判断 |
 | 电脑控制 | 存在独立 Computer Use 服务/原生客户端；统一 REPL 有专用宿主和安装路径依赖 | 先核可使用的连接契约和组件来源；仅 App Server 不等于已拥有完整 Computer Use | 独立连接/分发仍阻塞 |
-| 原生默认历史不混入 | CLI 子命令固定 VSCode；独立 codex-app-server 支持来源参数；当前 CLI/桌面默认集合排除 AppServer 来源 | 优先上游独立 package，显式 session-source app-server，并维护自有 ID | 静态候选已收敛，实际执行仍未通过 |
+| 原生默认历史不混入 | 0.164.0 普通 CLI 子命令固定 VSCode；独立 codex-app-server 支持来源参数；当前 CLI/桌面默认集合排除 AppServer 来源 | 可复用本机 CLI 二进制并启动独立子进程，但仅当该入口可设置专属来源；当前 0.164.0 不兼容，暂用独立入口 | 静态候选已收敛，实际执行仍未通过 |
 | 自有会话完整备份 | 有读取/恢复，但未找到稳定通用的成对完整导出导入 API；部分 history/path 字段不宜当公开稳定接口 | 备份必须包含可继续模型上下文的材料，而非只有 UI 文本 | O03 完整恢复仍待设计及验证 |
 
 第二轮收敛见 [历史隔离方案](history-isolation-plan.md)，已找到上游独立发行物条目，不再以“先修改源码或换数据目录”为首选。

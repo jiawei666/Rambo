@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+native/wechat-silk-decoder/target/
 .DS_Store
 .playwright-mcp/
 runtime/codex/

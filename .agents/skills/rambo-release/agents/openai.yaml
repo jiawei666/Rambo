@@ -1,0 +1,6 @@
+interface:
+  display_name: "打包并发布 Rambo"
+  short_description: "校验、打包 macOS 应用并创建 GitHub Release 与版本 tag"
+  default_prompt: "使用 $rambo-release，为 Rambo 构建可上传产物、提交版本、创建 GitHub tag 和 Release，并核验发布结果。"
+policy:
+  allow_implicit_invocation: false
