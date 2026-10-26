@@ -1,6 +1,6 @@
 {
   "name": "rambo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",

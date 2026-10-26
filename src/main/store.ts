@@ -1589,16 +1589,23 @@ export class Store {
     name: string; description: string; enabled: boolean;
     transport: 'stdio' | 'http'; command: string | null; args: string[];
     cwd: string | null; url: string | null; credentialRef: string | null;
-    headers: Record<string, string>; env: Record<string, string>;
+    headers?: Record<string, string>; env?: Record<string, string>;
   }): ReturnType<Store['directMcpServers']>[number] {
     if (!this.directMcpServer(id)) throw new Error('MCP Server 不存在');
+    const headerKeys = input.headers === undefined
+      ? null
+      : JSON.stringify(Object.keys(input.headers).sort());
+    const envKeys = input.env === undefined
+      ? null
+      : JSON.stringify(Object.keys(input.env).sort());
     this.db.prepare(`UPDATE direct_mcp_servers SET
       name=?,description=?,transport=?,command=?,argsJson=?,cwd=?,url=?,
-      credentialRef=?,headerKeysJson=?,envKeysJson=?,enabled=?,updatedAt=? WHERE id=?`).run(
+      credentialRef=?,headerKeysJson=COALESCE(?,headerKeysJson),
+      envKeysJson=COALESCE(?,envKeysJson),enabled=?,updatedAt=? WHERE id=?`).run(
       input.name, input.description, input.transport, input.command,
       JSON.stringify(input.args), input.cwd, input.url, input.credentialRef,
-      JSON.stringify(Object.keys(input.headers).sort()),
-      JSON.stringify(Object.keys(input.env).sort()),
+      headerKeys,
+      envKeys,
       Number(input.enabled), now(), id
     );
     return this.directMcpServer(id)!;

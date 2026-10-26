@@ -254,8 +254,9 @@ export class DirectMcpRegistry {
       cwd: current.cwd,
       url: current.url,
       credentialRef: current.credentialRef,
-      headers: Object.fromEntries(current.headerKeys.map(key => [key, ''])),
-      env: Object.fromEntries(current.envKeys.map(key => [key, '']))
+      // Omit secret fields so the stored credential remains untouched.
+      headers: undefined,
+      env: undefined
     });
   }
 

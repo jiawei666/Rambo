@@ -36,7 +36,7 @@ function fakeCredentials() {
     records: new Map(),
     next: 0,
     save(_id, payload) {
-      const reference = `safe:${String(++this.next).padStart(8, '0')}-0000-4000-8000-000000000000`;
+      const reference = `db:${String(++this.next).padStart(8, '0')}-0000-4000-8000-000000000000`;
       this.records.set(reference, structuredClone(payload));
       return reference;
     },
@@ -93,7 +93,7 @@ test('stdio MCP keeps headers and environment values only in secure storage', as
 
     assert.equal(added.name, 'local-files');
     assert.deepEqual(added.envKeys, ['API_TOKEN']);
-    assert.match(added.credentialRef, /^safe:/u);
+    assert.match(added.credentialRef, /^db:/u);
     assert.equal(JSON.stringify(store.directMcpServers()).includes('env-secret-value'), false);
     assert.deepEqual(credentials.load(added.credentialRef), {
       kind: 'mcp-secrets',
@@ -159,6 +159,7 @@ test('MCP enable toggles preserve secrets and deletion removes the opaque creden
     const enabled = registry.setEnabled(added.id, true);
     assert.equal(enabled.enabled, true);
     assert.equal(credentials.load(enabled.credentialRef).env.TOKEN, 'keep-me');
+    assert.deepEqual(enabled.envKeys, ['TOKEN']);
 
     const updated = registry.update(added.id, {
       name: 'toggle-server',

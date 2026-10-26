@@ -244,7 +244,7 @@ async function withCredentialHost(run) {
       records: new Map(),
       next: 0,
       save(connectionId, payload) {
-        const reference = `safe:${String(++this.next).padStart(8, '0')}-0000-4000-8000-000000000000`;
+        const reference = `db:${String(++this.next).padStart(8, '0')}-0000-4000-8000-000000000000`;
         this.records.set(reference, structuredClone(payload));
         return reference;
       },
@@ -436,7 +436,7 @@ test('a granted WeChat connection exposes its tools to newly started private, gr
       displayName: '本机微信',
       accountLabel: 'WeChat account',
       authKind: 'credentials',
-      credentialRef: 'safe:wechat-thread-start',
+      credentialRef: 'db:wechat-thread-start',
       capabilities: {
         'wechat.sessions': 'ready',
         'wechat.messages': 'ready',
@@ -832,7 +832,7 @@ test('mail tools are present only in private chats while the connection director
       displayName: '工作 QQ 邮箱',
       accountLabel: 'owner@qq.com',
       authKind: 'credentials',
-      credentialRef: 'safe:9e2aa59b-977a-4bb8-8ce0-24dd7fe29e9c'
+      credentialRef: 'db:9e2aa59b-977a-4bb8-8ce0-24dd7fe29e9c'
     });
     store.setConnectorGrant(owner.bot.id, connection.id, true);
 
@@ -908,7 +908,7 @@ test('a mail grant change keeps the Bot private thread and re-checks access at c
       displayName: 'Mail',
       accountLabel: 'owner@gmail.com',
       authKind: 'oauth-desktop',
-      credentialRef: 'safe:c743497d-4222-43a2-956f-3d2dd5828ddb'
+      credentialRef: 'db:c743497d-4222-43a2-956f-3d2dd5828ddb'
     });
     store.setConnectorGrant(bot.id, connection.id, true);
 
@@ -1637,7 +1637,7 @@ test('Bot credential saving is private-chat-only, verified, persists only refere
     assert.equal(connection.providerId, 'qqmail');
     assert.equal(connection.accountLabel, 'person@qq.com');
     assert.deepEqual(verified, [connection.id]);
-    assert.equal(store.connectorCredentialRef(connection.id).startsWith('safe:'), true);
+    assert.equal(store.connectorCredentialRef(connection.id).startsWith('db:'), true);
     assert.equal(JSON.stringify(store.connectorConnections()).includes(secret), false);
     assert.equal(JSON.stringify(store.messages(first.chat.id)).includes(secret), false);
     assert.equal(JSON.stringify(store.messages(second.chat.id)).includes(secret), false);
@@ -1688,7 +1688,7 @@ test('credential verification failure writes nothing and credential updates pres
     const records = new Map();
     const credentials = {
       save(_connectionId, payload) {
-        const reference = 'safe:11111111-1111-4111-8111-111111111111';
+        const reference = 'db:11111111-1111-4111-8111-111111111111';
         records.set(reference, structuredClone(payload));
         return reference;
       },

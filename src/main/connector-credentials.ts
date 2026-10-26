@@ -120,9 +120,6 @@ export class ConnectorCredentials implements ConnectorCredentialStore {
   }
 
   replace(reference: string, payload: ConnectorCredentialPayload): void {
-    if (/^safe:[a-f0-9-]{36}$/u.test(reference)) {
-      throw new ConnectorCredentialsError('旧版连接凭证需要重新授权');
-    }
     validatePayload(payload);
     if (!this.cipher.available()) {
       throw new ConnectorCredentialsError('本机凭证存储不可用，未保存连接凭证');
@@ -142,9 +139,6 @@ export class ConnectorCredentials implements ConnectorCredentialStore {
   }
 
   load(reference: string): ConnectorCredentialPayload {
-    if (/^safe:[a-f0-9-]{36}$/u.test(reference)) {
-      throw new ConnectorCredentialsError('旧版连接凭证需要重新授权');
-    }
     validateReference(reference);
     const row = this.db.prepare(
       'SELECT body FROM connector_credentials WHERE reference=?'

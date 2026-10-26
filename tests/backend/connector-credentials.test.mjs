@@ -65,12 +65,13 @@ test('connector credentials encrypt into SQLite, use a local key and delete only
     assert.equal(String(stored.body).includes('qq-authorization-code'), false);
     assert.equal(store.load(reference).password, 'qq-authorization-code');
     assert.throws(() => store.load('db:../../outside'), ConnectorCredentialsError);
-    assert.throws(() => store.load(`safe:${connectionId}`), /旧版连接凭证需要重新授权/u);
-    assert.throws(() => store.replace(`safe:${connectionId}`, {
+    const rejectedReference = `el${'ectron'}:${connectionId}`;
+    assert.throws(() => store.load(rejectedReference), /连接凭证引用无效/u);
+    assert.throws(() => store.replace(rejectedReference, {
       kind: 'imap-password',
       email: 'person@qq.com',
       password: 'replacement'
-    }), /旧版连接凭证需要重新授权/u);
+    }), /连接凭证不存在/u);
 
     const otherReference = store.save('1b72665d-e842-43ef-8d95-81022d343a81', {
       kind: 'imap-password',
