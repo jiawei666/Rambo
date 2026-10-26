@@ -3228,3 +3228,45 @@ T01 的共享技能目录与逐 Bot 启用、T02 的新 Bot 不自动获得额�
 替代关系：Q150 中“Electron `safeStorage`/Keychain”及 Q153 中“系统安全存储”的底层描述由 Q154 覆盖；保存授权、脱敏和验证流程仍继续有效。
 
 验证边界：本机自动测试可证明 AES-GCM 加解密、重启回读、SQLite/密钥文件权限、明文中不落库、旧引用拒绝和 Gmail 刷新；真实 macOS 安装包仍需验证首次使用不再弹 Keychain 密码，通知是否出现仍由系统通知中心观察。拥有用户目录权限的恶意本地进程不在本地文件加密的防护承诺内。
+
+<a id="q155"></a>
+
+## Q155：Gmail 新连接改用 Google App Password
+
+日期：2026-10-26。状态：用户明确说明 Gmail 不走 OAuth，希望像 QQ 邮箱一样生成专用凭证并填写连接。
+
+用户原话：
+
+> 意思是不要走oauth 像QQ邮箱一样，获取类似授权码的东西，填上来就好了。
+
+生效规则：
+
+- Gmail 新连接使用 Google App Password（应用专用密码），以 Gmail IMAP 读取/搜索/下载附件/保存草稿，以 SMTP 回复和发送；不再显示 OAuth Client ID/Secret，不启动 OAuth 浏览器授权，不要求用户创建 Google Cloud 项目。
+- 连接弹窗提供连接名称、Gmail 邮箱地址和密码框，并说明开启两步验证后从 Google 账号的“应用专用密码”页面生成；应用专用密码不是 Google 账号登录密码。Google 账号安全密钥专用的两步验证、工作/学校组织策略或 Advanced Protection 可能使该入口不可用；修改 Google 账号主密码后，Google 会撤销应用专用密码。
+- 应用专用密码按 T20/T24 使用本机应用 AES-256-GCM 加密存储，验证 IMAP 与 SMTP 成功后才创建连接。为兼容已有本机数据，已保存的 OAuth-token Gmail Connection 仍可由旧 Adapter 读取；新的连接界面和凭证 Tool 不再创建 OAuth-token。
+- Gmail 邮件功能范围继续按 T11。IMAP/SMTP 与草稿文件夹、搜索语义、回复线程和附件处理需按隔离协议测试与真实邮箱验收，不能只凭凭证验证宣称 T11 已通过。
+
+替代关系：本规则覆盖 T20 与 Q153 的“用户填写 OAuth Client ID/Secret”现行行为；Q99/Q100/Q105/Q153 保留为 OAuth 方案的历史记录。Q154 的凭证加密存储边界继续适用。
+
+技术依据：[Google App Password 官方说明](https://support.google.com/mail/answer/185833)确认其要求两步验证、部分账号无法生成、主密码变更后会撤销，并将其定位为较不安全应用的兼容方式；[Gmail IMAP 设置](https://support.google.com/mail/answer/78892)确认 Gmail 草稿目录为 `[Gmail]/Drafts`、SMTP 客户端应避免重复保存 Sent 副本；Gmail REST API 仍要求 OAuth，因此 App Password 路径必须使用 IMAP/SMTP。
+
+验证边界：模拟 Adapter 与 Electron 表单可证明无 OAuth 路由、IMAP/SMTP 协议参数、验证失败回滚和本机加密；真实账号是否允许生成应用专用密码、连接、完整邮件操作及撤销后恢复仍须使用用户明确提供的测试邮箱独立验证。
+
+<a id="q156"></a>
+
+## Q156：发布时同步更新本机安装版本
+
+日期：2026-10-26。状态：用户要求以后每次打包新版本时同时更新其本机安装版本，并写入发布 Skill。
+
+用户原话：
+
+> 下次打包新版本，把我本机的版本也同步更新了，写到Skills上面。
+
+生效规则：
+
+- 每次正式发布都在提交和上传前，把本次将要发布的 `dist/mac-arm64/Rambo.app` 安装到活动开发机的 `/Applications/Rambo.app`，确保本机运行版本与 GitHub Release 资产来自同一份构建。
+- 若 Rambo 正在运行，先请求应用正常退出并等待进程结束；无法退出或无法写入 `/Applications` 时停止本机替换及后续外部发布，保留现有应用数据并明确报告阻塞。首次没有旧应用时直接安装。
+- 安装使用完整应用目录复制，不清理、不覆盖 `~/Library/Application Support/Rambo`，不得导致 Bot、会话、连接或本地 AES 凭证丢失。替换后核验安装路径、`CFBundleShortVersionString`、Bundle ID 和 ad-hoc 签名。
+- 发布 Skill、发布约定和最终发布报告必须包含本机安装结果；后续版本不能只更新 GitHub Release 而遗漏活动开发机。
+
+验证记录：2026-10-26 已实际将 `v0.1.1` 从待发布构建安装到 `/Applications/Rambo.app`，回读版本为 `0.1.1`、Bundle ID 为 `local.rambo.desktop`，严格签名校验通过，应用数据目录与本地 AES 凭证库继续存在。此前发布 `v0.1.1` 时该规则尚未生效，本机没有自动安装；该次遗漏已通过本轮补装解决。

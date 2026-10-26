@@ -4321,6 +4321,20 @@ Connector 仍需返回稳定的会话与消息身份和时间，使 Bot 能自�
 
 > 那我们就不要用这个来加密了，普通加密存数据库就好了。 你都说不用签名也能收到提醒，那electron是不是也不用做签名了？
 
+## 2026-10-26 后续补充 · Q155 Gmail 改用应用专用密码
+
+用户澄清 Gmail 连接不走 OAuth，希望沿用 QQ 邮箱“生成专用凭证并填写”的交互。依据 [决策补充 Q155](decision-followups.md#q155)，Gmail 新连接使用 Google App Password 经 IMAP/SMTP；旧本机 OAuth-token 连接只保留兼容读取，不再创建新 OAuth 连接。
+
+> 意思是不要走oauth 像QQ邮箱一样，获取类似授权码的东西，填上来就好了。
+
 据此修订 T20/T23/T24/T35 与 Q150/Q153 的底层存储描述：应用使用本地随机 256-bit 密钥和 AES-256-GCM，把凭证密文写入独立 SQLite；密钥与数据库权限目标为 `0600`。该方案不再触发 Keychain，也不需要用开发者证书签名换取通知或凭证读取权限。系统安装包仍需按 macOS 安全模型处理来源信任，通知最终展示仍由系统权限与通知中心决定。
 
 来源：[决策补充 Q154](decision-followups.md#q154)、[T20](product-decisions.md)、[T23](product-decisions.md)、[T24](product-decisions.md) 与 [T35](product-decisions.md)。
+
+## 2026-10-26 后续补充 · Q156 发布时同步更新本机安装版本
+
+用户要求后续正式打包发布时，也同步更新活动开发机上的 Rambo：
+
+> 下次打包新版本，把我本机的版本也同步更新了，写到Skills上面。
+
+依据 [决策补充 Q156](decision-followups.md#q156)，[P09](product-decisions.md) 增加本机同步安装要求。发布 Skill 新增可执行安装脚本，默认替换 `/Applications/Rambo.app`，覆盖前请求应用正常退出，并核验版本、Bundle ID 和签名；应用数据目录及本地 AES 凭证保持不变。`v0.1.1` 已据此补装并完成本机回读。

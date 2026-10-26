@@ -13,6 +13,8 @@
 
 - 构建入口：`npm run package:mac`。
 - 应用目录：`dist/mac-arm64/Rambo.app`。
+- 活动开发机安装目录：`/Applications/Rambo.app`；默认使用同一份已重封的构建覆盖安装。
+- 本机安装不覆盖 `~/Library/Application Support/Rambo`，不得以安装为由清除 Bot、会话、连接或本地 AES 凭证。
 - 上传格式：`Rambo-v<version>-macOS-arm64.zip`。
 - 校验文件：`Rambo-v<version>-macOS-arm64.zip.sha256`。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。
@@ -27,5 +29,7 @@
 - 所有版本都以不使用 Developer ID、不公证为前提，生成仅含本地 ad-hoc 签名的 `.app`；Release 说明必须给出 Gatekeeper 首次启动步骤。
 - electron-builder 必须显式设为 `identity: null`、`hardenedRuntime: false`、`notarize: false`，不能自动发现本机证书。
 - 构建后用 `codesign --force --deep --sign -` 重封应用；`codesign --verify` 必须通过，`codesign -dv` 必须为 `Signature=adhoc` 且无 Authority/TeamIdentifier，`spctl` 必须仍拒绝。
+- 每次发布在提交和上传前用 `node .agents/skills/rambo-release/scripts/install-local.mjs` 安装到 `/Applications/Rambo.app`；覆盖前正常退出正在运行的 Rambo，安装后核对版本、Bundle ID 和签名。
+- 如果没有权限写入 `/Applications`，先提示用户处理本机安装权限；不得跳过本机更新并宣称完整发布。
 - 不在发布说明中暗示安装时可无警告打开。
 - Codex App Server 不随包分发；应用优先本机独立运行时、其次缓存、最后下载校验后的独立 package。Release 说明写明需要本机 Codex 认证或首次登录。
