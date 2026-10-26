@@ -3,6 +3,7 @@ import type { RamboAPI, AppEvent } from '../shared/contracts';
 
 const invoke = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`rambo:${method}`, ...args);
 const api: RamboAPI = {
+  appVersion: () => invoke('appVersion'),
   snapshot: () => invoke('snapshot'),
   setVisibleChat: chatId => invoke('setVisibleChat', chatId),
   setVisibleChatFocus: focused => invoke('setVisibleChatFocus', focused),

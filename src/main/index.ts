@@ -438,6 +438,7 @@ function registerIPC(): void {
     return resource.id;
   };
   const methods: Record<string, (...args: any[]) => unknown> = {
+    appVersion: () => app.getVersion(),
     snapshot: () => host.snapshot(),
     setVisibleChat: chatId => {
       if (chatId === null) visibleChatId = null;

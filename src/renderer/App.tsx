@@ -4861,6 +4861,7 @@ function AccountSettingsPage({
   onStopRoutineRun: (id: string) => Promise<RoutineRun>;
 }) {
   const [account, setAccount] = useState<AccountState | null>(null);
+  const [appVersion, setAppVersion] = useState('未知');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4930,6 +4931,14 @@ function AccountSettingsPage({
     setPlaywrightProgress(event.message);
     if (event.phase === 'verified') setPlaywrightVerificationError(null);
   }), []);
+
+  useEffect(() => {
+    let active = true;
+    window.rambo.appVersion().then(version => {
+      if (active) setAppVersion(version);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -5119,6 +5128,7 @@ function AccountSettingsPage({
           <h1>系统设置</h1>
           <p>集中管理全局模型、权限和全部定时任务。</p>
         </div>
+        <span className="app-version">Rambo {appVersion}</span>
       </div>
       <div className="settings-tabs system-settings-tabs" role="tablist" aria-label="系统设置分类">
         {tabs.map(([id, label]) => (

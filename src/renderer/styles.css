@@ -1720,6 +1720,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .eyebrow { margin-bottom: 5px; color: var(--text-tertiary); font-size: 10px; font-weight: 600; letter-spacing: .09em; }
 .settings-page-heading h1 { margin: 0; font-size: 24px; font-weight: 620; line-height: 32px; letter-spacing: -.025em; }
 .settings-page-heading p { margin: 6px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.app-version { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .settings-section { padding: 24px 0 20px; border-bottom: 1px solid var(--border-subtle); }
 .settings-section-title { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
 .settings-section-title h2 { margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; }

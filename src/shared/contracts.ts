@@ -378,6 +378,7 @@ export type AppEvent =
   | { type: 'groupCreated'; group: GroupChat }
   | { type: 'error'; chatId?: string; message: string };
 export interface RamboAPI {
+  appVersion(): Promise<string>;
   snapshot(): Promise<Snapshot>;
   setVisibleChat(chatId: string | null): Promise<string | null>;
   setVisibleChatFocus(focused: boolean): Promise<void>;

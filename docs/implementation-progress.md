@@ -424,3 +424,8 @@
 - 决策、研究、验收矩阵、规则计划和目录已同步 Q155/T20 与 M09；Catalog 最新校验为 **144 条规则、229 个案例、112 个已实现局部案例、117 个缺口案例、50 条已有局部证据的规则**。`node scripts/change-checks.mjs` 命中构建、连接器、Host/Store/Runtime、跨进程契约、renderer 和验收模块；`.env.example` 与临时目录未匹配并保持原样。
 - 检查通过：`npm run typecheck`；完整后端串行 **305/305**；`npm run test:catalog`；`npm run test:acceptance` **16/16**；`npm run build`；`git diff --check`。相关 Electron 联合回归 **31 通过、1 跳过**，覆盖 Gmail App Password 表单、群聊、多时刻/集中重启、后台运行和 Codex 运行时重启。完整后端默认并发运行时曾出现 Host 文件测试结束后的 SQLite 异步活动，单文件和串行完整回归均通过，测试收尾隔离风险仍保留。
 - 证据边界：本地 Adapter 与 Electron 用例没有连接真实 Google 账号；真实 App Password 生成、Gmail 账号策略、完整邮件操作和撤销恢复仍待真实账号验收。相关 Electron 联合回归通过不等于全部 E2E、真实模型或 P08 全量验收通过。
+
+## 2026-10-26：系统设置显示 Rambo 应用版本
+
+- 系统设置标题栏新增当前安装包版本标签，通过 Electron `app.getVersion()` 读取；与“Codex 运行时”卡片中的运行时版本明确分开。
+- 用户明确要求本轮按简单改动发布、不运行测试。仅完成构建、本机安装、签名与发布核验；该小改动不改变 P08 全量验收边界。
