@@ -724,12 +724,13 @@ test('selected Playwright always uses Chrome Extension mode instead of Codex Hom
   });
 });
 
-test('message assets stay scoped to assistant messages in the Bot workspace and stream large files', async () => {
+test('message assets open readable assistant files without a workspace path check', async () => {
   await withHost(async ({ store, host }) => {
     const { bot, chat } = store.createBot('Asset Preview', 'a');
     const workspace = join(store.directory, 'bots', bot.id, 'workspace');
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workspace, 'notes.txt'), 'preview text');
+    writeFileSync(join(workspace, 'source.go'), 'package source\n');
     writeFileSync(join(workspace, 'unknown.custom'), 'opaque bytes');
     writeFileSync(join(workspace, 'large.wav'), Buffer.alloc(9 * 1024 * 1024));
     writeFileSync(join(store.directory, 'outside.txt'), 'outside');
@@ -752,9 +753,24 @@ test('message assets stay scoped to assistant messages in the Bot workspace and 
     closeSync(streamedAsset.descriptor);
     assert.equal(host.messageAssetPath(largeMessage.id, 'large.wav'), realpathSync(join(workspace, 'large.wav')));
 
-    assert.equal(host.openMessageAsset(textMessage.id, join(store.directory, 'outside.txt')), null);
+    const outsidePath = realpathSync(join(store.directory, 'outside.txt'));
+    const outsideAsset = host.openMessageAsset(textMessage.id, outsidePath);
+    assert.equal(outsideAsset.path, outsidePath);
+    closeSync(outsideAsset.descriptor);
+    assert.equal(Buffer.from(host.resolveMessageAsset(textMessage.id, outsidePath).split(',')[1], 'base64').toString('utf8'), 'outside');
+    for (const source of [`${outsidePath}:12`, `${outsidePath}:12:3`]) {
+      const locatedAsset = host.openMessageAsset(textMessage.id, source);
+      assert.equal(locatedAsset.path, outsidePath);
+      closeSync(locatedAsset.descriptor);
+    }
+    const sourcePath = realpathSync(join(workspace, 'source.go'));
+    for (const source of [`${sourcePath}:1417`, `${sourcePath}:1417:3`]) {
+      assert.equal(host.messageAssetPath(textMessage.id, source), sourcePath);
+    }
+    assert.equal(host.openMessageAsset(textMessage.id, '/definitely-missing-rambo-asset.go:1417'), null);
     const userMessage = makeMessage('notes.txt', 'user');
     assert.equal(host.openMessageAsset(userMessage.id, 'notes.txt'), null);
+    assert.equal(host.openMessageAsset(userMessage.id, outsidePath), null);
   });
 });
 
@@ -795,7 +811,9 @@ test('a completed image-generation item attaches its saved image to the same ass
     assert.match(hostWithThread.resolveMessageAsset(reply.id, imagePath), /^data:image\/png;base64,/u);
 
     const otherTurn = store.addMessage(chat.id, 'assistant', '另一轮回复', 'complete', null, 'turn-unrelated');
-    assert.equal(hostWithThread.openMessageAsset(otherTurn.id, imagePath), null);
+    const otherTurnImage = hostWithThread.openMessageAsset(otherTurn.id, imagePath);
+    assert.equal(otherTurnImage.path, realpathSync(imagePath));
+    closeSync(otherTurnImage.descriptor);
   });
 });
 
@@ -5111,6 +5129,129 @@ test('group runtime tracks participant judgment, latest activity, and hides afte
     });
     assert.equal(host.snapshot().groupRuntimes[group.id], undefined);
     assert.ok(events.some(event => event.type === 'groupRuntime' && event.groupId === group.id && event.runtime === null));
+  });
+});
+
+test('group stop interrupts only members with an active turn and tolerates naturally finished races', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const first = store.createBot('Researcher', 'a');
+    const second = store.createBot('Writer', 'b');
+    const group = store.createGroup('Stoppable room', [first.bot.id, second.bot.id]);
+    const sending = host.sendGroup(group.id, '@everyone answer this group question');
+
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    starts[0].resolve({ turn: { id: 'group-stop-turn-1', status: 'inProgress' } });
+    starts[1].resolve({ turn: { id: 'group-stop-turn-2', status: 'inProgress' } });
+    await sending;
+    await waitFor(() => host.snapshot().groupRuntimes[group.id]?.members
+      .every(member => member.phase === 'working'));
+    const firstMemberChat = host.snapshot().groupRuntimes[group.id]?.members
+      .find(member => member.botId === first.bot.id)?.chatId;
+    assert.ok(firstMemberChat);
+    const secondMemberChat = host.snapshot().groupRuntimes[group.id]?.members
+      .find(member => member.botId === second.bot.id)?.chatId;
+    assert.ok(secondMemberChat);
+    const firstThreadId = store.chat(firstMemberChat).threadId;
+    const groupMessageCount = store.groupMessages(group.id).length;
+    const secondStart = starts.find(start => start.params.threadId === store.chat(secondMemberChat).threadId);
+    const firstStart = starts.find(start => start.params.threadId === firstThreadId);
+    assert.ok(firstStart);
+    assert.ok(secondStart);
+    const firstTurnId = host.activeTurns.get(firstMemberChat);
+    const secondTurnId = host.activeTurns.get(secondMemberChat);
+    assert.ok(firstTurnId);
+    assert.ok(secondTurnId);
+
+    runtime.emit('notification', 'turn/completed', {
+      threadId: secondStart.params.threadId,
+      turn: { id: secondTurnId, status: 'completed' }
+    });
+    await host.interruptGroup(group.id);
+
+    const interrupts = runtime.requests.filter(request =>
+      request.method === 'turn/interrupt' &&
+      request.params.threadId === firstStart.params.threadId
+    );
+    assert.equal(interrupts.length, 1);
+    assert.deepEqual(interrupts[0].params, {
+      threadId: firstStart.params.threadId,
+      turnId: firstTurnId
+    });
+    assert.equal(host.snapshot().groupRuntimes[group.id], undefined);
+    assert.equal(host.activeTurns.has(firstMemberChat), false);
+    assert.equal(store.turns(firstMemberChat)[0].status, 'interrupted');
+    assert.equal(store.chat(firstMemberChat).threadId, null);
+    assert.equal(store.chat(secondMemberChat).threadId, secondStart.params.threadId);
+    assert.equal(store.groupMessages(group.id).length, groupMessageCount);
+
+    runtime.emit('notification', 'turn/completed', {
+      threadId: firstStart.params.threadId,
+      turn: { id: firstTurnId, status: 'interrupted' }
+    });
+    assert.equal(host.snapshot().groupRuntimes[group.id], undefined);
+    assert.equal(host.activeTurns.has(firstMemberChat), false);
+    assert.equal(store.turns(firstMemberChat)[0].status, 'interrupted');
+
+    const resumed = host.sendGroup(group.id, '@Researcher continue after stop');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 3);
+    assert.equal(runtime.requests.some(request => request.method === 'turn/steer'), false);
+    const nextStart = runtime.requests.filter(request => request.method === 'turn/start')[2];
+    assert.notEqual(nextStart.params.threadId, firstThreadId);
+    assert.equal(store.chat(firstMemberChat).threadId, nextStart.params.threadId);
+    nextStart.resolve({ turn: { id: 'group-stop-turn-3', status: 'inProgress' } });
+    await resumed;
+    runtime.emit('notification', 'turn/completed', {
+      threadId: nextStart.params.threadId,
+      turn: { id: 'group-stop-turn-3', status: 'completed' }
+    });
+    assert.equal(host.activeTurns.has(firstMemberChat), false);
+  });
+});
+
+test('group stop releases the group lock before a member turn/start response arrives', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const first = store.createBot('Late starter', 'a');
+    const second = store.createBot('Quick peer', 'b');
+    const group = store.createGroup('Stopping room', [first.bot.id, second.bot.id]);
+    const sending = host.sendGroup(group.id, '@everyone reply after stop');
+
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    const firstMemberChat = store.groupSession(group.id, first.bot.id).id;
+    const secondMemberChat = store.groupSession(group.id, second.bot.id).id;
+    const firstThreadId = store.chat(firstMemberChat).threadId;
+    const secondThreadId = store.chat(secondMemberChat).threadId;
+    const firstStart = starts.find(start => start.params.threadId === firstThreadId);
+    const secondStart = starts.find(start => start.params.threadId === secondThreadId);
+    assert.ok(firstStart);
+    assert.ok(secondStart);
+    secondStart.resolve({ turn: { id: 'quick-peer-turn', status: 'inProgress' } });
+    await waitFor(() => host.activeTurns.has(secondMemberChat));
+
+    await host.interruptGroup(group.id);
+    assert.equal(host.isGroupBusy(group.id), false);
+    assert.equal(store.chat(secondMemberChat).threadId, null);
+    assert.equal(host.activeTurns.has(secondMemberChat), false);
+    assert.equal(store.turns(firstMemberChat)[0].status, 'interrupted');
+    assert.equal(store.chat(firstMemberChat).threadId, null);
+    firstStart.resolve({ turn: { id: 'late-old-turn', status: 'inProgress' } });
+    await sending;
+    await waitFor(() => store.turns(firstMemberChat)[0].turnId === 'late-old-turn');
+    assert.equal(store.turns(firstMemberChat)[0].status, 'interrupted');
+
+    const resent = host.sendGroup(group.id, '@Late starter continue now');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'thread/start').length >= 2);
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 3);
+    const newStart = runtime.requests.filter(request => request.method === 'turn/start')[2];
+    assert.notEqual(newStart.params.threadId, firstThreadId);
+    newStart.resolve({ turn: { id: 'new-after-stop-turn', status: 'inProgress' } });
+    await resent;
+    assert.equal(host.activeTurns.has(firstMemberChat), true);
+    runtime.emit('notification', 'turn/completed', {
+      threadId: newStart.params.threadId,
+      turn: { id: 'new-after-stop-turn', status: 'completed' }
+    });
   });
 });
 

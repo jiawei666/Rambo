@@ -1745,6 +1745,11 @@ export class Store {
     }
     return this.chat(chatId);
   }
+  resetGroupSessionThread(groupId: string, botId: string): void {
+    const session = this.groupSession(groupId, botId);
+    this.db.prepare('UPDATE chats SET threadId=NULL,routineToolsEnabled=0,memoryToolsEnabled=0 WHERE id=?')
+      .run(session.id);
+  }
   groupMemberChats(groupId: string): Chat[] {
     const group = this.group(groupId);
     return group.memberIds.map(botId => this.bot(botId)).filter(bot => !bot.archived)
@@ -2249,6 +2254,11 @@ export class Store {
     if (isTerminalTurnStatus(current)) return;
     const completedAt = isTerminalTurnStatus(status) ? now() : null;
     this.db.prepare('UPDATE turns SET status=?,completedAt=COALESCE(?,completedAt) WHERE id=?').run(status, completedAt, id);
+  }
+  attachTurnIdToTerminal(id: string, threadId: string, turnId: string): void {
+    const row = this.db.prepare('SELECT status,threadId FROM turns WHERE id=?').get(id) as Row | undefined;
+    if (!row || row.threadId !== threadId || !isTerminalTurnStatus(row.status as TurnStatus)) return;
+    this.db.prepare('UPDATE turns SET turnId=? WHERE id=? AND turnId IS NULL').run(turnId, id);
   }
   setTurnDispatchStatus(id: string, status: TurnDispatchStatus, error: string | null = null): void {
     const turn = this.db.prepare('SELECT userMessageId FROM turns WHERE id=?').get(id) as Row | undefined;

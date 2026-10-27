@@ -52,6 +52,13 @@ async function injectMedia(page, chatId, mediaType, url, title) {
   }), { chatId, mediaType, url, title });
 }
 
+async function injectMarkdown(page, chatId, text) {
+  return page.evaluate(({ chatId, text }) => window.rambo.injectAcceptanceEvent({
+    type: 'previewMessage',
+    message: { chatId, text }
+  }), { chatId, text });
+}
+
 async function expectGrokAttachmentCard(row) {
   const card = row.locator('[data-attachment-card]');
   await expect(card).toBeVisible();
@@ -62,7 +69,7 @@ async function expectGrokAttachmentCard(row) {
   expect(style).toEqual({ borderRadius: '22px', padding: '16px', display: 'grid' });
 }
 
-test('F05 Electron displays and plays common local files and routes other formats', async ({ electron, acceptanceRun }) => {
+test('F05/F06 Electron displays local files inside and outside the workspace', async ({ electron, acceptanceRun }) => {
   test.setTimeout(90_000);
   const page = electron.page;
   await page.getByLabel('创建 Bot').click();
@@ -113,11 +120,65 @@ test('F05 Electron displays and plays common local files and routes other format
   for (const name of [...fixtureFiles.map(([file]) => file), 'sample.mp4', 'sample.png', 'transparent.png']) {
     copyFileSync(join(fixtures, name), join(workspace, name));
   }
+  const outsideFile = join(fixtures, 'outside-workspace.txt');
+  const outsideDirectory = join(fixtures, 'outside-directory');
+  writeFileSync(outsideFile, '工作区外文件预览内容。', 'utf8');
+  mkdirSync(outsideDirectory, { recursive: true });
 
   const image = await injectMedia(page, chatId, 'image', 'sample.png', '图片样例');
   const imageRow = page.locator(`[data-message-id="${image.id}"]`);
   await expectGrokAttachmentCard(imageRow);
   await expect(imageRow.locator('.transcript-file-icon')).toHaveText('IMAGE');
+  const outside = await injectMedia(page, chatId, 'file', outsideFile, '工作区外文件');
+  const outsideRow = page.locator(`[data-message-id="${outside.id}"]`);
+  await expectGrokAttachmentCard(outsideRow);
+  await expect(outsideRow.getByRole('button', { name: '预览' })).toBeVisible();
+  await outsideRow.getByRole('button', { name: '预览' }).click();
+  const outsideViewer = page.getByRole('dialog', { name: 'outside-workspace.txt预览' });
+  await expect(outsideViewer).toContainText('工作区外文件预览内容。');
+  const outsideViewerLayout = await outsideViewer.evaluate(dialog => {
+    const box = dialog.getBoundingClientRect();
+    return { width: box.width, height: box.height, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
+  });
+  expect(outsideViewerLayout.width).toBeLessThan(outsideViewerLayout.viewportWidth);
+  expect(outsideViewerLayout.height).toBeLessThan(outsideViewerLayout.viewportHeight);
+  await outsideViewer.getByRole('button', { name: '关闭文件预览' }).click();
+  const outsideChecks = await page.evaluate(({ messageId, file, directory }) => Promise.all([
+    window.rambo.resolveMessageAsset(messageId, file),
+    window.rambo.resolveMessageAsset(messageId, directory),
+    window.rambo.resolveMessageAsset(messageId, 'https://example.com/outside-workspace.txt'),
+    window.rambo.resolveMessageAsset(messageId, '/definitely-missing-rambo-asset.txt')
+  ]), { messageId: outside.id, file: outsideFile, directory: outsideDirectory });
+  expect(outsideChecks[0]).toMatch(/^rambo-asset:\/\/asset\//u);
+  expect(outsideChecks.slice(1)).toEqual([null, null, null]);
+  const sourceLink = await injectMarkdown(page, chatId, `[outside-workspace.txt](${outsideFile}:12) 是源码依据。`);
+  const sourceLinkRow = page.locator(`[data-message-id="${sourceLink.id}"]`);
+  await expect(sourceLinkRow.locator('.transcript-attachment-card-copy strong')).toHaveText('outside-workspace.txt');
+  await expect(sourceLinkRow.locator('.transcript-media-error')).toHaveCount(0);
+  await sourceLinkRow.getByRole('button', { name: '预览' }).click();
+  const sourceLinkViewer = page.getByRole('dialog', { name: 'outside-workspace.txt预览' });
+  await expect(sourceLinkViewer).toContainText('工作区外文件预览内容。');
+  await sourceLinkViewer.getByRole('button', { name: '关闭文件预览' }).click();
+  const focusStates = await page.evaluate(async messageId => {
+    const row = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (!row) throw new Error('源码文件卡片不存在');
+    const observed = [];
+    const record = () => observed.push({
+      error: Boolean(row.querySelector('.transcript-media-error')),
+      loading: Boolean(row.querySelector('.transcript-media-loading')),
+      card: Boolean(row.querySelector('[data-attachment-card]'))
+    });
+    const observer = new MutationObserver(record);
+    observer.observe(row, { childList: true, characterData: true, subtree: true });
+    record();
+    window.dispatchEvent(new Event('blur'));
+    window.dispatchEvent(new Event('focus'));
+    await new Promise(resolve => setTimeout(resolve, 250));
+    observer.disconnect();
+    record();
+    return observed;
+  }, sourceLink.id);
+  expect(focusStates.every(item => !item.error && !item.loading && item.card)).toBe(true);
   await expect(imageRow.locator('.transcript-attachment-card-copy small')).toHaveCount(0);
   await expect(imageRow.locator('.transcript-image-button img')).toBeVisible();
   await expect.poll(() => imageRow.locator('.transcript-image-button img').evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
@@ -237,8 +298,9 @@ test('F05 Electron displays and plays common local files and routes other format
   });
   expect(viewerLayout.mountedToBody).toBe(true);
   expect(viewerLayout.backdrop).toEqual({ x: 0, y: 0, ...viewerLayout.viewport });
-  expect(viewerLayout.chromePaddingLeft).toBeGreaterThanOrEqual(88);
-  expect(viewerLayout.headingLeft).toBeGreaterThanOrEqual(88);
+  expect(viewerLayout.chromePaddingLeft).toBe(18);
+  expect(viewerLayout.headingLeft).toBeGreaterThan(viewerLayout.backdrop.x);
+  expect(viewerLayout.headingLeft).toBeLessThan(viewerLayout.viewport.width);
   const generatedScreenshot = await page.screenshot();
   writeFileSync(join(screenshots, 'f05-generated-viewer.png'), generatedScreenshot);
   await test.info().attach('F05-生成图片卡片与查看器', { body: generatedScreenshot, contentType: 'image/png' });

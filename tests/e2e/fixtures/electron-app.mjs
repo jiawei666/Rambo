@@ -1,5 +1,15 @@
 import { test as base, expect, _electron as electron } from '@playwright/test';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+  writeSync
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -153,6 +163,35 @@ function terminateProcess(processId) {
   }
 }
 
+export function acquireElectronFixtureLease(runs) {
+  const path = join(runs, '.electron-fixture-active');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = openSync(path, 'wx');
+      writeSync(descriptor, `${process.pid}\n${new Date().toISOString()}\n`);
+      closeSync(descriptor);
+      return () => rmSync(path, { force: true });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      const owner = readFileSync(path, 'utf8').trim().replaceAll('\n', ' ');
+      const ownerPid = Number(owner.split(' ')[0]);
+      if (ownerPid === process.pid) {
+        return () => rmSync(path, { force: true });
+      }
+      if (Number.isInteger(ownerPid) && ownerPid > 0) {
+        try {
+          process.kill(ownerPid, 0);
+        } catch {
+          rmSync(path, { force: true });
+          continue;
+        }
+      }
+      throw new Error(`已有 Electron 验收实例正在使用桌面：${owner || path}`);
+    }
+  }
+  throw new Error('无法取得 Electron 验收实例锁');
+}
+
 function cleanupExternalApplications(before, launchedExternalProcesses, launchedFinderWindowIds, run) {
   closeTestDocumentWindows(run);
   closeTestFinderWindows(run);
@@ -255,6 +294,10 @@ export function createElectronTest(prefix) {
           env: acceptanceRun.env
         });
         currentPage = await currentApp.firstWindow();
+        const windowCount = await currentApp.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows().length
+        );
+        expect(windowCount, `Electron 启动时出现了 ${windowCount} 个窗口`).toBe(1);
         await expect(currentPage).toHaveTitle('Rambo');
         await expect(currentPage.getByLabel('创建 Bot')).toBeVisible();
         let modelWaitCount = 0;

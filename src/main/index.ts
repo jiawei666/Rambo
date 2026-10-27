@@ -33,7 +33,13 @@ import {
   LoginItemController
 } from './login-item';
 import { SystemIndicators, type RunningBotIndicator } from './system-indicators';
-import { isMessageContent, type AppEvent, type MessageContent, type VoiceState } from '../shared/contracts';
+import {
+  isMessageContent,
+  type AppEvent,
+  type GroupRuntimePhase,
+  type MessageContent,
+  type VoiceState
+} from '../shared/contracts';
 import {
   decideBotTurnFinishedNotification,
   decideRoutineFinishedNotification,
@@ -440,6 +446,15 @@ function registerIPC(): void {
   const methods: Record<string, (...args: any[]) => unknown> = {
     appVersion: () => app.getVersion(),
     snapshot: () => host.snapshot(),
+    selectLocalFiles: async (): Promise<string[]> => {
+      if (!window) throw new Error('窗口尚未准备好');
+      const result = await dialog.showOpenDialog(window, {
+        title: '选择要引用的本机文件',
+        buttonLabel: '插入路径',
+        properties: ['openFile', 'multiSelections']
+      });
+      return result.canceled ? [] : result.filePaths;
+    },
     setVisibleChat: chatId => {
       if (chatId === null) visibleChatId = null;
       else {
@@ -880,17 +895,18 @@ function registerIPC(): void {
     groupMemberChats: groupId => store.groupMemberChats(id(groupId)),
     groupMessages: groupId => store.groupMessages(id(groupId)),
     sendGroup: (groupId, content) => host.sendGroup(id(groupId), text(content)),
+    interruptGroup: groupId => host.interruptGroup(id(groupId)),
     answerCard: (messageId, answer) => host.answerCard(id(messageId), text(answer, 20_000)),
     resolveMessageAsset: (messageId, source) => issueMessageAssetUrl(id(messageId), text(source, 8_000)),
     openMessageAsset: async (messageId, source) => {
       const path = host.messageAssetPath(id(messageId), text(source, 8_000));
-      if (!path) throw new Error('文件地址无效或不在此 Bot 的工作区');
+      if (!path) throw new Error('文件地址无效或文件不可用');
       const error = await shell.openPath(path);
       if (error) throw new Error(`系统无法打开文件：${error}`);
     },
     revealMessageAsset: (messageId, source) => {
       const path = host.messageAssetPath(id(messageId), text(source, 8_000));
-      if (!path) throw new Error('文件地址无效或不在此 Bot 的工作区');
+      if (!path) throw new Error('文件地址无效或文件不可用');
       shell.showItemInFolder(path);
     },
     saveMessageAsset: async (messageId, source, requestedName) => {
@@ -899,7 +915,7 @@ function registerIPC(): void {
         throw new Error('文件名无效');
       }
       const asset = host.openMessageAsset(id(messageId), text(source, 8_000));
-      if (!asset) throw new Error('文件地址无效或不在此 Bot 的工作区');
+      if (!asset) throw new Error('文件地址无效或文件不可用');
       let destination: string;
       try {
         if (acceptanceRunId) {
@@ -1056,6 +1072,41 @@ function registerIPC(): void {
         emit({ type: 'turn', chatId, turnId });
         return;
       }
+      if (value.type === 'groupRuntime') {
+        const groupId = id(value.groupId);
+        store.group(groupId);
+        if (value.runtime === null) {
+          emit({ type: 'groupRuntime', groupId, runtime: null });
+          return;
+        }
+        const runtime = object(value.runtime);
+        if (!Array.isArray(runtime.members)) throw new Error('验收群聊运行状态缺少成员');
+        const members = runtime.members.map(item => {
+          const member = object(item);
+          const chatId = id(member.chatId);
+          const chat = store.chat(chatId);
+          if (chat.groupChatId !== groupId) throw new Error('验收群聊运行成员不属于当前群聊');
+          if (!['starting', 'judging', 'working'].includes(String(member.phase))) {
+            throw new Error('验收群聊运行阶段无效');
+          }
+          return {
+            botId: chat.botId,
+            chatId,
+            phase: member.phase as GroupRuntimePhase,
+            enteredAt: text(member.enteredAt, 100),
+            activityKind: member.activityKind === null ? null : text(member.activityKind, 30) as any,
+            activityUpdatedAt: member.activityUpdatedAt === null
+              ? null
+              : text(member.activityUpdatedAt, 100)
+          };
+        });
+        emit({
+          type: 'groupRuntime',
+          groupId,
+          runtime: { groupId, runId: text(runtime.runId, 100), members }
+        });
+        return;
+      }
       if (value.type === 'visibilityFocus') {
         if (!window || window.isDestroyed()) throw new Error('窗口不存在');
         if (typeof value.focused !== 'boolean') throw new Error('验收事件缺少有效的焦点状态');
@@ -1133,7 +1184,7 @@ function registerIPC(): void {
         const chatId = id(message.chatId);
         if (!store.chat(chatId)) throw new Error('验收消息引用了不存在的聊天');
         const content = message.content;
-        if (!isMessageContent(content)) throw new Error('验收预览消息内容无效');
+        if (content !== undefined && !isMessageContent(content)) throw new Error('验收预览消息内容无效');
         const saved = store.addMessage(
           chatId,
           'assistant',
@@ -1142,7 +1193,7 @@ function registerIPC(): void {
           null,
           null,
           null,
-          content as MessageContent
+          content === undefined ? null : content as MessageContent
         );
         emit({ type: 'message', message: saved });
         return saved;

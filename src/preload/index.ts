@@ -1,10 +1,12 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { RamboAPI, AppEvent } from '../shared/contracts';
 
 const invoke = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`rambo:${method}`, ...args);
 const api: RamboAPI = {
+  pathForFile: file => webUtils.getPathForFile(file),
   appVersion: () => invoke('appVersion'),
   snapshot: () => invoke('snapshot'),
+  selectLocalFiles: () => invoke('selectLocalFiles'),
   setVisibleChat: chatId => invoke('setVisibleChat', chatId),
   setVisibleChatFocus: focused => invoke('setVisibleChatFocus', focused),
   botResources: refresh => invoke('botResources', refresh),
@@ -41,6 +43,7 @@ const api: RamboAPI = {
   groupMemberChats: id => invoke('groupMemberChats', id),
   groupMessages: id => invoke('groupMessages', id),
   sendGroup: (id, text) => invoke('sendGroup', id, text),
+  interruptGroup: id => invoke('interruptGroup', id),
   answerCard: (messageId, answer) => invoke('answerCard', messageId, answer),
   resolveMessageAsset: (messageId, source) => invoke('resolveMessageAsset', messageId, source),
   openMessageAsset: (messageId, source) => invoke('openMessageAsset', messageId, source),

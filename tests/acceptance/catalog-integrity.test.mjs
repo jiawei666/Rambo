@@ -197,10 +197,10 @@ test('the catalog keeps the current implementation boundary explicit', () => {
     .concat(catalog.releaseSuites.flatMap(item => item.rules))
     .filter(rule => !implementedRules.has(rule)));
 
-  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 112);
+  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 114);
   assert.ok(catalog.cases.filter(item => item.status === 'not_implemented').length >=
     new Set(catalog.cases.filter(item => item.status === 'not_implemented').flatMap(item => item.rules)).size);
-  assert.equal(implementedRules.size, 50);
+  assert.equal(implementedRules.size, 52);
   assert.ok([...uncoveredRules].every(rule => anyGapRules.has(rule)),
     'Every rule without implemented evidence must have an explicit gap case');
   assert.deepEqual(
@@ -211,7 +211,7 @@ test('the catalog keeps the current implementation boundary explicit', () => {
   assert.deepEqual(
     [...implementedRules].filter(rule => !anyGapRules.has(rule)).sort(),
     [
-      'B01', 'B02', 'B03', 'B04', 'B07', 'F05', 'G02', 'G03', 'G04', 'G13',
+      'B01', 'B02', 'B03', 'B04', 'B07', 'F05', 'F06', 'F07', 'G02', 'G03', 'G04', 'G13',
       'M01', 'M02', 'M03', 'M04', 'M05', 'P01',
       'O04', 'R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R14', 'T02', 'T19', 'T20', 'T35'
     ].sort(),

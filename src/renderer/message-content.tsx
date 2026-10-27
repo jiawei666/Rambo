@@ -3,6 +3,7 @@ import {
   isValidElement,
   useEffect,
   useId,
+  useMemo,
   useState,
   type ReactElement,
   type MouseEvent as ReactMouseEvent,
@@ -51,12 +52,13 @@ export function MessageContentView({ message }: { message: TranscriptMessage }) 
 }
 
 function MarkdownBody({ messageId, text }: { messageId: string; text: string }) {
+  const components = useMemo(() => markdownComponents(messageId), [messageId]);
   return (
     <div className="transcript-markdown">
       <Markdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex, rehypeHighlight]}
-        components={markdownComponents(messageId)}
+        components={components}
         urlTransform={safeMarkdownUrl}
       >
         {text}
@@ -113,22 +115,82 @@ function MarkdownLink({ messageId, href, title, children, ...props }: {
   return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>;
 }
 
-function useResolvedAsset(messageId: string, source: string): string | null {
+type ResolvedAsset = { url: string | null; pending: boolean };
+
+const resolvedAssetCache = new Map<string, string>();
+const resolvedAssetRequests = new Map<string, Promise<string | null>>();
+const RESOLVED_ASSET_CACHE_ENTRIES = 24;
+const RESOLVED_ASSET_CACHE_CHARS = 32 * 1024 * 1024;
+
+function resolvedAssetKey(messageId: string, source: string): string {
+  return `${messageId}\0${source}`;
+}
+
+function cachedResolvedAsset(messageId: string, source: string): string | undefined {
+  const key = resolvedAssetKey(messageId, source);
+  const cached = resolvedAssetCache.get(key);
+  if (!cached) return undefined;
+  resolvedAssetCache.delete(key);
+  resolvedAssetCache.set(key, cached);
+  return cached;
+}
+
+function cacheResolvedAsset(messageId: string, source: string, url: string | null): void {
+  if (!url) return;
+  const key = resolvedAssetKey(messageId, source);
+  resolvedAssetCache.delete(key);
+  resolvedAssetCache.set(key, url);
+  let totalChars = [...resolvedAssetCache.values()].reduce((total, value) => total + value.length, 0);
+  while (resolvedAssetCache.size > RESOLVED_ASSET_CACHE_ENTRIES || totalChars > RESOLVED_ASSET_CACHE_CHARS) {
+    const oldest = resolvedAssetCache.keys().next().value;
+    if (!oldest) break;
+    totalChars -= resolvedAssetCache.get(oldest)?.length ?? 0;
+    resolvedAssetCache.delete(oldest);
+  }
+}
+
+function resolveMessageAssetOnce(messageId: string, source: string): Promise<string | null> {
+  const key = resolvedAssetKey(messageId, source);
+  const cached = cachedResolvedAsset(messageId, source);
+  if (cached) return Promise.resolve(cached);
+  const existing = resolvedAssetRequests.get(key);
+  if (existing) return existing;
+  const request = window.rambo.resolveMessageAsset(messageId, source).then(url => {
+    cacheResolvedAsset(messageId, source, url);
+    return url;
+  }).finally(() => {
+    if (resolvedAssetRequests.get(key) === request) resolvedAssetRequests.delete(key);
+  });
+  resolvedAssetRequests.set(key, request);
+  return request;
+}
+
+function useResolvedAsset(messageId: string, source: string): ResolvedAsset {
   const remote = safeHttpUrl(source);
-  const [resolved, setResolved] = useState<{ source: string; url: string | null }>({ source: '', url: null });
+  const [resolved, setResolved] = useState<{ source: string; url: string | null; pending: boolean }>(() => {
+    const cached = cachedResolvedAsset(messageId, source);
+    return { source, url: cached ?? null, pending: !cached && Boolean(source) && isLocalAssetReference(source) };
+  });
   useEffect(() => {
     let active = true;
     if (!source || remote || source.startsWith('#') || !isLocalAssetReference(source)) {
-      setResolved({ source, url: remote });
+      setResolved({ source, url: remote, pending: false });
       return () => { active = false; };
     }
-    setResolved({ source, url: null });
-    void window.rambo.resolveMessageAsset(messageId, source).then(url => {
-      if (active) setResolved({ source, url });
-    }).catch(() => { if (active) setResolved({ source, url: null }); });
+    const cached = cachedResolvedAsset(messageId, source);
+    if (cached) {
+      setResolved({ source, url: cached, pending: false });
+      return () => { active = false; };
+    }
+    setResolved({ source, url: null, pending: true });
+    void resolveMessageAssetOnce(messageId, source).then(url => {
+      if (active) setResolved({ source, url, pending: false });
+    }).catch(() => { if (active) setResolved({ source, url: null, pending: false }); });
     return () => { active = false; };
   }, [messageId, remote, source]);
-  return remote ?? (resolved.source === source ? resolved.url : null);
+  if (remote) return { url: remote, pending: false };
+  if (resolved.source === source) return { url: resolved.url, pending: resolved.pending };
+  return { url: null, pending: Boolean(source) && isLocalAssetReference(source) };
 }
 
 function isLocalAssetReference(value: string): boolean {
@@ -136,13 +198,15 @@ function isLocalAssetReference(value: string): boolean {
 }
 
 function ResolvedImage({ messageId, source, alt, title }: { messageId: string; source: string; alt: string; title?: string }) {
-  const resolved = useResolvedAsset(messageId, source);
+  const { url: resolved, pending } = useResolvedAsset(messageId, source);
+  if (pending) return <span className="transcript-media-loading" role="status">正在读取图片…</span>;
   if (!resolved) return <span className="transcript-media-error">图片无法预览</span>;
   return <ImagePreview src={resolved} alt={alt} title={title} />;
 }
 
 function ResolvedLinkedMedia({ messageId, source, type, title }: { messageId: string; source: string; type: 'audio' | 'video'; title: string }) {
-  const resolved = useResolvedAsset(messageId, source);
+  const { url: resolved, pending } = useResolvedAsset(messageId, source);
+  if (pending) return <span className="transcript-media-loading" role="status">正在读取{type === 'audio' ? '音频' : '视频'}…</span>;
   if (!resolved) return <span className="transcript-media-error">{title}无法预览</span>;
   return <AttachmentCard
     icon={type === 'audio' ? 'AUDIO' : 'VIDEO'}
@@ -156,7 +220,7 @@ function ResolvedLinkedMedia({ messageId, source, type, title }: { messageId: st
 }
 
 function ResolvedLinkedImage({ messageId, source, alt, title }: { messageId: string; source: string; alt: string; title?: string }) {
-  const resolved = useResolvedAsset(messageId, source);
+  const { url: resolved, pending } = useResolvedAsset(messageId, source);
   const asset = resolved ? {
     messageId,
     source,
@@ -165,6 +229,7 @@ function ResolvedLinkedImage({ messageId, source, alt, title }: { messageId: str
     local: isLocalAssetReference(source)
   } : undefined;
   const actions = useAttachmentContextMenu(asset);
+  if (pending) return <span className="transcript-media-loading" role="status">正在读取图片…</span>;
   if (!resolved) return <span className="transcript-media-error">图片无法预览</span>;
   return <figure className="transcript-linked-image" onContextMenu={actions.onContextMenu}>
     <ImagePreview src={resolved} alt={alt} title={title} />
@@ -421,7 +486,8 @@ function FormField({ field, value, onChange }: {
 }
 
 function MediaContent({ messageId, content }: { messageId: string; content: Extract<MessageContent, { kind: 'media' }> }) {
-  const url = useResolvedAsset(messageId, content.url);
+  const { url, pending } = useResolvedAsset(messageId, content.url);
+  if (pending) return <p className="transcript-media-loading" role="status">正在读取文件…</p>;
   if (!url) return <p className="transcript-media-error">媒体地址无效</p>;
   if (content.mediaType === 'video' || content.mediaType === 'audio') {
     return <AttachmentCard
@@ -492,7 +558,7 @@ function MediaPlayer({ resolved, type, title }: { resolved: string; type: 'audio
 }
 
 function VoiceContent({ messageId, content }: { messageId: string; content: Extract<MessageContent, { kind: 'voice' }> }) {
-  const url = useResolvedAsset(messageId, content.audioUrl ?? '');
+  const { url } = useResolvedAsset(messageId, content.audioUrl ?? '');
   return <section className="transcript-voice-row" aria-label="语音消息">
     <span className="transcript-voice-icon" aria-hidden="true">◖</span>
     <div className="transcript-voice-body">
@@ -515,7 +581,7 @@ function McpEmbed({ content }: { content: Extract<MessageContent, { kind: 'mcp_e
 }
 
 function FilePreview({ messageId, url, title }: { messageId: string; url: string; title: string }) {
-  const resolved = useResolvedAsset(messageId, url);
+  const { url: resolved, pending } = useResolvedAsset(messageId, url);
   const preview = filePreviewKind(url);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [textState, setTextState] = useState<{ source: string; text?: string; error?: string }>({ source: '' });
@@ -541,7 +607,8 @@ function FilePreview({ messageId, url, title }: { messageId: string; url: string
     return () => { active = false; };
   }, [resolved, textPreview, url]);
 
-  if (!resolved) return <span className="transcript-media-error">文件地址无效或不在此 Bot 的工作区</span>;
+  if (pending) return <span className="transcript-media-loading" role="status">正在读取文件…</span>;
+  if (!resolved) return <span className="transcript-media-error">文件地址无效或文件不可用</span>;
   const local = isLocalAssetReference(url);
   const displayName = fileName(url, title);
   const typeLabel = previewLabel(preview, url);
@@ -793,16 +860,22 @@ function filePreviewKind(source: string): 'image' | 'pdf' | 'text' | 'markdown' 
 }
 
 function fileExtension(source: string): string {
-  const path = source.split(/[?#]/u)[0].split(/[\\/]/u).pop() ?? '';
+  const path = displayPath(source).split(/[\\/]/u).pop() ?? '';
   const dot = path.lastIndexOf('.');
   return dot < 0 ? '' : path.slice(dot + 1).toLocaleLowerCase();
 }
 
 function fileName(source: string, fallback = '附件'): string {
-  const path = source.split(/[?#]/u)[0].split(/[\\/]/u).pop();
+  const path = displayPath(source).split(/[\\/]/u).pop();
   if (!path) return fallback;
   try { return decodeURIComponent(path); }
   catch { return path; }
+}
+
+function displayPath(source: string): string {
+  const path = source.split(/[?#]/u)[0];
+  if (!isLocalAssetReference(source)) return path;
+  return path.replace(/:(\d+)(?::\d+)?$/u, '');
 }
 
 function detailIfDistinct(type: string, detail?: string): string | undefined {
@@ -821,7 +894,8 @@ function fileIcon(preview: ReturnType<typeof filePreviewKind>, source: string): 
 }
 
 function ResolvedInlineImage({ messageId, source }: { messageId: string; source: string }) {
-  const resolved = useResolvedAsset(messageId, source);
+  const { url: resolved, pending } = useResolvedAsset(messageId, source);
+  if (pending) return <span className="transcript-media-loading" role="status">正在读取图片…</span>;
   return resolved ? <img src={resolved} alt="" loading="lazy" /> : <span className="transcript-media-error">图片不可用</span>;
 }
 

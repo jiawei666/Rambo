@@ -15,6 +15,11 @@ const compiled = ts.transpileModule(source, {
   "from 'node:sqlite'"
 );
 
+test('connector credentials do not depend on Electron safeStorage or Keychain', () => {
+  assert.doesNotMatch(source, /safeStorage|safe-storage|find-(?:generic|internet)-password/iu);
+  assert.match(source, /createCipheriv\('aes-256-gcm'/u);
+});
+
 async function withModule(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-credentials-test-'));
   const modulePath = join(directory, 'connector-credentials.mjs');

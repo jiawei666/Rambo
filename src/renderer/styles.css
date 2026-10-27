@@ -1123,9 +1123,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     0 12px 34px color-mix(in srgb, #000 9%, transparent),
     inset 0 1px 0 color-mix(in srgb, #fff 56%, transparent);
 }
+.composer-drop-active {
+  border-color: color-mix(in srgb, var(--border-focus) 72%, var(--border-strong));
+  background: color-mix(in srgb, var(--bg-elevated) 91%, var(--border-focus) 9%);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--border-focus) 13%, transparent),
+    0 12px 34px color-mix(in srgb, #000 9%, transparent);
+}
+.composer-drop-active textarea::placeholder { color: var(--text-secondary); }
 .composer-input-row { display: flex; align-items: center; min-width: 0; gap: 10px; }
-.composer-add { display: inline-flex; flex: 0 0 32px; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
-.composer-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+.composer-add { display: inline-flex; flex: 0 0 32px; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color .14s ease, color .14s ease, opacity .14s ease; }
+.composer-add:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.composer-add:disabled { opacity: .45; cursor: default; }
 .composer textarea { display: block; flex: 1; min-width: 0; max-height: 180px; min-height: 28px; padding: 3px 0 2px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 14px; line-height: 23px; caret-color: var(--text-primary); }
 .composer textarea::placeholder { color: var(--text-tertiary); }
 .composer textarea:disabled { cursor: default; opacity: .62; }

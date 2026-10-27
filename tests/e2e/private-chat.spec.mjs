@@ -1,6 +1,6 @@
 import { createElectronTest, expect } from './fixtures/electron-app.mjs';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const test = createElectronTest('playwright-private');
@@ -1510,6 +1510,166 @@ test('真实 Electron 输入框上方空白可将滚轮交给聊天消息区', a
     expect(fadeOut.some(opacity => opacity > 0 && opacity < 1),
       `滚动条淡出没有连续透明度: ${fadeOut.join(', ')}`).toBe(true);
     await expect(scrollbar).toHaveCSS('opacity', '0');
+});
+
+test('真实 Electron 拖入输入框的文件只插入本机路径', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Drop Path Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Drop Path Pilot')).toBeVisible();
+
+  const fixtures = join(acceptanceRun.run, 'drop-fixtures');
+  mkdirSync(fixtures, { recursive: true });
+  const textPath = join(fixtures, '拖入文件 示例.txt');
+  const imagePath = join(fixtures, '拖入图片 示例.png');
+  const textBytes = Buffer.from('只引用路径，不改写原文件。', 'utf8');
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  writeFileSync(textPath, textBytes);
+  writeFileSync(imagePath, imageBytes);
+
+  const composer = page.getByRole('textbox', { name: '消息' });
+  await composer.fill('请查看下面两个文件');
+  const composerBox = await page.locator('.composer').boundingBox();
+  if (!composerBox) throw new Error('找不到聊天输入框');
+  const cdp = await page.context().newCDPSession(page);
+  const dragData = {
+    items: [],
+    files: [textPath, imagePath],
+    dragOperationsMask: 1
+  };
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'dragEnter',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await expect(page.locator('.composer-drop-active')).toBeVisible();
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'drop',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await expect(composer).toHaveValue(`请查看下面两个文件\n${textPath}\n${imagePath}`);
+  expect(await page.evaluate(() => document.querySelector('.composer-drop-active') === null)).toBe(true);
+  expect(readFileSync(textPath)).toEqual(textBytes);
+  expect(readFileSync(imagePath)).toEqual(imageBytes);
+
+  await composer.fill('请查看');
+  await composer.evaluate(element => element.setSelectionRange(2, 2));
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'dragEnter',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'drop',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+
+  await composer.fill('');
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'dragEnter',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await cdp.send('Input.dispatchDragEvent', {
+    type: 'drop',
+    x: composerBox.x + composerBox.width / 2,
+    y: composerBox.y + composerBox.height / 2,
+    data: dragData
+  });
+  await expect(composer).toHaveValue(`${textPath}\n${imagePath}`);
+});
+
+test('真实 Electron 选择本机附件只插入路径', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Select Path Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Select Path Pilot')).toBeVisible();
+
+  const fixtures = join(acceptanceRun.run, 'select-fixtures');
+  mkdirSync(fixtures, { recursive: true });
+  const textPath = join(fixtures, '选择文件 示例.txt');
+  const imagePath = join(fixtures, '选择图片 示例.png');
+  const textBytes = Buffer.from('选择只插入路径，不上传。', 'utf8');
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+  writeFileSync(textPath, textBytes);
+  writeFileSync(imagePath, imageBytes);
+
+  const composer = page.getByRole('textbox', { name: '消息' });
+  const selectButton = page.getByRole('button', { name: '选择本机附件' });
+  await expect(selectButton).toBeEnabled();
+  await composer.fill('请查看');
+  await composer.evaluate(element => element.setSelectionRange(2, 2));
+  await electron.app.evaluate(({ dialog }, paths) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
+  }, [textPath, imagePath]);
+  await selectButton.click();
+  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+
+  await electron.app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = () => new Promise(resolve => {
+      setTimeout(() => resolve({ canceled: true, filePaths: [] }), 250);
+    });
+  });
+  await selectButton.click();
+  await expect(selectButton).toBeDisabled();
+  await expect(selectButton).toBeEnabled();
+  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+
+  await electron.app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = async () => {
+      throw new Error('fixture dialog failure');
+    };
+  });
+  await selectButton.click();
+  await expect(selectButton).toBeEnabled();
+  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+
+  await composer.fill('');
+  await electron.app.evaluate(({ dialog }, paths) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
+  }, [textPath, textPath, imagePath]);
+  await selectButton.click();
+  await expect(composer).toHaveValue(`${textPath}\n${imagePath}`);
+  await expect(selectButton).toBeEnabled();
+  expect(readFileSync(textPath)).toEqual(textBytes);
+  expect(readFileSync(imagePath)).toEqual(imageBytes);
+
+  const groupBots = await page.evaluate(async () => Promise.all([
+    window.rambo.createBot({ name: 'Group Select Alpha', avatar: 'a' }),
+    window.rambo.createBot({ name: 'Group Select Beta', avatar: 'b' })
+  ]));
+  const group = await page.evaluate(({ title, botIds }) =>
+    window.rambo.createGroup({ title, botIds }), {
+    title: 'Group Select E2E',
+    botIds: groupBots.map(item => item.bot.id)
+  });
+  await page.getByLabel('会话列表').getByRole('button', { name: /Group Select E2E/ }).click();
+  const groupComposer = page.getByRole('combobox', { name: '群聊消息输入框' });
+  const groupSelectButton = page.getByRole('button', { name: '选择本机附件' });
+  await expect(groupSelectButton).toBeEnabled();
+  await electron.app.evaluate(({ dialog }, paths) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
+  }, [textPath]);
+  await groupComposer.fill('群聊附件');
+  await groupSelectButton.click();
+  await expect(groupComposer).toHaveValue(`群聊附件\n${textPath}`);
+
+  await page.evaluate(ids => Promise.all(ids.map(id => window.rambo.setBotArchived(id, true))),
+    groupBots.map(item => item.bot.id));
+  await expect(groupSelectButton).toBeDisabled();
+  await expect(groupComposer).toHaveValue(`群聊附件\n${textPath}`);
 });
 
 test('真实 Electron 侧栏未读徽标显示并在打开对应私聊后清除', async ({ electron }) => {

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode
@@ -218,11 +219,12 @@ function UnreadBadge({ count }: { count: number }) {
   );
 }
 
-type IconName = 'plus' | 'settings' | 'chevron' | 'send' | 'stop' | 'close' | 'back' | 'check' | 'arrow' | 'panel' | 'search' | 'account' | 'users' | 'calendar' | 'more' | 'voice' | 'connectors' | 'copy' | 'archive' | 'trash';
+type IconName = 'plus' | 'paperclip' | 'settings' | 'chevron' | 'send' | 'stop' | 'close' | 'back' | 'check' | 'arrow' | 'panel' | 'search' | 'account' | 'users' | 'calendar' | 'more' | 'voice' | 'connectors' | 'copy' | 'archive' | 'trash';
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const shapes: Record<IconName, ReactNode> = {
     plus: <path d="M12 5v14M5 12h14" />,
+    paperclip: <path d="m20.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.6-8.6" />,
     settings: <><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1a1.8 1.8 0 0 1-2.5 2.5l-.1-.1a1.8 1.8 0 0 0-3 .9v.2a1.8 1.8 0 0 1-3.6 0v-.2a1.8 1.8 0 0 0-3-.9l-.1.1a1.8 1.8 0 0 1-2.5-2.5l.1-.1a1.8 1.8 0 0 0-.9-3h-.2a1.8 1.8 0 0 1 0-3.6h.2a1.8 1.8 0 0 0 .9-3l-.1-.1a1.8 1.8 0 0 1 2.5-2.5l.1.1a1.8 1.8 0 0 0 3-.9v-.2a1.8 1.8 0 0 1 3.6 0v.2a1.8 1.8 0 0 0 3 .9l.1-.1a1.8 1.8 0 0 1 2.5 2.5l-.1.1a1.8 1.8 0 0 0 .9 3h.2a1.8 1.8 0 0 1 0 3.6h-.2a1.8 1.8 0 0 0-.9 3Z" /></>,
     chevron: <path d="m9 18 6-6-6-6" />,
     send: <path d="M12 19V5m-7 7 7-7 7 7" />,
@@ -1638,6 +1640,10 @@ function App() {
               setAppError(null);
               try { await window.rambo.sendGroup(currentGroup.id, text); }
               catch (error) { setAppError(toError(error)); throw error; }
+            }} onStop={async () => {
+              setAppError(null);
+              try { await window.rambo.interruptGroup(currentGroup.id); }
+              catch (error) { setAppError(toError(error)); }
             }} />
         ) : view === 'group-chat' ? (
           <div className="page-loading">找不到这个群聊</div>
@@ -3197,12 +3203,13 @@ function AddGroupMembersPage({ group, bots, onCancel, onAdd }: {
   );
 }
 
-function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loading, onError, onSend }: {
+function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loading, onError, onSend, onStop }: {
   group: GroupChat; bots: Bot[]; messages: GroupMessage[]; runtime: GroupRuntimeState | null;
   enteringMessageIds: Set<string>;
   loading: boolean;
   onError: (error: string | null) => void;
   onSend: (text: string) => Promise<void>;
+  onStop: () => Promise<void>;
 }) {
   const members = group.memberIds
     .map(id => bots.find(bot => bot.id === id))
@@ -3261,11 +3268,11 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
             autoAnimate
             label={runningLabel} />
         </div>
-        <Composer groupBots={activeMembers} busy={false}
+        <Composer groupBots={activeMembers} busy={runningMembers.length > 0}
           disabled={activeMembers.length === 0}
           disabledReason={activeMembers.length === 0 ? '群聊中没有活跃的 Bot' : null}
           placeholder="发送群聊消息…" ariaLabel="群聊消息输入框"
-          onSend={onSend} />
+          onSend={onSend} onStop={onStop} />
         {hasUnreadyMembers && (
           <div className="form-error composer-readiness-error" role="status">
             群聊中有 Bot 尚未完成“模型与权限”配置。普通消息和 @everyone 需要所有活跃成员配置完成；也可以 @名字 指定已配置的 Bot。
@@ -3683,6 +3690,8 @@ function Composer({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
+  const [selectingFiles, setSelectingFiles] = useState(false);
   const draftRef = useRef('');
   const [mention, setMention] = useState<ReturnType<typeof mentionRange>>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -3781,15 +3790,86 @@ function Composer({
     }
   };
 
+  const insertDroppedPaths = (paths: string[]) => {
+    if (!paths.length || disabled) return;
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draftRef.current.length;
+    const end = textarea?.selectionEnd ?? start;
+    const current = draftRef.current;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const prefix = before && !before.endsWith('\n') ? '\n' : '';
+    const suffix = after && !after.startsWith('\n') ? '\n' : '';
+    const inserted = `${prefix}${[...new Set(paths)].join('\n')}${suffix}`;
+    const next = before + inserted + after;
+    const caret = before.length + inserted.length;
+    pendingCaretRef.current = caret;
+    setDraft(next);
+    draftRef.current = next;
+    syncMention(next, caret);
+  };
+
+  const selectLocalFiles = async () => {
+    if (disabled || selectingFiles) return;
+    setSelectingFiles(true);
+    try {
+      insertDroppedPaths(await window.rambo.selectLocalFiles());
+    } catch (error) {
+      console.error('无法选择本机附件', error);
+    } finally {
+      setSelectingFiles(false);
+      textareaRef.current?.focus();
+    }
+  };
+
+  const hasFilePayload = (event: ReactDragEvent<HTMLElement>) =>
+    Array.from(event.dataTransfer?.types ?? []).includes('Files');
+
+  const onDragEnter = (event: ReactDragEvent<HTMLFormElement>) => {
+    if (!hasFilePayload(event)) return;
+    event.preventDefault();
+    if (!disabled) setDropActive(true);
+  };
+
+  const onDragOver = (event: ReactDragEvent<HTMLFormElement>) => {
+    if (!hasFilePayload(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = disabled ? 'none' : 'copy';
+  };
+
+  const onDragLeave = (event: ReactDragEvent<HTMLFormElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false);
+  };
+
+  const onDrop = (event: ReactDragEvent<HTMLFormElement>) => {
+    setDropActive(false);
+    if (!hasFilePayload(event)) return;
+    event.preventDefault();
+    const paths = Array.from(event.dataTransfer.files as FileList)
+      .map(file => window.rambo.pathForFile(file))
+      .filter(Boolean);
+    insertDroppedPaths(paths);
+  };
+
   return (
     <div className="composer-dock">
-      <form className={'composer' + (focused ? ' composer-focused' : '')}
+      <form className={'composer' + (focused ? ' composer-focused' : '') + (dropActive ? ' composer-drop-active' : '')}
         onSubmit={event => void submit(event)}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
         onFocusCapture={() => setFocused(true)}
         onBlurCapture={event => {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
         }}>
         <div className="composer-input-row">
+          <button type="button" className="composer-add" aria-label="选择本机附件"
+            title={disabled ? disabledReason ?? '当前配置尚未就绪' : '选择本机附件并插入路径'}
+            disabled={disabled || selectingFiles}
+            onClick={() => void selectLocalFiles()}>
+            <Icon name="paperclip" size={18} />
+          </button>
           <textarea
             ref={textareaRef}
             value={draft}

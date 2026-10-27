@@ -136,6 +136,52 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
     )).toHaveLength(2);
 });
 
+test('真实 Electron 群聊运行中在发送旁显示独立停止按钮', async ({ electron }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Stop Alpha');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Stop Beta');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+
+  const snapshot = await page.evaluate(() => window.rambo.snapshot());
+  const memberIds = snapshot.bots
+    .filter(bot => ['Stop Alpha', 'Stop Beta'].includes(bot.name))
+    .map(bot => bot.id);
+  const group = await page.evaluate(ids =>
+    window.rambo.createGroup({ title: 'Group Stop E2E', botIds: ids }), memberIds);
+  await page.getByLabel('会话列表').getByRole('button', { name: /Group Stop E2E/ }).click();
+
+  await expect(page.getByRole('button', { name: '停止任务' })).toHaveCount(0);
+  const memberChats = await page.evaluate(groupId =>
+    window.rambo.groupMemberChats(groupId), group.id);
+  await page.evaluate(({ groupId, memberChats }) => {
+    const runtime = {
+      groupId,
+      runId: 'group-stop-runtime',
+      members: memberChats.map(chat => ({
+        botId: chat.botId,
+        chatId: chat.id,
+        phase: 'working',
+        enteredAt: new Date().toISOString(),
+        activityKind: null,
+        activityUpdatedAt: null
+      }))
+    };
+    return window.rambo.injectAcceptanceEvent({ type: 'groupRuntime', groupId, runtime });
+  }, { groupId: group.id, memberChats });
+
+  await expect(page.getByRole('button', { name: '停止任务' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送' })).toBeVisible();
+  await page.getByRole('button', { name: '停止任务' }).click();
+  await page.evaluate(groupId =>
+    window.rambo.injectAcceptanceEvent({ type: 'groupRuntime', groupId, runtime: null }), group.id);
+  await expect(page.getByRole('button', { name: '停止任务' })).toHaveCount(0);
+});
+
 test('真实 Electron 群聊重启后保留成员、历史并允许添加成员', async ({ electron }) => {
     const page = await electron.restart();
     const reopenedPage = page;

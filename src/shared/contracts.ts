@@ -378,8 +378,10 @@ export type AppEvent =
   | { type: 'groupCreated'; group: GroupChat }
   | { type: 'error'; chatId?: string; message: string };
 export interface RamboAPI {
+  pathForFile(file: File): string;
   appVersion(): Promise<string>;
   snapshot(): Promise<Snapshot>;
+  selectLocalFiles(): Promise<string[]>;
   setVisibleChat(chatId: string | null): Promise<string | null>;
   setVisibleChatFocus(focused: boolean): Promise<void>;
   botResources(refresh?: boolean): Promise<{ resources: BotResource[]; errors: string[] }>;
@@ -419,6 +421,7 @@ export interface RamboAPI {
   groupMemberChats(groupId: string): Promise<Chat[]>;
   groupMessages(groupId: string): Promise<GroupMessage[]>;
   sendGroup(groupId: string, text: string): Promise<void>;
+  interruptGroup(groupId: string): Promise<void>;
   markChatRead(id: string): Promise<void>;
   setRoutineStatus(id: string, status: RoutineStatus): Promise<RoutineListItem>;
   advanceRoutineScheduleForAcceptance(id: string): Promise<void>;

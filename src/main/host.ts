@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, realpathSync } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   ActivityKind, ActivityStatus, AppEvent, AccountState, Bot, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
@@ -63,7 +63,10 @@ import {
   redactCredentialError
 } from './bot-credential-tools';
 
-type TrackedUnknownOperation = UnknownTurnOperation & { awaitingLateResponse: boolean };
+type TrackedUnknownOperation = UnknownTurnOperation & {
+  awaitingLateResponse: boolean;
+  stoppedGroupMember?: boolean;
+};
 type GroupResponseMode = 'judge' | 'directed' | 'everyone';
 type GroupSessionBinding = { groupId: string; botId: string; purpose: 'member'; mode?: GroupResponseMode };
 export interface OpenedMessageAsset {
@@ -91,6 +94,18 @@ const PLAYWRIGHT_EXTENSION_CONFIG = {
   args: ['-y', '@playwright/mcp@0.0.83', '--extension'],
   enabled: true
 };
+
+function messageAssetPathCandidates(requestedPath: string): string[] {
+  const candidates = [requestedPath];
+  let candidate = requestedPath;
+  while (true) {
+    const locationSuffix = candidate.match(/^(.*):(\d+)$/u);
+    if (!locationSuffix || !isAbsolute(locationSuffix[1])) break;
+    candidate = locationSuffix[1];
+    candidates.push(candidate);
+  }
+  return [...new Set(candidates)];
+}
 
 function routineNextRunLabel(value: string, timezone: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -769,6 +784,7 @@ export class Host {
   readonly activeTurns = new Map<string, string>();
   readonly routineScheduler: RoutineScheduler;
   private busyChats = new Set<string>();
+  private chatSendGenerations = new Map<string, symbol>();
   private startingTurns = new Map<string, string>();
   private loadedThreads = new Set<string>();
   private threadConfigFingerprints = new Map<string, string>();
@@ -792,6 +808,7 @@ export class Host {
   readonly notificationEvidence: BotReplyNotificationRecord[] = [];
   private voiceTranscriptItems = new Map<string, { chatId: string; role: VoiceTranscriptRole; text: string }>();
   private busyGroups = new Set<string>();
+  private stoppingGroups = new Map<string, { runId: string; members: Set<string> }>();
   private voiceSessions = new Map<string, VoiceSession>();
   private voiceStartWaiters = new Map<string, {
     resolve: (value: { chatId: string; threadId: string }) => void;
@@ -1568,6 +1585,7 @@ export class Host {
       const session = this.store.groupSession(groupId, bot.id);
       memberChatId = session.id;
       this.registerGroupSession(session.id, { groupId, botId: bot.id, purpose: 'member', mode });
+      if (this.groupStopped(groupId, session.id)) return;
       const transcript = recentGroupContext(this.store.groupMessages(groupId));
       const prompt = [
         '以下是当前群聊的共享消息记录。它只包含本群消息，不包含任何 Bot 的私聊内容。',
@@ -1580,9 +1598,14 @@ export class Host {
       ].join('\n\n');
       await this.sendConversation(session.id, prompt, undefined, mode, undefined, true, undefined, bot.id);
     } catch (error) {
+      if (memberChatId && this.groupStopped(groupId, memberChatId)) return;
       this.publishGroupMessage(this.store.addGroupMessage(groupId, 'system', `「${bot.name}」未能开始回复：${error instanceof Error ? error.message : String(error)}`, { status: 'failed' }));
       if (memberChatId) this.finishGroupRuntimeMember(memberChatId);
     }
+  }
+
+  private groupStopped(groupId: string, chatId: string): boolean {
+    return this.stoppingGroups.get(groupId)?.members.has(chatId) ?? false;
   }
 
   private publishTurnMetadata(chatId: string, turnId: string | null): void {
@@ -1705,7 +1728,7 @@ export class Host {
         ? '当前额外提供 rambo_group_history.read_history 只读工具。若用户询问本群更早记录而当前近期消息不足，调用它按需查询；它只能读取当前群，不能读取任何 Bot 私聊或其他群。'
         : '',
       chatContentToolsEnabled
-        ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接也可引用当前 Bot 工作区内的相对或绝对路径。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S) 或当前 Bot 工作区内的文件路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
+        ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接可引用当前 Bot 工作区内的相对路径，也可引用本机已有的绝对路径，不必复制进工作区。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S)、当前 Bot 工作区内的文件路径或本机已有的绝对路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
         : '',
       memoryToolsEnabled
         ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型和权限，这两项会同时用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail 应用专用密码并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
@@ -2869,6 +2892,27 @@ export class Host {
     activeTurnAtDispatch: string | undefined
   ): void {
     if (this.unknownOperations.get(operation.chatId)?.operationId !== operation.operationId) return;
+    if (operation.stoppedGroupMember) {
+      const turnId = outcome.result?.turn?.id;
+      if (typeof turnId === 'string') {
+        this.store.attachTurnIdToTerminal(operation.operationId, operation.threadId, turnId);
+        const chatId = operation.chatId;
+        void this.runtime.request('turn/interrupt', { threadId: operation.threadId, turnId })
+          .then(() => {
+            this.finishVisibleMessages(chatId, 'interrupted');
+            this.finishGroupRuntimeMember(chatId);
+          })
+          .catch(() => {});
+        this.recordCompletedTurn(operation.threadId, turnId);
+      }
+      this.clearTurnStarting(operation.chatId);
+      this.pendingTurnRecords.delete(operation.chatId);
+      this.clearUnknownOperation(operation);
+      this.busyChats.delete(operation.chatId);
+      this.chatSendGenerations.delete(operation.chatId);
+      this.notifyChatIdle(operation.chatId);
+      return;
+    }
     if (outcome.error) {
       if (operation.operation === 'turnStart') {
         this.store.setTurnStatus(operation.operationId, 'failed');
@@ -2889,6 +2933,7 @@ export class Host {
     }
     if (operation.operation === 'turnStart') {
       this.clearTurnStarting(operation.chatId, operation.operationId);
+      this.store.attachTurnIdToTerminal(operation.operationId, operation.threadId, turnId);
       this.store.attachTurnId(operation.operationId, operation.threadId, turnId, 'running');
       this.store.setTurnDispatchStatus(operation.operationId, 'dispatched');
       this.pendingTurnRecords.delete(operation.chatId);
@@ -2896,6 +2941,17 @@ export class Host {
     if (operation.operation === 'turnStart' &&
         !this.turnWasCompleted(operation.threadId, turnId)) {
       const activeNow = this.activeTurns.get(operation.chatId);
+      if (this.groupStoppedGroupSession(operation.chatId)) {
+        void this.runtime.request('turn/interrupt', { threadId: operation.threadId, turnId }).catch(() => {});
+        this.resetGroupMemberThreadForChat(operation.chatId);
+        this.finishVisibleMessages(operation.chatId, 'interrupted');
+        this.finishGroupRuntimeMember(operation.chatId);
+        this.publish({ type: 'turn', chatId: operation.chatId, turnId: null });
+        this.notifyChatIdle(operation.chatId);
+        this.clearUnknownOperation(operation);
+        this.publishTurnMetadata(operation.chatId, turnId);
+        return;
+      }
       if (activeNow === activeTurnAtDispatch || activeNow === turnId) {
         this.activeTurns.set(operation.chatId, turnId);
         this.publish({ type: 'turn', chatId: operation.chatId, turnId });
@@ -3121,15 +3177,25 @@ export class Host {
     try {
       const bot = this.store.bot(botId);
       const workspace = realpathSync(this.workspace(bot));
-      const candidate = realpathSync(isAbsolute(requestedPath) ? requestedPath : resolve(workspace, requestedPath));
-      const relativePath = relative(workspace, candidate);
-      const isInWorkspace = !!relativePath && relativePath !== '..' &&
-        !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath);
-      const isRecordedGeneratedImage = !isInWorkspace && this.store.generatedImagePathsForMessage(messageId).some(path => {
-        try { return realpathSync(path) === candidate; }
-        catch { return false; }
-      });
-      if (!isInWorkspace && !isRecordedGeneratedImage) return null;
+      const requested = isAbsolute(requestedPath) ? requestedPath : resolve(workspace, requestedPath);
+      const candidates = messageAssetPathCandidates(requested);
+      let candidate: string | null = null;
+      for (const path of candidates) {
+        try {
+          candidate = realpathSync(path);
+          break;
+        } catch {
+          candidate = null;
+        }
+      }
+      if (!candidate) return null;
+      descriptor = openSync(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const file = fstatSync(descriptor);
+      if (!file.isFile()) {
+        closeSync(descriptor);
+        descriptor = null;
+        return null;
+      }
       const mimeTypes: Record<string, string> = {
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
         '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.aac': 'audio/aac', '.flac': 'audio/flac', '.opus': 'audio/ogg',
@@ -3142,13 +3208,6 @@ export class Host {
       };
       const fileName = candidate.slice(candidate.lastIndexOf(sep) + 1);
       const mimeType = mimeTypes[extname(candidate).toLocaleLowerCase()] ?? 'application/octet-stream';
-      descriptor = openSync(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const file = fstatSync(descriptor);
-      if (!file.isFile()) {
-        closeSync(descriptor);
-        descriptor = null;
-        return null;
-      }
       return { descriptor, path: candidate, mimeType, size: file.size, fileName };
     } catch {
       if (descriptor !== null) closeSync(descriptor);
@@ -3685,6 +3744,8 @@ export class Host {
       return;
     }
     this.busyChats.add(chatId);
+    const sendGeneration = Symbol(chatId);
+    this.chatSendGenerations.set(chatId, sendGeneration);
     try {
       await this.runtime.start();
       if (this.voiceSessions.has(chatId)) this.replaceVoiceDraft(chatId);
@@ -3693,6 +3754,7 @@ export class Host {
       if (this.unknownOperations.has(chatId)) throw new Error('上一条消息的执行结果仍未确认，已暂时阻止重复发送');
 
       const activeBeforeSetup = this.activeTurns.get(chatId);
+      if (this.groupStoppedGroupSession(chatId)) throw new Error('群聊本轮已停止');
       const activeRecord = activeBeforeSetup && chat.threadId
         ? this.store.turnByServerId(chat.threadId, activeBeforeSetup)
         : null;
@@ -3909,8 +3971,25 @@ export class Host {
             error.outcomeUnknown = true;
             throw error;
           }
+          if (this.groupStoppedGroupSession(chatId)) {
+            this.store.attachTurnIdToTerminal(turnRecord?.id ?? operation.operationId, threadId!, turnId);
+            if (turnRecord) this.store.setTurnStatus(turnRecord.id, 'interrupted');
+            this.resetGroupMemberThreadForChat(chatId);
+            this.clearTurnStarting(chatId);
+            this.pendingTurnRecords.delete(chatId);
+            this.clearUnknownOperation(operation);
+            try {
+              await this.runtime.request('turn/interrupt', { threadId, turnId });
+            } catch { /* the turn may have ended before the late stop */ }
+            this.finishVisibleMessages(chatId, 'interrupted');
+            this.finishGroupRuntimeMember(chatId);
+            this.publish({ type: 'turn', chatId, turnId: null });
+            this.notifyChatIdle(chatId);
+            return;
+          }
           if (turnRecord) this.clearTurnStarting(chatId, turnRecord.id);
           if (turnRecord) {
+            this.store.attachTurnIdToTerminal(turnRecord.id, threadId!, turnId);
             this.store.attachTurnId(turnRecord.id, threadId!, turnId, 'running');
             this.store.setTurnDispatchStatus(turnRecord.id, 'dispatched');
             if (turnRecord.userMessageId) this.publishMessageDispatchState(chatId, turnRecord.userMessageId);
@@ -3919,6 +3998,18 @@ export class Host {
           if (this.voiceSessions.has(chatId)) this.replaceVoiceDraft(chatId);
           this.clearUnknownOperation(operation);
           const activeNow = this.activeTurns.get(chatId);
+          if (this.groupStoppedGroupSession(chatId)) {
+            try {
+              await this.runtime.request('turn/interrupt', { threadId, turnId });
+            } catch { /* the turn may have ended before the late stop */ }
+            if (turnRecord) this.store.setTurnStatus(turnRecord.id, 'interrupted');
+            this.resetGroupMemberThreadForChat(chatId);
+            this.finishVisibleMessages(chatId, 'interrupted');
+            this.finishGroupRuntimeMember(chatId);
+            this.publish({ type: 'turn', chatId, turnId: null });
+            this.notifyChatIdle(chatId);
+            return;
+          }
           if (!this.turnWasCompleted(threadId!, turnId) && (!activeNow || activeNow === turnId)) {
             this.activeTurns.set(chatId, turnId);
             this.publish({ type: 'turn', chatId, turnId });
@@ -3967,9 +4058,12 @@ export class Host {
         throw error;
       }
     } finally {
-      this.busyChats.delete(chatId);
-      this.notifyChatIdle(chatId);
-      void this.drainQueuedMessages(chatId);
+      if (this.chatSendGenerations.get(chatId) === sendGeneration) {
+        this.chatSendGenerations.delete(chatId);
+        this.busyChats.delete(chatId);
+        this.notifyChatIdle(chatId);
+        void this.drainQueuedMessages(chatId);
+      }
     }
   }
 
@@ -3991,9 +4085,117 @@ export class Host {
     }
   }
 
-  async interrupt(chatId: string): Promise<void> {
+  async interrupt(chatId: string): Promise<{ threadId: string; turnId: string } | null> {
     const chat = this.store.chat(chatId), turnId = this.activeTurns.get(chatId);
-    if (turnId && chat.threadId) await this.runtime.request('turn/interrupt', { threadId: chat.threadId, turnId });
+    if (!turnId || !chat.threadId) return null;
+    await this.runtime.request('turn/interrupt', { threadId: chat.threadId, turnId });
+    return { threadId: chat.threadId, turnId };
+  }
+
+  async interruptGroup(groupId: string): Promise<void> {
+    const runtime = this.groupRuntimes.get(groupId);
+    if (!runtime) {
+      this.busyGroups.delete(groupId);
+      this.stoppingGroups.delete(groupId);
+      return;
+    }
+    this.stoppingGroups.set(groupId, {
+      runId: runtime.runId,
+      members: new Set(runtime.members.map(member => member.chatId))
+    });
+    const failures: string[] = [];
+    for (const member of runtime.members) {
+      const failure = await this.stopGroupMember(groupId, member);
+      if (failure) failures.push(failure);
+    }
+    if (failures.length) {
+      this.stoppingGroups.delete(groupId);
+      throw new Error(`有 ${failures.length} 个群聊成员未能停止：${failures[0]}`);
+    }
+    this.busyGroups.delete(groupId);
+    this.stoppingGroups.delete(groupId);
+    this.publishGroupRuntime(groupId, null);
+  }
+
+  private async stopGroupMember(groupId: string, member: GroupRuntimeMember): Promise<string | null> {
+    const chat = this.store.chat(member.chatId);
+    const activeTurnId = this.activeTurns.get(member.chatId);
+    const startingTurnRecordId = this.startingTurns.get(member.chatId);
+    const pendingTurnRecordId = this.pendingTurnRecords.get(member.chatId);
+    const operation = this.unknownOperations.get(member.chatId);
+    if (operation) operation.stoppedGroupMember = true;
+    if (!activeTurnId) {
+      const turnId = startingTurnRecordId ?? pendingTurnRecordId;
+      if (turnId) this.store.setTurnStatus(turnId, 'interrupted');
+      this.clearTurnStarting(member.chatId);
+      this.pendingTurnRecords.delete(member.chatId);
+      this.finishVisibleMessages(member.chatId, 'interrupted');
+      this.resetGroupMemberThread(groupId, member.botId, member.chatId);
+      this.finishGroupRuntimeMember(member.chatId);
+      this.busyChats.delete(member.chatId);
+      this.chatSendGenerations.delete(member.chatId);
+      this.publish({ type: 'turn', chatId: member.chatId, turnId: null });
+      this.notifyChatIdle(member.chatId);
+      return null;
+    }
+    try {
+      await this.runtime.request('turn/interrupt', {
+        threadId: chat.threadId,
+        turnId: activeTurnId
+      });
+      this.finishInterruptedTurn(member.chatId, activeTurnId);
+      this.resetGroupMemberThread(groupId, member.botId, member.chatId);
+      return null;
+    } catch (error) {
+      if (/no active turn to interrupt/iu.test(error instanceof Error ? error.message : String(error))) {
+        this.finishInterruptedTurn(member.chatId, activeTurnId);
+        this.resetGroupMemberThread(groupId, member.botId, member.chatId);
+        return null;
+      }
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  private groupStoppedGroupSession(chatId: string): boolean {
+    const binding = this.groupSessionsByChat.get(chatId);
+    return binding ? this.groupStopped(binding.groupId, chatId) : false;
+  }
+
+  private resetGroupMemberThreadForChat(chatId: string): void {
+    const binding = this.groupSessionsByChat.get(chatId);
+    if (binding) this.resetGroupMemberThread(binding.groupId, binding.botId, chatId);
+  }
+
+  private resetGroupMemberThread(groupId: string, botId: string, chatId: string): void {
+    const oldThreadId = this.store.chat(chatId).threadId;
+    this.store.resetGroupSessionThread(groupId, botId);
+    if (!oldThreadId) return;
+    this.threadChats.delete(oldThreadId);
+    this.loadedThreads.delete(oldThreadId);
+    this.threadConfigFingerprints.delete(oldThreadId);
+    this.completedTurns.delete(oldThreadId);
+    for (const key of this.turnAssistantTexts.keys()) {
+      if (key.startsWith(`${oldThreadId}:`)) this.turnAssistantTexts.delete(key);
+    }
+    this.itemTurns.clear();
+    this.changed();
+  }
+
+  private finishInterruptedTurn(chatId: string, turnId: string): void {
+    const chat = this.store.chat(chatId);
+    const record = this.store.turnByServerId(chat.threadId!, turnId);
+    if (record) {
+      this.store.setTurnStatus(record.id, 'interrupted');
+      this.publishTurnMetadata(chatId, turnId);
+    }
+    if (this.activeTurns.get(chatId) === turnId) this.activeTurns.delete(chatId);
+    this.clearTurnStarting(chatId);
+    this.pendingTurnRecords.delete(chatId);
+    this.finishVisibleMessages(chatId, 'interrupted');
+    this.finishGroupRuntimeMember(chatId);
+    this.publish({ type: 'turn', chatId, turnId: null });
+    this.notifyChatIdle(chatId);
+    this.changed();
   }
 
   async stopRoutineRun(runId: string): Promise<ReturnType<Store['routineRun']>> {
