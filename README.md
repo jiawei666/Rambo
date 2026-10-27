@@ -1,42 +1,192 @@
-# Rambo
+<p align="center">
+  <a href="https://github.com/jiawei666/Rambo/releases/latest">
+    <img src="assets/branding/app-logo-source.png" width="168" height="168" alt="Rambo logo" style="border-radius: 36px;" />
+  </a>
+</p>
 
-自用 macOS Bot 应用，既定范围内的已有界面和交互按 Grok Bot 原版证据完全复刻，底层采用由应用管理的 Codex App Server。
+<h1 align="center">Rambo</h1>
 
-用户已授权开始开发，当前处于分批实现阶段。先阅读 [产品决策记录](docs/product-decisions.md)；需要核对原话、确认回复或方案变化时，查阅 [完整问答摘录](docs/conversation-evidence.md)。当前实际进度见 [实施记录](docs/implementation-progress.md)。
+<p align="center">
+  A personal AI agent that lives on your Mac.
+</p>
 
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/jiawei666/Rambo/releases/latest">Download</a> ·
+  <a href="docs/product-decisions.md">Product decisions</a> ·
+  <a href="docs/technical-design.md">Technical design</a>
+</p>
 
-全部已确认功能的操作步骤、预期结果与交付判定见 [全量验收矩阵](docs/acceptance-matrix.md)。当前正在按冻结基线逐项验收；局部案例不代表 146 条规则或发布套件通过。最新进度、缺口和证据入口见[当前验收任务](docs/active-acceptance-run.md)。
+<p align="center">
+  <a href="https://github.com/jiawei666/Rambo/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/jiawei666/Rambo?style=flat-square" /></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20arm64-111111?style=flat-square" />
+  <img alt="Built with Electron" src="https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848f?style=flat-square" />
+  <img alt="Runtime" src="https://img.shields.io/badge/runtime-Codex%20App%20Server-222222?style=flat-square" />
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
+</p>
 
-技术方案见 [技术设计](docs/technical-design.md)，Codex 0.163.0 协议与证据边界见 [App Server 本机核对](docs/app-server-evidence.md)。采用 Electron / React / TypeScript 和本机 SQLite 开始实现；Voice、Computer Use、历史隔离等仍待实际验证。
+---
 
-第一轮只读调查结论见 [独立运行可行性](docs/feasibility-status.md)，包含 Voice 的 WebRTC 认证路径、Computer Use 组件依赖，以及现成 App Server 历史来源方案的反证。
+## Why Rambo?
 
-第二轮已找到上游独立 App Server 的来源参数及 macOS 发行物条目，当前推荐见 [历史隔离方案收敛](docs/history-isolation-plan.md)；与 CLI 子命令的默认来源问题分开，尚未运行验证。
+I kept paying for more Codex/GPT usage than I could spend each month. Instead of letting the remaining quota expire, I turned it into **Rambo** — a personal agent that runs on my own Mac, keeps its own memory, and can work on my behalf throughout the day.
 
-正式应用/项目名称与唤醒称呼均为 **Rambo**（用户指定《第一滴血》主角名字）。Logo 使用[用户提供的原图](assets/branding/app-logo-source.png)，来源与当前命名见[品牌素材记录](docs/branding.md)。
+Rambo is built around an interface and interaction study of **Grok Bot**, reconstructed from its decompiled desktop app and UI assets. The underlying agent runtime is **Codex App Server**. The result is a local-first personal agent with a familiar Mac app experience.
 
-## 本机开发
+> **Project status:** Rambo is under active development. The latest release is usable for day-to-day exploration, but it is not yet a fully acceptance-tested product. See [Project status](#project-status).
 
-运行时不随 `.app` 打包。Rambo 优先直接启动本机 Codex daemon package 中的同一份 `bin/codex app-server`，独立管理自己的 stdio 子进程，不连接现有 daemon。本机没有可用入口时保留缓存与经校验下载回退。Rambo 使用应用数据目录下的独立 `codex-home` 保存会话和状态数据库，通过符号链接共用本机 `auth.json`、配置及所需资源；不复制凭据、不共享会话目录。当前共享认证支持文件模式，Keychain/auto 模式明确报不兼容。旧会话只按 Rambo 登记的 thread ID 复制并保留源文件。方案依据见 [Q147](docs/decision-followups.md#q147)。
+## Highlights
+
+- **Runs locally on macOS.** Bots, chats, routines, settings, and memory stay on your Mac in a dedicated local data directory.
+- **Uses your existing Codex account.** Rambo starts and manages its own Codex App Server process and reuses your local Codex authentication instead of requiring a separate Rambo account.
+- **Chat with connected apps.** Use QQ Mail and Gmail, and connect to a local WeChat environment when its permissions and local database access are available.
+- **Plan work on your behalf.** Create one-time and recurring routines in natural language, with reminders, run history, retries, and catch-up behavior.
+- **Bring multiple Bots into one conversation.** Bots can work in a shared group chat while keeping their own private chat, memory, model, and permission settings.
+- **Control resources per Bot.** Choose which Skills, MCP servers, Apps, and Plugins are available to each Bot after they are added to the shared catalog.
+- **Talk to your agent.** Start a live voice conversation, keep the transcript in chat, and continue with text when you are done.
+- **Work with local files.** Preview images, PDFs, text, Markdown, CSV, audio, and video; drag files into the composer to insert their local paths; and ask a Bot to reference files outside its workspace.
+- **Rich chat output.** Markdown, code with syntax highlighting, math, Mermaid diagrams, interactive question cards, structured result cards, media, and embedded MCP content share one chat surface.
+
+## Features
+
+### Local-first personal agent
+
+Rambo is not tied to a browser tab or a hosted dashboard. It runs as a native macOS app, manages its own agent runtime, and keeps the product data on your machine. It is designed for a single person who wants a long-running assistant rather than another account-based SaaS product.
+
+### Grok Bot interface study
+
+The existing interface and interaction patterns are based on a reverse-engineering study of Grok Bot's desktop UI. Rambo follows that visual language where the behavior is already defined, then extends it with the features that make sense for a local personal agent.
+
+This is an independent project. It is not affiliated with Grok, Google, OpenAI, or any of the connected services.
+
+### Connected apps
+
+Rambo has connectors for:
+
+- **QQ Mail** — search, read, attach, draft, reply, and send through QQ Mail.
+- **Gmail** — use either an app password or OAuth, with localized Gmail mailbox handling.
+- **WeChat** — query chats and messages from a local WeChat environment after the required local setup and authorization.
+- **Calendar, GitHub, and other MCP-backed services** — available through the MCP and resource system when configured.
+
+Connections are scoped per Bot. A connection can be available to one Bot without being silently exposed to every other Bot.
+
+### Routines and reminders
+
+Ask a Bot to remember something, run a task later, or check in on a recurring schedule. Rambo supports:
+
+- One-time and recurring routines
+- Multiple discrete trigger times per day
+- Natural-language creation and editing
+- Pause, resume, run now, and stop controls
+- Run history and delivery back to the originating Bot
+- Catch-up rules after the app was not running
+
+The scheduler runs locally. A saved schedule is not treated as proof that a future run actually happened; completed runs are recorded separately.
+
+### Multi-Bot group chat
+
+Create a group with multiple Bots and let them work in one shared timeline. Each member keeps its own private context, model, permissions, and resource switches. Group replies are not a disguised relay through one global Bot, and each member's work remains attributable.
+
+### Per-Bot Skills, MCP, Apps, and Plugins
+
+Rambo uses a three-layer resource model:
+
+1. A discoverable catalog of local Skills, MCP servers, Apps, and Plugins.
+2. A shared selectable catalog.
+3. Independent switches for each Bot.
+
+A new Bot copies the current shared defaults once. After creation, changing another Bot's switches or the shared defaults does not rewrite that Bot's configuration.
+
+### Voice
+
+Start a voice session from the Bot you are talking to. Live transcription is written into the chat, and the same Bot continues the conversation in text after the voice session ends.
+
+### Chat workspace and files
+
+The chat surface is designed as one continuous workspace: a floating Bot header, a scrollable transcript, and a composer that stays out of the way. Files can be previewed in-app, opened with a local application, revealed in Finder, or referenced directly from a Bot response.
+
+Dragging a file into the composer inserts its absolute path. It does not upload or copy the file, and it does not create an attachment record unless you explicitly use the attachment workflow.
+
+## How it works
+
+```text
+┌─────────────────────────────────────────────┐
+│ Rambo.app                                   │
+│  Electron + React + TypeScript              │
+│                                             │
+│  Bots · chats · groups · routines · memory  │
+│  connectors · resource switches · files     │
+└──────────────────────┬──────────────────────┘
+                       │ stdio
+┌──────────────────────▼──────────────────────┐
+│ Codex App Server                            │
+│  managed by Rambo as an isolated child      │
+│  process                                    │
+└──────────────────────┬──────────────────────┘
+                       │
+             local Codex authentication
+             and local tool resources
+```
+
+Rambo does not bundle the Codex App Server in the application package. It prefers the Codex runtime already installed on the Mac, falls back to a verified cache or package when needed, and keeps its product data in a local application data directory. Authentication is shared through the local Codex configuration; Rambo does not create a second account system.
+
+## Installation
+
+Download the latest macOS arm64 build from [GitHub Releases](https://github.com/jiawei666/Rambo/releases/latest).
+
+1. Unzip the downloaded archive.
+2. Move `Rambo.app` to your Applications folder.
+3. Because the app is not Developer ID signed or notarized, macOS Gatekeeper will block the first launch. Open **System Settings → Privacy & Security** and allow the app, or Control-click the app in Finder and choose **Open**.
+4. Make sure a local Codex installation and authentication are available. Rambo will use the local runtime when possible.
+
+The app has an ad-hoc local signature only. It is not a warning-free install and it does not carry a Developer ID certificate.
+
+### Build from source
+
+Requirements:
+
+- macOS on Apple Silicon
+- Node.js and npm
+- A local Codex installation for the agent runtime
 
 ```sh
 npm install
 npm run dev
 ```
 
-本机已有独立运行时时可直接 `npm run dev`；需要预置缓存时可显式运行 `npm run runtime:prepare`。`npm run build` 生成桌面代码，`npm run package:mac` 生成本机未签名应用目录。运行时下载或校验失败时界面如实显示错误，不退回公用 CLI 进程。认证沿本机 Codex 配置，产品数据保存在 Electron 的 Rambo 用户数据目录。
-
-当前实现不等于完整交付；当前规则通过为 0/146，J1–J4 和七个发布套件均未通过。尚未接通的功能和验收状态见实施记录，不使用演示回复代替真实 Codex。
-
-## 全量验收 Skill
-
-使用项目内的 [$rambo-acceptance](.agents/skills/rambo-acceptance/SKILL.md)：日常先跑单测、Host/SQLite 集成和 Playwright Electron 脚本；真实模型、设备、邮件与 macOS 原生能力只在候选和发布阶段验证。`tests/acceptance/catalog.json` 将全部产品规则映射到测试层级与证据类型。
+Useful commands:
 
 ```sh
-npm run verify:fast
-npm run verify:feature -- --rules B13,G02
-npm run verify:candidate
-npm run accept:release
+npm run build          # Build the Electron application
+npm run package:mac    # Build the unpacked macOS app
+npm run typecheck      # TypeScript checks
+npm run verify:fast    # Backend, acceptance, catalog, and ledger checks
 ```
 
-确定性自动测试可登记单次机器证据；人工界面、真实设备和外部副作用仍独立复验。使用独立测试数据，不在日常产品数据中做删除/故障注入。完整运行记录保存到 `acceptance-runs/<run-id>/`，默认不入库。
+Rambo uses an isolated app data directory for its Codex home while reusing the local Codex authentication and required configuration. It does not copy credentials or merge its conversations into the normal Codex history list.
+
+## Project status
+
+The current release is **v0.1.5**. The acceptance catalog tracks **146 product rules**, **231 local test cases**, **114 executable cases**, and **117 explicit implementation gaps**.
+
+The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
+
+Read the [acceptance matrix](docs/acceptance-matrix.md), [test plan](docs/acceptance-test-plan.md), and [implementation progress](docs/implementation-progress.md) for details.
+
+## Documentation
+
+- [Product decisions](docs/product-decisions.md)
+- [Technical design](docs/technical-design.md)
+- [Acceptance matrix](docs/acceptance-matrix.md)
+- [Acceptance test plan](docs/acceptance-test-plan.md)
+- [Implementation progress](docs/implementation-progress.md)
+- [File preview compatibility](docs/file-preview-compatibility.md)
+- [Branding](docs/branding.md)
+
+## License
+
+Rambo is released under the [MIT License](LICENSE).
+
+## Acknowledgements
+
+Rambo's interface study builds on Grok Bot's desktop app. The agent runtime is based on Codex and Codex App Server. Thank you to the open-source projects that make Electron, React, Vite, Mermaid, KaTeX, and the local media tooling possible.
