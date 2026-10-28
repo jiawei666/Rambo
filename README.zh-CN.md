@@ -29,7 +29,7 @@
 
 ## 为什么做 Rambo？
 
-每个月用不完的 Codex/GPT 额度，与其月底作废，不如做成一个真正属于自己、长期待在自己电脑里的 Personal Agent。Rambo 就是为此而做的个人项目。
+我想把自己的 Codex App Server 接成一个真正长期待在本机的 Personal Agent，让它有自己的记忆，也能按我的生活和工作节奏做事。**Rambo** 就是为此而做的个人项目。
 
 Rambo 的界面与交互基于对 **Grok Bot** 桌面端的反编译和界面研究构建，底层 Agent 运行时使用 **Codex App Server**。它把一套熟悉的 Mac 应用体验、可长期保存的 Bot 记忆和本机工具能力放在同一个产品里。
 

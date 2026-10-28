@@ -29,7 +29,7 @@
 
 ## Why Rambo?
 
-I kept paying for more Codex/GPT usage than I could spend each month. Instead of letting the remaining quota expire, I turned it into **Rambo** — a personal agent that runs on my own Mac, keeps its own memory, and can work on my behalf throughout the day.
+I wanted to connect my own Codex App Server to a personal agent that runs on my Mac, keeps its own memory, and can work on my behalf throughout the day. **Rambo** is that project.
 
 Rambo is built around an interface and interaction study of **Grok Bot**, reconstructed from its decompiled desktop app and UI assets. The underlying agent runtime is **Codex App Server**. The result is a local-first personal agent with a familiar Mac app experience.
 
