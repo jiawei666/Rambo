@@ -57,7 +57,7 @@ Rambo 的界面与交互基于对 **Grok Bot** 桌面端的反编译和界面研
 
 <p align="center"><sub>在完成本机访问配置和授权后，可以让 Bot 汇总最近的微信会话，不需要把原始数据库交给云端服务。</sub></p>
 
-<p align="center"><sub>截图中的个人会话内容与账号标识已遮挡。</sub></p>
+<p align="center"><sub>截图中的账号标识已遮挡。</sub></p>
 
 ## 功能亮点
 

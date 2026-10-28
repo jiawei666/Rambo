@@ -57,7 +57,7 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 
 <p align="center"><sub>When local access is configured and granted, ask a Bot for a recent WeChat summary without moving the source database into a hosted service.</sub></p>
 
-<p align="center"><sub>Personal conversation content and account identifiers are redacted in these screenshots.</sub></p>
+<p align="center"><sub>Account identifiers are redacted in these screenshots.</sub></p>
 
 ## Highlights
 
