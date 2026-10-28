@@ -37,6 +37,16 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 
 ## Screenshots
 
+### Connected apps
+
+<p align="center">
+  <a href="assets/screenshots/connected-apps.png">
+    <img src="assets/screenshots/connected-apps.png" alt="Rambo connected apps screen showing Gmail, QQ Mail, WeChat, Calendar, and GitHub" width="100%" />
+  </a>
+</p>
+
+<p align="center"><sub>Connect mail and local services once, then grant each Bot access independently.</sub></p>
+
 ### Daily planning and independent routines
 
 <p align="center">
@@ -46,16 +56,6 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 </p>
 
 <p align="center"><sub>One natural-language brief becomes a day plan, connected-app checks, and independent routines for meals, fitness, and important follow-ups.</sub></p>
-
-### Local WeChat read
-
-<p align="center">
-  <a href="assets/screenshots/wechat-local-read.png">
-    <img src="assets/screenshots/wechat-local-read.png" alt="Rambo chat summarizing recent WeChat conversations from the local database" width="100%" />
-  </a>
-</p>
-
-<p align="center"><sub>When local access is configured and granted, ask a Bot for a recent WeChat summary without moving the source database into a hosted service.</sub></p>
 
 <p align="center"><sub>Account identifiers are redacted in these screenshots.</sub></p>
 
