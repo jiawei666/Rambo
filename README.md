@@ -191,7 +191,7 @@ Rambo uses an isolated app data directory for its Codex home while reusing the l
 
 ## Project status
 
-The current release is **v0.1.5**. The acceptance catalog tracks **146 product rules**, **231 local test cases**, **114 executable cases**, and **117 explicit implementation gaps**.
+The current release is **v0.1.6**. The acceptance catalog tracks **148 product rules**, **237 local test cases**, **118 executable cases**, and **119 explicit implementation gaps**.
 
 The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
 
