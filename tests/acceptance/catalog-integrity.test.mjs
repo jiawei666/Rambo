@@ -197,7 +197,7 @@ test('the catalog keeps the current implementation boundary explicit', () => {
     .concat(catalog.releaseSuites.flatMap(item => item.rules))
     .filter(rule => !implementedRules.has(rule)));
 
-  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 114);
+  assert.equal(catalog.cases.filter(item => item.status === 'implemented').length, 118);
   assert.ok(catalog.cases.filter(item => item.status === 'not_implemented').length >=
     new Set(catalog.cases.filter(item => item.status === 'not_implemented').flatMap(item => item.rules)).size);
   assert.equal(implementedRules.size, 52);

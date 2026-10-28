@@ -49,6 +49,10 @@ export type RuntimeResolverDeps = {
   ownedThreadIds?: () => readonly string[];
   /** Manual proxy supplied by the app; applied only to the Codex child process. */
   proxyUrl?: string | null;
+  /** Extra -c overrides for the application-level model source. */
+  configOverrides?: () => readonly string[];
+  /** Environment entries for the application-level model source. */
+  environment?: () => Readonly<Record<string, string>>;
 };
 
 const DEFAULT_RUNTIME_VERSION = '0.164.0';
@@ -227,6 +231,14 @@ export class CodexRuntime extends EventEmitter {
     this.resolverDeps.proxyUrl = proxyUrl?.trim() || null;
   }
 
+  setModelSourceConfig(
+    overrides: readonly string[],
+    environment: Readonly<Record<string, string>>
+  ): void {
+    this.resolverDeps.configOverrides = () => overrides;
+    this.resolverDeps.environment = () => environment;
+  }
+
   private setState(status: RuntimeState['status'], error: string | null = null): void {
     this.state = { ...this.state, status, error };
     this.emit('state', this.state);
@@ -276,12 +288,17 @@ export class CodexRuntime extends EventEmitter {
     const args = basename(layout.binary) === 'codex'
       ? ['app-server', '--listen', 'stdio://']
       : ['--listen', 'stdio://', '--session-source', 'app-server'];
-    args.push('-c', 'cli_auth_credentials_store="file"', '-c', `sqlite_home=${JSON.stringify(codexHome)}`);
+    args.push(
+      '-c', 'cli_auth_credentials_store="file"',
+      '-c', `sqlite_home=${JSON.stringify(codexHome)}`,
+      ...(this.resolverDeps.configOverrides?.() ?? [])
+    );
     const child = this.spawnProcess(layout.binary, args, {
       cwd: this.workingDirectory,
       env: {
         ...process.env,
         ...runtimeProxyEnv(this.resolverDeps.proxyUrl),
+        ...(this.resolverDeps.environment?.() ?? {}),
         CODEX_HOME: codexHome,
         CODEX_SQLITE_HOME: codexHome,
         PATH: `${layout.pathDirectory}:${process.env.PATH ?? '/usr/bin:/bin'}`
@@ -322,7 +339,9 @@ export class CodexRuntime extends EventEmitter {
             }
           }
         } else if (message.method && message.id !== undefined) {
-          if (message.method === 'item/tool/call' && this.emit('serverRequest', message)) return;
+          if ((message.method === 'item/tool/call' ||
+               message.method === 'mcpServer/elicitation/request') &&
+              this.emit('serverRequest', message)) return;
           // 未接入的宿主工具/审批必须明确返回错误，不能静默卡住或谎称成功。
           this.write({ id: message.id, error: { code: -32601, message: `Rambo 尚未接入此宿主请求：${message.method}` } });
           this.emit('unsupportedRequest', message.method);
@@ -337,7 +356,10 @@ export class CodexRuntime extends EventEmitter {
     try {
       await this.request('initialize', {
         clientInfo: { name: 'rambo', title: 'Rambo', version: '0.1.0' },
-        capabilities: { experimentalApi: true }
+        capabilities: {
+          experimentalApi: true,
+          extensions: { 'openai/form': {} }
+        }
       });
       this.write({ method: 'initialized', params: {} });
       if (this.process !== child) throw new Error('Codex 初始化已中断');

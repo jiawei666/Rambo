@@ -80,6 +80,7 @@ function writePlugin(home, marketplace, plugin, version, manifestPath, manifest)
   const path = join(root, manifestPath);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(manifest));
+  return root;
 }
 
 async function withDirectories(run) {
@@ -88,10 +89,20 @@ async function withDirectories(run) {
   const homeB = createHome();
   const storeDirectory = mkdtempSync(join(tmpdir(), 'rambo-resource-store-'));
   try {
-    writePlugin(homeA, 'openai-bundled', 'visualize', '1.0.0', '.codex-plugin/plugin.json', {
+    const visualizeRoot = writePlugin(homeA, 'openai-bundled', 'visualize', '1.0.0', '.codex-plugin/plugin.json', {
       name: 'visualize',
-      description: 'Bundled visualization fixture'
+      description: 'Bundled visualization fixture',
+      mcpServers: './.mcp.json'
     });
+    writeFileSync(join(visualizeRoot, '.mcp.json'), JSON.stringify({
+      mcpServers: {
+        'visualize-runtime': {
+          command: './bin/visualize-server',
+          cwd: '.',
+          env: { FIXTURE_TOKEN: 'plugin-only-token' }
+        }
+      }
+    }));
     writePlugin(homeA, 'vendor', 'hook-plugin', '2.0.0', '.claude-plugin/plugin.json', {
       name: 'hook-plugin',
       description: 'Claude manifest fixture'
@@ -101,7 +112,7 @@ async function withDirectories(run) {
       description: 'Home B fixture'
     });
     const loaded = await loadModules(modules);
-    await run({ ...loaded, homeA, homeB, storeDirectory });
+    await run({ ...loaded, homeA, homeB, storeDirectory, visualizeRoot });
   } finally {
     rmSync(homeA, { recursive: true, force: true });
     rmSync(homeB, { recursive: true, force: true });
@@ -111,14 +122,17 @@ async function withDirectories(run) {
 }
 
 test('resource discovery is isolated by home and recognizes current plugin layouts', async () => {
-  await withDirectories(async ({ discoverBotResources, clearBotResourceCache, homeA, homeB }) => {
+  await withDirectories(async ({
+    discoverBotResources, clearBotResourceCache, homeA, homeB, visualizeRoot
+  }) => {
     const first = discoverBotResources({
       home: homeA,
       mcpServers: [
         { name: 'zeta-server', description: 'Zeta fixture' },
         { name: 'alpha-server', description: 'Alpha fixture' },
         { name: 'no-description-server' },
-        { name: 'playwright', description: 'Must not replace the built-in entry' }
+        { name: 'playwright', description: 'Must not replace the built-in entry' },
+        { name: 'visualize-runtime', description: 'Owned by the visualize plugin' }
       ]
     });
     const resources = new Map(first.resources.map(resource => [resource.id, resource]));
@@ -133,6 +147,15 @@ test('resource discovery is isolated by home and recognizes current plugin layou
       first.resources.filter(resource => resource.kind === 'mcp').map(resource => resource.name),
       ['alpha-server', 'no-description-server', 'Playwright', 'zeta-server']
     );
+    assert.equal(resources.has('mcp:visualize-runtime'), false);
+    const visualizeRuntime = first.pluginMcpRuntimes.find(runtime =>
+      runtime.pluginId === 'visualize@openai-bundled');
+    assert.deepEqual(visualizeRuntime?.serverNames, ['visualize-runtime']);
+    assert.equal(
+      visualizeRuntime?.mcpServers['visualize-runtime'].command,
+      join(visualizeRoot, 'bin', 'visualize-server')
+    );
+    assert.equal(visualizeRuntime?.mcpServers['visualize-runtime'].cwd, visualizeRoot);
     assert.deepEqual(
       [resources.get('mcp:alpha-server')?.description, resources.get('mcp:alpha-server')?.source],
       ['Alpha fixture', 'Codex config']

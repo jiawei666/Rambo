@@ -1,9 +1,14 @@
 import { createElectronTest, expect } from './fixtures/electron-app.mjs';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 
 const test = createElectronTest('playwright-private');
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64'
+);
 
 test.describe.configure({ mode: 'serial' });
 
@@ -307,7 +312,11 @@ test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', a
   await expect(page.getByText('更改会自动保存', { exact: true })).toHaveCount(0);
   await expect(page.locator('.global-default-save-status')).toHaveCount(0);
   const currentModelId = await globalModel.inputValue();
-  const nextGlobalModel = models.find(option => option.id !== currentModelId);
+  const availableModelIds = await globalModel.locator('option').evaluateAll(options =>
+    options.map(option => option.value).filter(Boolean)
+  );
+  const nextModelId = availableModelIds.find(id => id !== currentModelId);
+  const nextGlobalModel = models.find(option => option.id === nextModelId);
   expect(nextGlobalModel, '模型目录至少需要两个不同选项才能验证自动保存').toBeDefined();
   expect(nextGlobalModel.id).not.toBe(currentModelId);
   await globalModel.selectOption(nextGlobalModel.id);
@@ -443,6 +452,10 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   expect(initial.globalDefaultResourceIds).toContain('mcp:playwright');
   expect(initial.globalResourceIds).not.toContain('skill:research');
   expect(initial.globalDefaultResourceIds).not.toContain('skill:research');
+  expect(initial.botResources.some(resource =>
+    resource.id === 'mcp:cua_repl')).toBe(false);
+  expect(initial.botResources.some(resource =>
+    resource.kind === 'plugin' && resource.id === 'plugin:computer-use')).toBe(true);
   for (const resource of initial.botResources.filter(item =>
     item.kind === 'mcp' && item.id !== 'mcp:playwright'
   )) expect(initial.globalResourceIds).not.toContain(resource.id);
@@ -460,11 +473,53 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   expect(alpha.resourceIds).toContain('skill:documents');
   expect(beta.resourceIds).toContain('skill:documents');
 
-  await openSystemSettings(page, 'Skills 与 MCP');
-  const globalPanel = page.getByRole('tabpanel', { name: 'Skills 与 MCP' });
-  const playwrightRow = globalPanel.locator('.resource-row[data-resource-id="mcp:playwright"]');
-  await expect(playwrightRow.getByRole('button', { name: '验证 Chrome 连接' })).toBeVisible();
-  await expect(playwrightRow.getByRole('status')).toHaveText('尚未验证 Chrome 扩展连接');
+  await openSystemSettings(page, '资源管理');
+  const globalPanel = page.getByRole('tabpanel', { name: '资源管理' });
+  for (const name of [/^技能/, /^MCP 服务/, /^插件/]) {
+    await expect(globalPanel.getByRole('tab', { name })).toBeVisible();
+  }
+  const subtabPresentation = async colorScheme => {
+    await page.emulateMedia({ colorScheme });
+    return globalPanel.locator('.resource-subtabs').evaluate(tablist => {
+      const tabs = [...tablist.querySelectorAll('.resource-subtab')];
+      const selected = tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
+      const badge = selected?.querySelector('small');
+      return {
+        count: tabs.length,
+        minHeight: Math.min(...tabs.map(tab =>
+          tab.getBoundingClientRect().height)),
+        selectedBackground: selected ? getComputedStyle(selected).backgroundColor : '',
+        selectedColor: selected ? getComputedStyle(selected).color : '',
+        badgeBackground: badge ? getComputedStyle(badge).backgroundColor : '',
+        badgeColor: badge ? getComputedStyle(badge).color : ''
+      };
+    });
+  };
+  for (const colorScheme of ['light', 'dark']) {
+    const presentation = await subtabPresentation(colorScheme);
+    expect(presentation.count).toBe(3);
+    expect(presentation.minHeight).toBeGreaterThanOrEqual(40);
+    for (const color of [
+      presentation.selectedBackground,
+      presentation.selectedColor,
+      presentation.badgeBackground,
+      presentation.badgeColor
+    ]) expect(color).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+  await globalPanel.getByRole('tab', { name: /^MCP 服务/ }).click();
+  await expect(globalPanel.locator('.resource-row[data-resource-id="mcp:cua_repl"]')).toHaveCount(0);
+  await globalPanel.getByRole('tab', { name: /^插件/ }).click();
+  await globalPanel.getByRole('button', { name: /发现目录/ }).click();
+  await globalPanel.getByLabel('搜索资源').fill('Computer Use');
+  const computerUseRow = globalPanel.locator(
+    '.resource-row[data-resource-id="plugin:computer-use"]'
+  );
+  await expect(computerUseRow).toBeVisible();
+  await expect(computerUseRow.getByText(/Plugin · openai-bundled/u)).toBeVisible();
+  await globalPanel.getByRole('tab', { name: /^技能/ }).click();
+  await globalPanel.getByLabel('搜索资源').fill('');
+  await globalPanel.getByRole('button', { name: /发现目录/ }).click();
   const documents = page.getByLabel('启用 documents');
   await expect(documents).toBeChecked();
   await documents.click();
@@ -475,6 +530,10 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.bots.find(bot => bot.id === alpha.id).resourceIds).toContain('skill:documents');
   expect(snapshot.bots.find(bot => bot.id === beta.id).resourceIds).toContain('skill:documents');
+  await globalPanel.getByRole('tab', { name: /^MCP 服务/ }).click();
+  const playwrightRow = globalPanel.locator('.resource-row[data-resource-id="mcp:playwright"]');
+  await expect(playwrightRow.getByRole('button', { name: '验证 Chrome 连接' })).toBeVisible();
+  await expect(playwrightRow.getByRole('status')).toHaveText('尚未验证 Chrome 扩展连接');
 
   await page.getByLabel('创建 Bot').click();
   await page.getByLabel('Bot 名称').fill('Resource Gamma');
@@ -485,7 +544,8 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   const gamma = snapshot.bots.find(bot => bot.name === 'Resource Gamma');
   expect(gamma.resourceIds).not.toContain('skill:documents');
 
-  await openSystemSettings(page, 'Skills 与 MCP');
+  await openSystemSettings(page, '资源管理');
+  await globalPanel.getByRole('tab', { name: /^技能/ }).click();
   await globalPanel.getByRole('button', { name: /发现目录/ }).click();
   await globalPanel.getByLabel('搜索资源').fill('research');
   const researchRow = globalPanel.locator('.resource-row[data-resource-id="skill:research"]');
@@ -501,12 +561,16 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   )) expect(bot.resourceIds).not.toContain('skill:research');
 
   await openBotSettings(page, 'Resource Alpha');
-  await page.getByRole('tab', { name: 'Skills 与 MCP' }).click();
+  await page.getByRole('tab', { name: '资源管理' }).click();
+  const botResourcePanel = page.getByRole('tabpanel', { name: '资源管理' });
+  for (const name of [/^技能/, /^MCP 服务/, /^插件/]) {
+    await expect(botResourcePanel.getByRole('tab', { name })).toBeVisible();
+  }
   await expect(page.getByLabel('启用 documents')).toBeChecked();
   await expect(page.getByLabel('启用 research')).toBeVisible();
   await expect(page.getByLabel('启用 research')).not.toBeChecked();
   await openBotSettings(page, 'Resource Beta');
-  await page.getByRole('tab', { name: 'Skills 与 MCP' }).click();
+  await page.getByRole('tab', { name: '资源管理' }).click();
   const betaDocuments = page.getByLabel('启用 documents');
   await expect(betaDocuments).toBeChecked();
   await betaDocuments.click();
@@ -522,7 +586,7 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   }).toBe(true);
 
   await openBotSettings(page, 'Resource Alpha');
-  await page.getByRole('tab', { name: 'Skills 与 MCP' }).click();
+  await page.getByRole('tab', { name: '资源管理' }).click();
   await page.getByLabel('启用 documents').click();
   await expect.poll(async () => {
     const current = await page.evaluate(() => window.rambo.snapshot());
@@ -532,7 +596,8 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   expect(snapshot.bots.find(bot => bot.id === beta.id).resourceIds).toContain('skill:research');
   expect(snapshot.globalDefaultResourceIds).not.toContain('skill:documents');
 
-  await openSystemSettings(page, 'Skills 与 MCP');
+  await openSystemSettings(page, '资源管理');
+  await globalPanel.getByRole('tab', { name: /^技能/ }).click();
   const documentsRow = globalPanel.locator('.resource-row[data-resource-id="skill:documents"]');
   await documentsRow.getByRole('button', { name: '移出可选' }).click();
   await expect.poll(async () =>
@@ -552,85 +617,149 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   expect(snapshot.bots.find(bot => bot.id === gamma.id).resourceIds).not.toContain('skill:documents');
 });
 
-test('真实 Electron 资源设置可导入本地 Skill、添加直连 MCP 并隐藏凭证值', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 资源设置仅展示目录且新增 Skill/MCP 由 Bot 管理', async ({ electron }) => {
   const page = electron.page;
-  const skillDirectory = join(acceptanceRun.run, 'e2e-local-skill');
-  mkdirSync(skillDirectory, { recursive: true });
-  writeFileSync(join(skillDirectory, 'SKILL.md'), [
-    '---',
-    'name: Electron Imported Skill',
-    'description: Imported from the resource settings acceptance flow.',
-    '---',
-    '',
-    'Read the bundled reference when testing this Skill.'
-  ].join('\n'));
-  writeFileSync(join(skillDirectory, 'reference.txt'), 'synthetic reference\n');
-  const secret = 'E2E-MCP-SECRET-250726';
+  await openSystemSettings(page, '资源管理');
+  const panel = page.getByRole('tabpanel', { name: '资源管理' });
+  const managementNote = panel.getByText(
+    '导入技能或添加直连 MCP 由 Bot 管理，在私聊中明确说明需求即可。首次使用 Playwright 时，Chrome 扩展会请求一次标签页授权。',
+    { exact: true }
+  );
+  await expect(managementNote).toBeVisible();
+  await expect(panel.getByText('新增由 Bot 管理', { exact: true })).toHaveCount(0);
 
-  await openSystemSettings(page, 'Skills 与 MCP');
-  const panel = page.getByRole('tabpanel', { name: 'Skills 与 MCP' });
-  await electron.app.evaluate(({ dialog }, directory) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
-  }, skillDirectory);
-  await panel.getByRole('button', { name: '导入本地 Skill' }).click();
-  await expect(panel.getByText('Electron Imported Skill', { exact: true })).toBeVisible();
-  await expect(panel.getByText('Imported from the resource settings acceptance flow.', { exact: false }))
-    .toBeVisible();
+  await panel.getByRole('tab', { name: /^技能/ }).click();
+  await expect(panel.getByRole('button', { name: '导入本地 Skill' })).toHaveCount(0);
+  await panel.getByRole('tab', { name: /^MCP 服务/ }).click();
+  await expect(managementNote).toBeVisible();
+  await expect(panel.getByRole('button', { name: '添加直连 MCP' })).toHaveCount(0);
+  await expect(panel.locator('.direct-mcp-form')).toHaveCount(0);
+  await panel.getByRole('tab', { name: /^插件/ }).click();
+  await expect(managementNote).toBeVisible();
+  await expect(panel.getByRole('button', { name: /导入本地 Skill|添加直连 MCP/ })).toHaveCount(0);
+  await panel.getByRole('tab', { name: /^技能/ }).click();
+  await expect(panel.locator('.resource-row').first()).toBeVisible();
 
-  await panel.getByRole('button', { name: '添加直连 MCP' }).click();
-  await panel.getByLabel('名称').fill('electron-fixture');
-  await panel.getByLabel('说明（可选）').fill('Electron direct MCP fixture');
-  await panel.getByLabel('Command').fill('/usr/bin/true');
-  await panel.getByLabel('参数（每行一个）').fill('--fixture');
-  await panel.getByLabel('环境变量 JSON（可选）').fill(JSON.stringify({ FIXTURE_TOKEN: secret }));
-  await panel.getByRole('button', { name: '保存到全局可选目录' }).click();
-
-  const directRow = panel.locator('.resource-row[data-resource-id="mcp:electron-fixture"]');
-  await expect(directRow).toBeVisible();
-  await expect(directRow.getByText(/stdio · \/usr\/bin\/true/u)).toBeVisible();
-  await expect(directRow.getByText(/已有安全凭证：FIXTURE_TOKEN/u)).toBeVisible();
-  await expect(page.getByText(secret, { exact: true })).toHaveCount(0);
-  await expect(panel.getByLabel('环境变量 JSON（可选）')).toHaveCount(0);
-  await expect(directRow.getByRole('button', { name: '停用定义' })).toBeVisible();
-  await directRow.getByRole('button', { name: '停用定义' }).click();
-  await expect(directRow.getByRole('button', { name: '启用定义' })).toBeVisible();
-  await directRow.getByRole('button', { name: '启用定义' }).click();
-  await expect(directRow.getByRole('button', { name: '停用定义' })).toBeVisible();
+  const firstSwitch = panel.getByRole('checkbox').first();
+  const initiallyChecked = await firstSwitch.isChecked();
+  const readSwitchPresentation = element => {
+    const style = getComputedStyle(element);
+    const rowStyle = getComputedStyle(element.closest('.resource-row'));
+    return {
+      checked: element.checked,
+      trackBackground: style.backgroundColor,
+      trackBorder: style.borderColor,
+      rowBackground: rowStyle.backgroundColor,
+      rowBorder: rowStyle.borderColor,
+      rowShadow: rowStyle.boxShadow
+    };
+  };
+  const initialPresentation = await firstSwitch.evaluate(readSwitchPresentation);
+  await firstSwitch.evaluate(element => {
+    element.click();
+  });
+  await expect.poll(() => firstSwitch.isChecked()).toBe(!initiallyChecked);
+  await page.waitForTimeout(250);
+  const toggledPresentation = await firstSwitch.evaluate(readSwitchPresentation);
+  expect(toggledPresentation.trackBackground)
+    .not.toBe(initialPresentation.trackBackground);
+  expect(toggledPresentation.trackBorder)
+    .not.toBe(initialPresentation.trackBorder);
+  expect(toggledPresentation.rowBackground)
+    .toBe(initialPresentation.rowBackground);
+  expect(toggledPresentation.rowBorder)
+    .toBe(initialPresentation.rowBorder);
+  expect(toggledPresentation.rowShadow)
+    .toBe(initialPresentation.rowShadow);
+  await firstSwitch.evaluate(element => {
+    element.click();
+  });
+  await expect.poll(() => firstSwitch.isChecked()).toBe(initiallyChecked);
 
   for (const colorScheme of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme });
     const presentation = await panel.evaluate(section => {
-      const form = section.querySelector('.direct-mcp-form');
-      const row = section.querySelector('.resource-row[data-resource-id="mcp:electron-fixture"]');
+      const row = section.querySelector('.resource-row');
+      const checkbox = row?.querySelector('input[type="checkbox"]');
+      const checkboxStyle = checkbox ? getComputedStyle(checkbox) : null;
+      const checkboxThumbStyle = checkbox ? getComputedStyle(checkbox, '::after') : null;
+      const settingsPage = section.closest('.settings-page');
+      const settingsScrollStyle = settingsPage ? getComputedStyle(settingsPage) : null;
       return {
-        formOverflows: form ? form.scrollWidth > form.clientWidth + 1 : false,
         rowOverflows: row ? row.scrollWidth > row.clientWidth + 1 : false,
         sectionWidth: section.getBoundingClientRect().width,
         viewportWidth: document.documentElement.clientWidth,
-        hasSecret: section.textContent?.includes('E2E-MCP-SECRET-250726') ?? false
+        checkboxWidth: checkboxStyle?.width ?? '',
+        checkboxHeight: checkboxStyle?.height ?? '',
+        checkboxRadius: checkboxStyle?.borderRadius ?? '',
+        checkboxThumbBackground: checkboxThumbStyle?.backgroundColor ?? '',
+        checkboxThumbOpacity: checkboxThumbStyle?.opacity ?? '',
+        scrollbarWidth: settingsScrollStyle?.scrollbarWidth ?? '',
+        scrollbarColor: settingsScrollStyle?.scrollbarColor ?? ''
       };
     });
-    expect(presentation.formOverflows).toBe(false);
     expect(presentation.rowOverflows).toBe(false);
     expect(presentation.sectionWidth).toBeLessThanOrEqual(presentation.viewportWidth);
-    expect(presentation.hasSecret).toBe(false);
+    expect(presentation.checkboxWidth).toBe('34px');
+    expect(presentation.checkboxHeight).toBe('20px');
+    expect(presentation.checkboxRadius).toBe('999px');
+    expect(presentation.checkboxThumbBackground).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
+    expect(presentation.checkboxThumbOpacity).toBe('1');
+    expect(presentation.scrollbarWidth).toBe('thin');
+    expect(presentation.scrollbarColor).not.toBe('');
   }
   await page.emulateMedia({ colorScheme: 'light' });
-  await page.setViewportSize({ width: 760, height: 700 });
+  await page.setViewportSize({ width: 640, height: 700 });
   await expect.poll(async () => panel.evaluate(section => {
     const rows = [...section.querySelectorAll('.resource-row')];
+    const subtabs = section.querySelector('.resource-subtabs');
+    const subtabButtons = [...(subtabs?.querySelectorAll('.resource-subtab') ?? [])];
     return rows.every(row => row.scrollWidth <= row.clientWidth + 1) &&
+      Boolean(subtabs) &&
+      subtabs.scrollWidth <= subtabs.clientWidth + 1 &&
+      subtabButtons.length === 3 &&
+      subtabButtons.every(button => button.scrollWidth <= button.clientWidth + 1) &&
       section.scrollWidth <= section.clientWidth + 1;
   })).toBe(true);
 
   const snapshot = await page.evaluate(() => window.rambo.snapshot());
-  expect(snapshot.globalResourceIds).toContain('skill:e2e-local-skill');
-  expect(snapshot.globalResourceIds).toContain('mcp:electron-fixture');
-  expect(snapshot.botResources.find(resource =>
-    resource.id === 'skill:e2e-local-skill')?.source).toBe('Rambo Skills');
-  expect(JSON.stringify(snapshot)).not.toContain(secret);
-  expect(snapshot.directMcpServers.find(server =>
-    server.name === 'electron-fixture')?.envKeys).toEqual(['FIXTURE_TOKEN']);
+  expect(snapshot.directMcpServers.some(server =>
+    server.name === 'electron-fixture')).toBe(false);
+
+  await page.evaluate(() => {
+    window.__ramboMcpElicitationEvents = [];
+    window.rambo.onEvent(event => {
+      if (event.type === 'mcpElicitation' || event.type === 'mcpElicitationResolved') {
+        window.__ramboMcpElicitationEvents.push(event);
+      }
+    });
+  });
+  await page.evaluate(() => window.rambo.injectAcceptanceEvent({
+    type: 'mcpElicitation',
+    requestId: 'e2e-cua-elicitation',
+    serverName: 'cua_repl',
+    threadId: 'e2e-cua-thread',
+    turnId: 'e2e-cua-turn',
+    message: 'Allow Computer Use to use "Google Chrome"?',
+    detail: 'Computer Use 请求访问当前 Chrome 窗口。',
+    toolName: 'js'
+  }));
+  const elicitation = page.getByRole('alertdialog', {
+    name: 'Allow Computer Use to use "Google Chrome"?'
+  });
+  await expect(elicitation).toBeVisible();
+  await expect(elicitation.getByText('cua_repl · js', { exact: true })).toBeVisible();
+  await expect(elicitation.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(elicitation.getByRole('button', { name: '拒绝' })).toBeVisible();
+  await expect(elicitation.getByRole('button', { name: '允许本次' })).toBeVisible();
+  await elicitation.getByRole('button', { name: '拒绝' }).click();
+  await expect(elicitation).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    window.__ramboMcpElicitationEvents.some(event =>
+      event.type === 'mcpElicitationResolved' &&
+      event.requestId === 'e2e-cua-elicitation'
+    )
+  )).toBe(true);
 });
 
 test('Gmail 使用应用专用密码并保持本机凭证连接流程', async ({ electron }) => {
@@ -640,6 +769,19 @@ test('Gmail 使用应用专用密码并保持本机凭证连接流程', async ({
   await gmailCard.getByRole('button', { name: '连接', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Gmail' });
   await expect(dialog).toBeVisible();
+  const dialogScrollStyle = await dialog.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      overflowY: style.overflowY,
+      scrollbarWidth: style.scrollbarWidth,
+      scrollbarGutter: style.scrollbarGutter
+    };
+  });
+  expect(dialogScrollStyle).toEqual({
+    overflowY: 'auto',
+    scrollbarWidth: 'thin',
+    scrollbarGutter: 'stable'
+  });
   await expectUnframedConnectorLogo(dialog.locator('.connector-icon-has-logo'));
   await expect(dialog.getByText('Gmail 应用专用密码')).toBeVisible();
   await expect(dialog.getByText(/开启两步验证/u)).toBeVisible();
@@ -679,7 +821,7 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
     await row.click({ button: 'right' });
     const menu = page.getByRole('menu', { name: 'Menu Pilot 会话菜单' });
     await expect(menu).toBeVisible();
-    await expect(menu.getByRole('menuitem', { name: '复制对话 ID' })).toBeFocused();
+    await expect(menu.getByRole('menuitem', { name: '置顶', exact: true })).toBeFocused();
     await menu.getByRole('menuitem', { name: '复制对话 ID' }).click();
     await expect(page.getByText('对话 ID 已复制')).toBeVisible();
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(chat.id);
@@ -732,6 +874,158 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
     await expect(groupDialog).toHaveCount(0);
     await expect(groupRow).toHaveCount(0);
     expect((await page.evaluate(() => window.rambo.snapshot())).groups.some(item => item.id === group.id)).toBe(false);
+});
+
+test('真实 Electron 会话置顶按创建时间混排并重启保持', async ({ electron }) => {
+  const page = electron.page;
+  for (const name of ['Pin First', 'Pin Second', 'Pin Third']) {
+    await page.getByLabel('创建 Bot').click();
+    await page.getByLabel('Bot 名称').fill(name);
+    await page.getByRole('dialog', { name: '创建新 Bot' })
+      .getByRole('button', { name: '创建', exact: true }).click();
+    await expect(page.getByPlaceholder(`发消息给 ${name}`)).toBeVisible();
+  }
+
+  const group = await page.evaluate(async () => {
+    const snapshot = await window.rambo.snapshot();
+    const first = snapshot.bots.find(bot => bot.name === 'Pin First');
+    const second = snapshot.bots.find(bot => bot.name === 'Pin Second');
+    return window.rambo.createGroup({
+      title: 'Pin Group',
+      botIds: [first.id, second.id]
+    });
+  });
+  await expect(page.getByLabel('会话列表').getByText('Pin Group')).toBeVisible();
+
+  const conversationIds = () => page.evaluate(() => {
+    return [...document.querySelectorAll('.bot-list-row')].map(row =>
+      row.querySelector('.bot-row-name > span')?.textContent?.trim() ?? ''
+    ).filter(Boolean);
+  });
+  const conversationRow = name => page.locator('.bot-list-row').filter({
+    has: page.locator('.bot-row-name > span', { hasText: new RegExp(`^${name}$`, 'u') })
+  });
+  const createdOrder = await conversationIds();
+  expect(createdOrder.slice(0, 4)).toEqual(['Pin Group', 'Pin Third', 'Pin Second', 'Pin First']);
+
+  const firstRow = conversationRow('Pin First');
+  await firstRow.click({ button: 'right' });
+  await page.getByRole('menu').getByRole('menuitem', { name: '置顶', exact: true }).click();
+  await expect(page.getByText('已置顶 Pin First')).toBeVisible();
+  await expect.poll(async () => (await conversationIds()).slice(0, 4))
+    .toEqual(['Pin First', 'Pin Group', 'Pin Third', 'Pin Second']);
+  await expect(conversationRow('Pin First')).toHaveAttribute('data-pinned', 'true');
+  await expect(conversationRow('Pin First').locator('.bot-row-name svg')).toHaveCount(0);
+
+  const secondRow = conversationRow('Pin Second');
+  await secondRow.click({ button: 'right' });
+  await page.getByRole('menu').getByRole('menuitem', { name: '置顶', exact: true }).click();
+  await expect(page.getByText('已置顶 Pin Second')).toBeVisible();
+  await expect.poll(async () => (await conversationIds()).slice(0, 4))
+    .toEqual(['Pin Second', 'Pin First', 'Pin Group', 'Pin Third']);
+
+  const groupRow = conversationRow('Pin Group');
+  await groupRow.click({ button: 'right' });
+  await page.getByRole('menu').getByRole('menuitem', { name: '置顶', exact: true }).click();
+  await expect(page.getByText('已置顶群聊 Pin Group')).toBeVisible();
+  await expect.poll(async () => (await conversationIds()).slice(0, 4))
+    .toEqual(['Pin Group', 'Pin Second', 'Pin First', 'Pin Third']);
+  await expect(page.getByLabel('拖到这里置顶')).toHaveCount(0);
+  await expect(conversationRow('Pin First')).not.toHaveAttribute('draggable');
+
+  const pinnedSnapshot = await page.evaluate(() => window.rambo.snapshot());
+  expect(pinnedSnapshot.groups.find(item => item.id === group.id)?.pinnedAt).toBeTruthy();
+  expect(pinnedSnapshot.bots.find(item => item.name === 'Pin First')?.pinnedAt).toBeTruthy();
+  expect(pinnedSnapshot.bots.find(item => item.name === 'Pin Second')?.pinnedAt).toBeTruthy();
+
+  const reopenedPage = await electron.restart();
+  await expect(reopenedPage.getByLabel('创建 Bot')).toBeVisible();
+  await expect.poll(() => reopenedPage.evaluate(() =>
+    [...document.querySelectorAll('.bot-list-row')].slice(0, 4).map(row =>
+      row.querySelector('.bot-row-name > span')?.textContent?.trim() ?? ''
+    )
+  )).toEqual(['Pin Group', 'Pin Second', 'Pin First', 'Pin Third']);
+
+  const reopenedGroupRow = reopenedPage.locator('.bot-list-row').filter({
+    has: reopenedPage.locator('.bot-row-name > span', { hasText: /^Pin Group$/u })
+  });
+  await reopenedGroupRow.click({ button: 'right' });
+  await reopenedPage.getByRole('menu').getByRole('menuitem', { name: '取消置顶', exact: true }).click();
+  await expect(reopenedPage.getByText('已取消置顶群聊 Pin Group')).toBeVisible();
+  await expect.poll(() => reopenedPage.evaluate(() =>
+    [...document.querySelectorAll('.bot-list-row')].slice(0, 4).map(row =>
+      row.querySelector('.bot-row-name > span')?.textContent?.trim() ?? ''
+    )
+  )).toEqual(['Pin Second', 'Pin First', 'Pin Group', 'Pin Third']);
+});
+
+test('真实 Electron 气泡悬停显示时间并按关键间隔插入分隔', async ({ electron }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Time Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Time Pilot')).toBeVisible();
+  const chat = await page.evaluate(() => {
+    const snapshot = window.rambo.snapshot();
+    return snapshot.then(value => {
+      const bot = value.bots.find(item => item.name === 'Time Pilot');
+      return value.chats.find(item => item.botId === bot.id && !item.groupChatId && !item.archived);
+    });
+  });
+
+  const first = {
+    id: 'time-first',
+    chatId: chat.id,
+    role: 'user',
+    text: '第一条时间消息',
+    status: 'complete',
+    itemId: null,
+    createdAt: '2026-10-23T00:06:00.000Z',
+    turnId: null,
+    phase: null,
+    source: 'text'
+  };
+  const second = {
+    ...first,
+    id: 'time-second',
+    text: '十五分钟后的消息',
+    createdAt: '2026-10-23T00:21:00.000Z'
+  };
+  await page.evaluate(message => window.rambo.injectAcceptanceEvent({
+    type: 'message',
+    message
+  }), first);
+  await expect(page.locator('.message-row[data-message-id="time-first"]')).toBeVisible();
+  await expect(page.locator('.message-time-divider')).toHaveCount(1);
+  const divider = page.locator('.message-time-divider').first();
+  await expect(divider).toBeVisible();
+  const dividerText = await divider.textContent();
+  expect(dividerText).toMatch(/^10月23日周[一二三四五六日] 08:06$/u);
+
+  const bubble = page.locator('.message-row[data-message-id="time-first"] .message-content');
+  const hoverTime = bubble.locator('.message-hover-time');
+  await expect(hoverTime).toHaveText(/^10月23日 周[一二三四五六日] 08:06$/u);
+  await expect(hoverTime).toHaveCSS('opacity', '0');
+  await bubble.hover();
+  await expect.poll(() => hoverTime.evaluate(element =>
+    Number.parseFloat(getComputedStyle(element).opacity)
+  )).toBeGreaterThan(0.8);
+  await expect(hoverTime).toHaveCSS('pointer-events', 'none');
+  const layout = await bubble.evaluate(element => ({
+    position: getComputedStyle(element.querySelector('.message-hover-time')).position,
+    messageTop: element.getBoundingClientRect().top,
+    hoverTop: element.querySelector('.message-hover-time').getBoundingClientRect().top
+  }));
+  expect(layout.position).toBe('absolute');
+  expect(layout.hoverTop).toBeGreaterThan(layout.messageTop);
+
+  await page.evaluate(message => window.rambo.injectAcceptanceEvent({
+    type: 'message',
+    message
+  }), second);
+  await expect(page.locator('.message-row[data-message-id="time-second"]')).toBeVisible();
+  await expect(page.locator('.message-time-divider')).toHaveCount(2);
 });
 
 test('真实 Electron 用宽幅实时频谱展示 Live 通话状态并结束后清除结束中状态', async ({ electron }) => {
@@ -1256,7 +1550,7 @@ test('真实 Electron 对 Live 转写显示文字末尾光标、平滑追加文�
   await expect(secondProgress).toHaveCount(0);
 });
 
-test('真实 Electron 消息流显示阶段回复、不显示 COT/过程入口并移除运行详情', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁移到下方', async ({ electron, acceptanceRun }) => {
     const page = electron.page;
     await page.getByLabel('创建 Bot').click();
     await page.getByLabel('Bot 名称').fill('Activity Pilot');
@@ -1317,10 +1611,6 @@ test('真实 Electron 消息流显示阶段回复、不显示 COT/过程入口�
     });
     expect(loadingEyeOrbit.changed, JSON.stringify(loadingEyeOrbit)).toBe(true);
     await page.mouse.move(1700, 850);
-    const loadingAvatarFrameA = await loadingAvatar.screenshot();
-    await page.waitForTimeout(650);
-    const loadingAvatarFrameB = await loadingAvatar.screenshot();
-    expect(loadingAvatarFrameA.equals(loadingAvatarFrameB)).toBe(false);
     await expect(page.locator('.agent-running-shimmer')).toHaveText('正在思考');
     await expect(page.locator('.agent-running-row')).toHaveCSS('display', 'flex');
     const runningDockBox = await page.locator('.chat-running-dock').boundingBox();
@@ -1384,7 +1674,20 @@ test('真实 Electron 消息流显示阶段回复、不显示 COT/过程入口�
       }
     }), { chatId: chat.id, turnId: activeTurnId });
     await expect(page.getByLabel('正在运行命令')).toBeVisible();
-    await expect(page.getByLabel('正在运行命令')).toBeVisible();
+    await page.evaluate(({ chatId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'turn', chatId, turnId
+    }), { chatId: chat.id, turnId: activeTurnId });
+    await page.evaluate(() => {
+      window.__ramboStageAnimations = [];
+      document.addEventListener('animationstart', event => {
+        if (event.animationName === 'message-stage-transition') {
+          window.__ramboStageAnimations.push({
+            target: event.target?.className ?? '',
+            row: event.target?.closest?.('.message-row')?.className ?? ''
+          });
+        }
+      });
+    });
     await page.evaluate(({ threadId, turnId }) => window.rambo.injectAcceptanceEvent({
       type: 'acceptanceNotification',
       method: 'item/completed',
@@ -1399,7 +1702,91 @@ test('真实 Electron 消息流显示阶段回复、不显示 COT/过程入口�
         }
       }
     }), { threadId, turnId: activeTurnId });
+    const assistantBubble = page.locator('.message-assistant');
+    await expect(assistantBubble).toHaveCount(1);
+    await expect(assistantBubble).toContainText('我先检查项目结构。');
+    await expect(page.locator('.agent-running-shimmer')).not.toHaveText('我先检查项目结构。');
+    await page.evaluate(({ chatId, turnId, updatedAt }) =>
+      window.rambo.injectAcceptanceEvent({
+        type: 'turn', chatId, turnId
+      }), { chatId: chat.id, turnId: activeTurnId });
+    await page.evaluate(({ chatId, turnId, updatedAt }) =>
+      window.rambo.injectAcceptanceEvent({
+        type: 'activity',
+        activity: {
+          id: 'activity-web-after-stage',
+          chatId,
+          turnId,
+          itemId: 'web-after-stage',
+          kind: 'web',
+          status: 'running',
+          title: '搜索：真实事件顺序',
+          detail: '',
+          createdAt: updatedAt,
+          updatedAt
+        }
+      }), {
+      chatId: chat.id,
+      turnId: activeTurnId,
+      updatedAt: new Date(Date.now() + 50).toISOString()
+    });
+    await expect(page.getByLabel('正在搜索网页')).toBeVisible();
+    await expect(assistantBubble).toContainText('我先检查项目结构。');
+    await page.evaluate(({ threadId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'acceptanceNotification',
+      method: 'item/completed',
+      params: {
+        threadId,
+        turnId,
+        item: {
+          id: 'partial-ui-1',
+          type: 'agentMessage',
+          text: '我已经找到相关入口。',
+          phase: 'partial_answer'
+        }
+      }
+    }), { threadId, turnId: activeTurnId });
+    await expect(page.locator('.message-assistant')).toHaveCount(1);
+    await expect(page.locator('.message-assistant')).toContainText('我已经找到相关入口。');
+    await expect(page.locator('.message-assistant')).not.toContainText('我先检查项目结构。');
+    await expect.poll(() => page.evaluate(() => window.__ramboStageAnimations
+      .some(animation => animation.row.includes('message-assistant')))).toBe(true);
     await expect(page.locator('.message-activities, .message-activity-popover')).toHaveCount(0);
+    await page.evaluate(chatId =>
+      window.rambo.send(chatId, '补充一句：继续检查另一个入口。'), chat.id);
+    await expect(page.locator('.message-user').last())
+      .toContainText('补充一句：继续检查另一个入口。');
+    await page.evaluate(({ threadId, turnId }) => window.rambo.injectAcceptanceEvent({
+      type: 'acceptanceNotification',
+      method: 'item/completed',
+      params: {
+        threadId,
+        turnId,
+        item: {
+          id: 'partial-ui-2',
+          type: 'agentMessage',
+          text: '已经转到第二个入口。',
+          phase: 'partial_answer'
+        }
+      }
+    }), { threadId, turnId: activeTurnId });
+    await expect(page.locator('.message-assistant')).toHaveCount(1);
+    await expect(page.locator('.message-assistant')).toContainText('已经转到第二个入口。');
+    const assistantAfterUser = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.message-row[data-message-id]')];
+      const userIndex = rows.findLastIndex(row =>
+        row.classList.contains('message-user') &&
+        row.textContent?.includes('补充一句：继续检查另一个入口。')
+      );
+      const assistantIndex = rows.findLastIndex(row => row.classList.contains('message-assistant'));
+      return { userIndex, assistantIndex };
+    });
+    expect(assistantAfterUser.assistantIndex).toBeGreaterThan(assistantAfterUser.userIndex);
+    await expect.poll(() => page.evaluate(() => {
+      const transcript = document.querySelector('.transcript-scroll');
+      if (!transcript) return Number.POSITIVE_INFINITY;
+      return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+    })).toBeLessThanOrEqual(1);
     await page.evaluate(({ threadId, turnId }) => window.rambo.injectAcceptanceEvent({
       type: 'acceptanceNotification',
       method: 'item/completed',
@@ -1419,6 +1806,11 @@ test('真实 Electron 消息流显示阶段回复、不显示 COT/过程入口�
       chat.id
     )).toBe('检查已经完成。');
     await page.waitForTimeout(300);
+    await expect(page.locator('.message-assistant')).toHaveCount(1);
+    await expect(page.locator('.message-assistant')).toContainText('检查已经完成。');
+    await expect(page.locator('.message-assistant')).not.toContainText('我先检查项目结构。');
+    await expect(page.locator('.message-assistant')).not.toContainText('我已经找到相关入口。');
+    await expect(page.locator('.message-assistant')).not.toContainText('已经转到第二个入口。');
     const settled = await page.evaluate(() => {
       const transcriptElement = document.querySelector('.transcript-scroll');
       const messageColumn = document.querySelector('.message-column');
@@ -1512,25 +1904,30 @@ test('真实 Electron 输入框上方空白可将滚轮交给聊天消息区', a
     await expect(scrollbar).toHaveCSS('opacity', '0');
 });
 
-test('真实 Electron 拖入输入框的文件只插入本机路径', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 拖入输入框的附件显示为卡片并发送绝对路径', async ({ electron, acceptanceRun }) => {
   const page = electron.page;
   await page.getByLabel('创建 Bot').click();
-  await page.getByLabel('Bot 名称').fill('Drop Path Pilot');
+  await page.getByLabel('Bot 名称').fill('Drop Attachment Pilot');
   await page.getByRole('dialog', { name: '创建新 Bot' })
     .getByRole('button', { name: '创建', exact: true }).click();
-  await expect(page.getByPlaceholder('发消息给 Drop Path Pilot')).toBeVisible();
+  await expect(page.getByPlaceholder('发消息给 Drop Attachment Pilot')).toBeVisible();
 
   const fixtures = join(acceptanceRun.run, 'drop-fixtures');
   mkdirSync(fixtures, { recursive: true });
   const textPath = join(fixtures, '拖入文件 示例.txt');
   const imagePath = join(fixtures, '拖入图片 示例.png');
-  const textBytes = Buffer.from('只引用路径，不改写原文件。', 'utf8');
-  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const textBytes = Buffer.from('附件卡片只引用路径，不改写原文件。', 'utf8');
+  const imageBytes = ONE_PIXEL_PNG;
   writeFileSync(textPath, textBytes);
   writeFileSync(imagePath, imageBytes);
 
   const composer = page.getByRole('textbox', { name: '消息' });
   await composer.fill('请查看下面两个文件');
+  const chatId = await page.evaluate(() => window.rambo.snapshot().then(snapshot => {
+    const bot = snapshot.bots.find(item => item.name === 'Drop Attachment Pilot');
+    return snapshot.chats.find(chat => chat.botId === bot?.id && !chat.groupChatId)?.id;
+  }));
+  expect(chatId).toBeTruthy();
   const composerBox = await page.locator('.composer').boundingBox();
   if (!composerBox) throw new Error('找不到聊天输入框');
   const cdp = await page.context().newCDPSession(page);
@@ -1552,13 +1949,19 @@ test('真实 Electron 拖入输入框的文件只插入本机路径', async ({ e
     y: composerBox.y + composerBox.height / 2,
     data: dragData
   });
-  await expect(composer).toHaveValue(`请查看下面两个文件\n${textPath}\n${imagePath}`);
+  const attachmentRegion = page.getByLabel('附件区');
+  await expect(composer).toHaveValue('请查看下面两个文件');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
+  await expect(attachmentRegion).toContainText('拖入文件 示例.txt');
+  await expect(attachmentRegion).toContainText(textPath);
+  await expect(attachmentRegion).toContainText('拖入图片 示例.png');
+  await expect(attachmentRegion).toContainText(imagePath);
+  await expect.poll(() => attachmentRegion.locator('img').evaluate(image => image.naturalWidth))
+    .toBeGreaterThan(0);
   expect(await page.evaluate(() => document.querySelector('.composer-drop-active') === null)).toBe(true);
   expect(readFileSync(textPath)).toEqual(textBytes);
   expect(readFileSync(imagePath)).toEqual(imageBytes);
 
-  await composer.fill('请查看');
-  await composer.evaluate(element => element.setSelectionRange(2, 2));
   await cdp.send('Input.dispatchDragEvent', {
     type: 'dragEnter',
     x: composerBox.x + composerBox.width / 2,
@@ -1571,51 +1974,249 @@ test('真实 Electron 拖入输入框的文件只插入本机路径', async ({ e
     y: composerBox.y + composerBox.height / 2,
     data: dragData
   });
-  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
 
+  await attachmentRegion.getByRole('button', { name: '移除附件 拖入文件 示例.txt' }).click();
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
   await composer.fill('');
-  await cdp.send('Input.dispatchDragEvent', {
-    type: 'dragEnter',
-    x: composerBox.x + composerBox.width / 2,
-    y: composerBox.y + composerBox.height / 2,
-    data: dragData
-  });
-  await cdp.send('Input.dispatchDragEvent', {
-    type: 'drop',
-    x: composerBox.x + composerBox.width / 2,
-    y: composerBox.y + composerBox.height / 2,
-    data: dragData
-  });
-  await expect(composer).toHaveValue(`${textPath}\n${imagePath}`);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(attachmentRegion).toHaveCount(0);
+  await expect.poll(() => page.evaluate(async id => {
+    const messages = await window.rambo.messages(id);
+    return messages.filter(message => message.role === 'user').at(-1)?.text ?? null;
+  }, chatId)).toBe(imagePath);
+  await (await electron.restart()).bringToFront();
 });
 
-test('真实 Electron 选择本机附件只插入路径', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 粘贴剪贴板图片进入附件区并发送临时文件绝对路径', async ({ electron }) => {
   const page = electron.page;
   await page.getByLabel('创建 Bot').click();
-  await page.getByLabel('Bot 名称').fill('Select Path Pilot');
+  await page.getByLabel('Bot 名称').fill('Paste Attachment Pilot');
   await page.getByRole('dialog', { name: '创建新 Bot' })
     .getByRole('button', { name: '创建', exact: true }).click();
-  await expect(page.getByPlaceholder('发消息给 Select Path Pilot')).toBeVisible();
+  await expect(page.getByPlaceholder('发消息给 Paste Attachment Pilot')).toBeVisible();
+
+  const composer = page.getByRole('textbox', { name: '消息' });
+  await electron.app.evaluate(({ clipboard }) => clipboard.writeText('普通文字粘贴'));
+  await composer.focus();
+  await page.keyboard.press('Meta+V');
+  await expect(composer).toHaveValue('普通文字粘贴');
+  await composer.fill('');
+  const dataUrl = `data:image/png;base64,${ONE_PIXEL_PNG.toString('base64')}`;
+  await composer.evaluate((element, imageDataUrl) => {
+    const bytes = Uint8Array.from(atob(imageDataUrl.split(',')[1]), character =>
+      character.charCodeAt(0)
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], 'clipboard.png', { type: 'image/png' }));
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    element.dispatchEvent(event);
+  }, dataUrl);
+
+  const attachmentRegion = page.getByLabel('附件区');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  const pastedPath = await attachmentRegion.locator('[data-composer-attachment]')
+    .getAttribute('data-attachment-path');
+  expect(pastedPath).toMatch(/\/composer-attachments\/pasted-image-.+\.png$/u);
+  expect(readFileSync(pastedPath)).toEqual(ONE_PIXEL_PNG);
+  await expect.poll(() => attachmentRegion.locator('img').evaluate(image => image.naturalWidth))
+    .toBeGreaterThan(0);
+  await expect(composer).toHaveValue('');
+
+  const plainTransfer = await composer.evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.setData('text/plain', '普通文字粘贴');
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    element.dispatchEvent(event);
+    return true;
+  });
+  expect(plainTransfer).toBe(true);
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  await attachmentRegion.getByRole('button', { name: /移除附件 pasted-image-/ }).click();
+  await expect(attachmentRegion).toHaveCount(0);
+
+  await composer.evaluate((element, imageDataUrl) => {
+    const transfer = new DataTransfer();
+    transfer.setData('text/plain', imageDataUrl);
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    element.dispatchEvent(event);
+  }, dataUrl);
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  const textPastedPath = await attachmentRegion.locator('[data-composer-attachment]')
+    .getAttribute('data-attachment-path');
+  expect(textPastedPath).toMatch(/\/composer-attachments\/pasted-image-.+\.png$/u);
+
+  await composer.fill('请看这张图');
+  const chatId = await page.evaluate(() => window.rambo.snapshot().then(snapshot => {
+    const bot = snapshot.bots.find(item => item.name === 'Paste Attachment Pilot');
+    return snapshot.chats.find(chat => chat.botId === bot?.id && !chat.groupChatId)?.id;
+  }));
+  expect(chatId).toBeTruthy();
+  await page.getByRole('button', { name: '发送' }).click();
+  await expect(attachmentRegion).toHaveCount(0);
+  await expect.poll(() => page.evaluate(async id => {
+    const messages = await window.rambo.messages(id);
+    return messages.filter(message => message.role === 'user').at(-1)?.text ?? null;
+  }, chatId)).toBe(`请看这张图\n${textPastedPath}`);
+  await (await electron.restart()).bringToFront();
+});
+
+test('真实 Electron 临时附件按引用状态和草稿占用清理', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Attachment Cleanup Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Attachment Cleanup Pilot')).toBeVisible();
+
+  const composer = page.getByRole('textbox', { name: '消息' });
+  const dataUrl = `data:image/png;base64,${ONE_PIXEL_PNG.toString('base64')}`;
+  const pasteImage = async () => {
+    await composer.evaluate((element, imageDataUrl) => {
+      const bytes = Uint8Array.from(atob(imageDataUrl.split(',')[1]), character =>
+        character.charCodeAt(0)
+      );
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], 'cleanup.png', { type: 'image/png' }));
+      const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: transfer });
+      element.dispatchEvent(event);
+    }, dataUrl);
+    const region = page.getByLabel('附件区');
+    await expect(region.locator('[data-composer-attachment]')).toHaveCount(1);
+    return region.locator('[data-composer-attachment]').getAttribute('data-attachment-path');
+  };
+  const backdate = path => {
+    const timestamp = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    utimesSync(path, timestamp, timestamp);
+  };
+  const runCleanup = () => page.evaluate(() =>
+    window.rambo.runComposerAttachmentCleanupForAcceptance()
+  );
+
+  const draftPath = await pasteImage();
+  expect(draftPath).toMatch(/\/composer-attachments\/pasted-image-.+\.png$/u);
+  backdate(draftPath);
+  let cleanup = await runCleanup();
+  expect(cleanup.draftProtectedPaths).toContain(draftPath);
+  expect(existsSync(draftPath)).toBe(true);
+
+  await page.getByRole('button', { name: /移除附件 pasted-image-/ }).click();
+  await expect(page.getByLabel('附件区')).toHaveCount(0);
+  await expect.poll(async () => {
+    const result = await runCleanup();
+    return result.deletedPaths.includes(draftPath) || !existsSync(draftPath);
+  }, { timeout: 5_000 }).toBe(true);
+
+  const referencedPath = await pasteImage();
+  expect(referencedPath).toBeTruthy();
+  backdate(referencedPath);
+  await composer.fill('这张图片已被消息引用');
+  const chatId = await page.evaluate(() => window.rambo.snapshot().then(snapshot => {
+    const bot = snapshot.bots.find(item => item.name === 'Attachment Cleanup Pilot');
+    return snapshot.chats.find(chat => chat.botId === bot?.id && !chat.groupChatId)?.id;
+  }));
+  expect(chatId).toBeTruthy();
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect.poll(() => page.evaluate(async id => {
+    const messages = await window.rambo.messages(id);
+    return messages.filter(message => message.role === 'user').at(-1)?.text ?? null;
+  }, chatId)).toContain(referencedPath);
+  cleanup = await runCleanup();
+  expect(cleanup.referencedPaths).toContain(referencedPath);
+  expect(existsSync(referencedPath)).toBe(true);
+
+  const referencedExpiredTimestamp = new Date(Date.now() - 31 * 24 * 60 * 60_000);
+  utimesSync(referencedPath, referencedExpiredTimestamp, referencedExpiredTimestamp);
+  cleanup = await runCleanup();
+  expect(cleanup.deletedPaths).toContain(referencedPath);
+  expect(existsSync(referencedPath)).toBe(false);
+
+  const secondBot = await page.evaluate(() =>
+    window.rambo.createBot({ name: 'Attachment Cleanup Switch', avatar: 'b' })
+  );
+  const switchBotButton = page.getByLabel('会话列表')
+    .getByRole('button', { name: /Attachment Cleanup Switch/ });
+  await expect(switchBotButton).toBeVisible();
+  await switchBotButton.click();
+  await expect(page.getByPlaceholder('发消息给 Attachment Cleanup Switch')).toBeVisible();
+  const previousChatComposer = page.getByRole('textbox', { name: '消息' });
+  const switchPath = await previousChatComposer.evaluate((element, imageDataUrl) => {
+    const bytes = Uint8Array.from(atob(imageDataUrl.split(',')[1]), character =>
+      character.charCodeAt(0)
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], 'switch.png', { type: 'image/png' }));
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    element.dispatchEvent(event);
+    return true;
+  }, dataUrl);
+  expect(switchPath).toBe(true);
+  const switchRegion = page.getByLabel('附件区');
+  await expect(switchRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  const switchedDraftPath = await switchRegion.locator('[data-composer-attachment]')
+    .getAttribute('data-attachment-path');
+  backdate(switchedDraftPath);
+  await page.getByLabel('会话列表')
+    .getByRole('button', { name: /Attachment Cleanup Pilot/ }).click();
+  await expect(page.getByPlaceholder('发消息给 Attachment Cleanup Pilot')).toBeVisible();
+  await expect.poll(async () => {
+    const result = await runCleanup();
+    return result.deletedPaths.includes(switchedDraftPath) || !existsSync(switchedDraftPath);
+  }, { timeout: 5_000 }).toBe(true);
+
+  const startupAttachments = join(acceptanceRun.profile, 'composer-attachments');
+  mkdirSync(startupAttachments, { recursive: true });
+  const startupExpired = join(
+    startupAttachments,
+    'pasted-image-1700000000099-99999999.png'
+  );
+  const startupUnrelated = join(startupAttachments, 'keep-me.png');
+  writeFileSync(startupExpired, ONE_PIXEL_PNG);
+  writeFileSync(startupUnrelated, ONE_PIXEL_PNG);
+  const startupOldTimestamp = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+  utimesSync(startupExpired, startupOldTimestamp, startupOldTimestamp);
+  utimesSync(startupUnrelated, startupOldTimestamp, startupOldTimestamp);
+  await (await electron.restart()).bringToFront();
+  await expect.poll(() => existsSync(startupExpired), { timeout: 5_000 }).toBe(false);
+  expect(existsSync(startupUnrelated)).toBe(true);
+  expect(secondBot.bot.name).toBe('Attachment Cleanup Switch');
+});
+
+test('真实 Electron 选择本机附件显示为附件卡片且不改草稿', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Select Attachment Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Select Attachment Pilot')).toBeVisible();
 
   const fixtures = join(acceptanceRun.run, 'select-fixtures');
   mkdirSync(fixtures, { recursive: true });
   const textPath = join(fixtures, '选择文件 示例.txt');
   const imagePath = join(fixtures, '选择图片 示例.png');
-  const textBytes = Buffer.from('选择只插入路径，不上传。', 'utf8');
-  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+  const textBytes = Buffer.from('选择后只展示附件卡片，不上传。', 'utf8');
+  const imageBytes = ONE_PIXEL_PNG;
   writeFileSync(textPath, textBytes);
   writeFileSync(imagePath, imageBytes);
 
   const composer = page.getByRole('textbox', { name: '消息' });
-  const selectButton = page.getByRole('button', { name: '选择本机附件' });
+  const selectButton = page.getByRole('button', { name: '添加附件' });
   await expect(selectButton).toBeEnabled();
   await composer.fill('请查看');
-  await composer.evaluate(element => element.setSelectionRange(2, 2));
+  const attachmentRegion = page.getByLabel('附件区');
   await electron.app.evaluate(({ dialog }, paths) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
   }, [textPath, imagePath]);
   await selectButton.click();
-  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+  await expect(composer).toHaveValue('请查看');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
+  await expect(attachmentRegion).toContainText(textPath);
+  await expect(attachmentRegion).toContainText(imagePath);
 
   await electron.app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = () => new Promise(resolve => {
@@ -1625,7 +2226,8 @@ test('真实 Electron 选择本机附件只插入路径', async ({ electron, acc
   await selectButton.click();
   await expect(selectButton).toBeDisabled();
   await expect(selectButton).toBeEnabled();
-  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+  await expect(composer).toHaveValue('请查看');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
 
   await electron.app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = async () => {
@@ -1634,14 +2236,16 @@ test('真实 Electron 选择本机附件只插入路径', async ({ electron, acc
   });
   await selectButton.click();
   await expect(selectButton).toBeEnabled();
-  await expect(composer).toHaveValue(`请查\n${textPath}\n${imagePath}\n看`);
+  await expect(page.getByRole('alert')).toContainText('fixture dialog failure');
+  await expect(composer).toHaveValue('请查看');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
 
-  await composer.fill('');
   await electron.app.evaluate(({ dialog }, paths) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
   }, [textPath, textPath, imagePath]);
   await selectButton.click();
-  await expect(composer).toHaveValue(`${textPath}\n${imagePath}`);
+  await expect(composer).toHaveValue('请查看');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(2);
   await expect(selectButton).toBeEnabled();
   expect(readFileSync(textPath)).toEqual(textBytes);
   expect(readFileSync(imagePath)).toEqual(imageBytes);
@@ -1657,19 +2261,57 @@ test('真实 Electron 选择本机附件只插入路径', async ({ electron, acc
   });
   await page.getByLabel('会话列表').getByRole('button', { name: /Group Select E2E/ }).click();
   const groupComposer = page.getByRole('combobox', { name: '群聊消息输入框' });
-  const groupSelectButton = page.getByRole('button', { name: '选择本机附件' });
+  const groupSelectButton = page.getByRole('button', { name: '添加附件' });
   await expect(groupSelectButton).toBeEnabled();
   await electron.app.evaluate(({ dialog }, paths) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
   }, [textPath]);
   await groupComposer.fill('群聊附件');
   await groupSelectButton.click();
-  await expect(groupComposer).toHaveValue(`群聊附件\n${textPath}`);
+  const groupAttachmentRegion = page.getByLabel('附件区');
+  await expect(groupComposer).toHaveValue('群聊附件');
+  await expect(groupAttachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  await expect(groupAttachmentRegion).toContainText(textPath);
 
   await page.evaluate(ids => Promise.all(ids.map(id => window.rambo.setBotArchived(id, true))),
     groupBots.map(item => item.bot.id));
   await expect(groupSelectButton).toBeDisabled();
-  await expect(groupComposer).toHaveValue(`群聊附件\n${textPath}`);
+  await expect(groupComposer).toHaveValue('群聊附件');
+  await expect(groupAttachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+});
+
+test('真实 Electron 发送失败恢复附件与原始正文', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('Attachment Retry Pilot');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 Attachment Retry Pilot')).toBeVisible();
+
+  const fixtures = join(acceptanceRun.run, 'retry-fixtures');
+  mkdirSync(fixtures, { recursive: true });
+  const attachmentPath = join(fixtures, '发送失败 保留附件.txt');
+  writeFileSync(attachmentPath, '发送失败后附件仍需保留。', 'utf8');
+  await electron.app.evaluate(({ dialog }, path) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
+  }, attachmentPath);
+
+  const composer = page.getByRole('textbox', { name: '消息' });
+  await page.getByRole('button', { name: '添加附件' }).click();
+  const attachmentRegion = page.getByLabel('附件区');
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  const originalDraft = `  ${'a'.repeat(200_001)}  `;
+  await composer.fill(originalDraft);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+
+  await expect(page.getByRole('status')).toContainText('无效的文字参数');
+  const restoredDraft = await composer.inputValue();
+  expect(restoredDraft.length).toBe(originalDraft.length);
+  expect(restoredDraft.startsWith('  a')).toBe(true);
+  expect(restoredDraft.endsWith('a  ')).toBe(true);
+  await expect(attachmentRegion.locator('[data-composer-attachment]')).toHaveCount(1);
+  await expect(attachmentRegion).toContainText(attachmentPath);
+  expect(readFileSync(attachmentPath, 'utf8')).toBe('发送失败后附件仍需保留。');
 });
 
 test('真实 Electron 侧栏未读徽标显示并在打开对应私聊后清除', async ({ electron }) => {
@@ -1840,25 +2482,142 @@ test('真实 Electron 新消息提醒只在当前私聊不可见时触发且遵�
     secondChat.id)).toBeNull();
 });
 
-test('账号设置只复用本机 Codex 登录且没有产品注册或同步入口', async ({ electron }) => {
+test('账号设置独立承载登录、模型来源与连接测试，常规保留关于我', async ({ electron }) => {
     const page = electron.page;
     await page.getByLabel('设置', { exact: true }).click();
-    await expect(page.getByRole('heading', { name: '账号' })).toBeVisible();
-    await expect(page.getByText('Rambo 使用本机 Codex 登录状态。')).toBeVisible();
+    await expect(page.getByRole('tab', { name: '账号', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '关于我' })).toBeVisible();
+    await expect(page.getByText('Rambo 使用本机 Codex 登录状态。')).toHaveCount(0);
+    for (const name of ['常规', '账号', '新建 Bot 初值', '资源管理', '定时任务']) {
+      await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
+    }
+    await page.getByRole('tab', { name: '账号', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '账号状态' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '模型来源' })).toBeVisible();
     await expect(page.getByText(/登录方式：|账号状态来自本机 Codex/).first()).toBeVisible();
-    const launchAtLogin = page.getByRole('checkbox', { name: '登录时启动' });
-    await expect(launchAtLogin).toBeChecked();
-    await launchAtLogin.uncheck();
-    await expect(launchAtLogin).not.toBeChecked();
-    await expect(page.getByRole('status').filter({ hasText: '已关闭登录时启动' })).toBeVisible();
-    await page.reload();
-    await page.getByLabel('设置', { exact: true }).click();
-    await expect(page.getByRole('checkbox', { name: '登录时启动' })).not.toBeChecked();
+    await expect(page.getByRole('radio', { name: /本机 Codex 配置/ })).toBeChecked();
+    await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeVisible();
+    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeVisible();
+    await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    await expect(page.getByRole('heading', { name: '手动 API 配置' })).toBeVisible();
+    await expect(page.getByLabel('Base URL')).toBeVisible();
+    await expect(page.getByLabel('模型 ID')).toBeVisible();
+    await expect(page.getByLabel('API Key')).toHaveAttribute('type', 'password');
+    await expect(page.getByText(/不承诺第三方服务完整支持/u)).toBeVisible();
+    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeChecked();
+    await expect(page.getByRole('button', { name: '测试连接与延迟', exact: true })).toBeVisible();
     await expect(page.getByText(/注册|同步到其他设备|跨设备同步/)).toHaveCount(0);
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
-    expect(snapshot.settings.launchAtLogin).toBe('false');
     expect(snapshot.settings).not.toHaveProperty('account');
     expect(snapshot.settings).not.toHaveProperty('sync');
+    expect(snapshot.modelSource.kind).toBe('local');
+    expect(snapshot.modelSource.hasApiKey).toBe(false);
+    expect(JSON.stringify(snapshot)).not.toContain('apiKey');
+});
+
+test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可切回本机配置', async ({
+  electron, acceptanceRun
+}) => {
+  test.setTimeout(60_000);
+  const page = electron.page;
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization
+    });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ id: 'resp_e2e', output_text: 'OK' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
+  const secret = 'sk-e2e-manual-secret';
+  try {
+    await openSystemSettings(page, '账号');
+    await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    await page.getByLabel('服务名称').fill('E2E Responses');
+    await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
+    await page.getByLabel('模型 ID').fill('fixture-model');
+    await page.getByLabel('API Key').fill(secret);
+    await page.getByRole('button', { name: '保存并测试', exact: true }).click();
+
+    await expect(page.getByRole('status').filter({ hasText: '连接可用 · 首响应' }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot()))
+      .toMatchObject({
+        modelSource: {
+          kind: 'local',
+          manual: {
+            serviceName: 'E2E Responses',
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            model: 'fixture-model'
+          },
+          hasApiKey: true
+        }
+      });
+    await expect(page.getByRole('button', { name: '切换为当前来源', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '切换为当前来源', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
+      .toBe('manualApi');
+    const snapshot = await page.evaluate(() => window.rambo.snapshot());
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+    expect(requests).toEqual([
+      expect.objectContaining({
+        method: 'POST',
+        url: '/v1/responses',
+        authorization: `Bearer ${secret}`
+      })
+    ]);
+    const credentialDatabase = readFileSync(
+      join(acceptanceRun.profile, 'connector-credentials', 'credentials.sqlite'),
+      'utf8'
+    );
+    expect(credentialDatabase).not.toContain(secret);
+
+    await page.getByRole('radio', { name: /本机 Codex 配置/ }).click();
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
+      .toBe('local');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('手动 API 保存后连接失败不提供启用入口且保留原来源', async ({ electron }) => {
+  test.setTimeout(60_000);
+  const page = electron.page;
+  const server = createServer((_request, response) => {
+    response.writeHead(401, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'invalid api key' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
+  try {
+    await openSystemSettings(page, '账号');
+    await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    await expect(page.getByLabel('服务名称')).toBeEditable({ timeout: 30_000 });
+    await page.getByLabel('服务名称').fill('E2E Rejected');
+    await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
+    await page.getByLabel('模型 ID').fill('fixture-model');
+    await page.getByLabel('API Key').fill('sk-e2e-invalid-secret');
+    await page.getByRole('button', { name: '保存并测试', exact: true }).click();
+
+    await expect(page.getByRole('status').filter({ hasText: '连接失败 · 首响应' }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('status').filter({ hasText: 'HTTP 401' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '切换为当前来源', exact: true }))
+      .toHaveCount(0);
+    await expect(page.getByRole('button', { name: '保存配置', exact: true }))
+      .toBeEnabled();
+    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeChecked();
+    await expect(page.getByText('当前生效', { exact: true })).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
+      .toBe('local');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('系统设置按 Bot 分组管理全部任务并在重启后保留归属', async ({ electron, acceptanceRun }) => {
@@ -3246,8 +4005,9 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
 test('真实 Electron 集中重启后全部写入与主动切换相同私聊状态保持', async ({
   electron, acceptanceRun
 }) => {
+  const launchesBeforeRestart = electron.launchCount;
   const page = await electron.restart();
-  expect(electron.launchCount).toBe(2);
+  expect(electron.launchCount).toBe(launchesBeforeRestart + 1);
   const evidence = acceptanceRun.evidence;
 
   await expect(page.getByRole('button', { name: /E2E Pilot/ }).first()).toBeVisible();

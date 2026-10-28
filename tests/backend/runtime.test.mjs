@@ -25,6 +25,14 @@ async function withRuntime(run) {
   }
 }
 
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('condition was not met');
+}
+
 function installFixtureRuntime(root, version = '0.163.0', entrypoint = 'bin/codex-app-server') {
   const directory = join(root, version);
   const binary = join(directory, entrypoint);
@@ -51,6 +59,68 @@ lines.on('line', line => {
   mkdirSync(join(directory, 'codex-path'), { recursive: true });
   return binary;
 }
+
+test('Runtime advertises form elicitation and forwards MCP approval requests', async () => {
+  await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
+    const resourceRoot = join(directory, 'resource');
+    const workingDirectory = join(directory, 'profile');
+    const logPath = join(directory, 'rpc.log');
+    mkdirSync(workingDirectory);
+    const binary = installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.163.0');
+    writeFileSync(binary, `#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+const log = ${JSON.stringify(logPath)};
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', line => {
+  fs.appendFileSync(log, line + '\\n');
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');
+  }
+  if (message.method === 'initialized') {
+    process.stdout.write(JSON.stringify({
+      id: 'elicitation-1',
+      method: 'mcpServer/elicitation/request',
+      params: {
+        serverName: 'cua_repl',
+        threadId: 'thread-elicitation',
+        turnId: null,
+        mode: 'form',
+        message: 'Allow Computer Use to use "Google Chrome"?',
+        requestedSchema: {}
+      }
+    }) + '\\n');
+  }
+});
+`, { mode: 0o755 });
+
+    const runtime = new CodexRuntime(resourceRoot, workingDirectory, spawn, {
+      homeDirectory: join(directory, 'home')
+    });
+    const serverRequests = [];
+    runtime.on('serverRequest', request => serverRequests.push(request));
+    try {
+      await runtime.start();
+      await waitFor(() => serverRequests.length === 1);
+      const messages = () => readFileSync(logPath, 'utf8').trim().split('\n')
+        .map(line => JSON.parse(line));
+      const initialize = messages().find(message => message.method === 'initialize');
+      assert.deepEqual(initialize.params.capabilities.extensions, {
+        'openai/form': {}
+      });
+      assert.equal(serverRequests[0].method, 'mcpServer/elicitation/request');
+      assert.equal(serverRequests[0].params.serverName, 'cua_repl');
+
+      runtime.respondToServerRequest('elicitation-1', { action: 'decline' });
+      await waitFor(() => messages().some(message =>
+        message.id === 'elicitation-1' &&
+        message.result?.action === 'decline'));
+    } finally {
+      await runtime.stop();
+    }
+  });
+});
 
 function processExists(pid) {
   try {
@@ -276,6 +346,37 @@ test('Runtime launches the exact native CLI with an independent home and explici
       await runtime.start();
       assert.equal(runtime.state.status, 'ready');
       assert.equal(call.command, updatedBinary);
+    } finally { await runtime.stop(); }
+  });
+});
+
+test('Runtime applies model-source overrides and injects the API key only into its Codex child', async () => {
+  await withRuntime(async (CodexRuntime, _resolve, directory) => {
+    const home = join(directory, 'native-user');
+    installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.164.0', 'bin/codex');
+    const profile = join(directory, 'profile');
+    mkdirSync(profile);
+    let call;
+    const runtime = new CodexRuntime(join(directory, 'resource'), profile, (command, args, options) => {
+      call = { command, args, options };
+      return spawn(command, args, options);
+    }, { homeDirectory: home });
+    try {
+      runtime.setModelSourceConfig([
+        '-c', 'model_provider="rambo_manual"',
+        '-c', 'model_providers.rambo_manual={"wire_api":"responses"}'
+      ], { RAMBO_MANUAL_API_KEY: 'sk-child-secret' });
+      await runtime.start();
+      assert.equal(runtime.state.status, 'ready');
+      assert.ok(call.args.includes('model_provider="rambo_manual"'));
+      assert.ok(call.args.includes('model_providers.rambo_manual={"wire_api":"responses"}'));
+      assert.equal(call.options.env.RAMBO_MANUAL_API_KEY, 'sk-child-secret');
+      assert.notEqual(process.env.RAMBO_MANUAL_API_KEY, 'sk-child-secret');
+      await runtime.stop();
+      runtime.setModelSourceConfig([], {});
+      await runtime.start();
+      assert.ok(!call.args.includes('model_provider="rambo_manual"'));
+      assert.equal(call.options.env.RAMBO_MANUAL_API_KEY, undefined);
     } finally { await runtime.stop(); }
   });
 });

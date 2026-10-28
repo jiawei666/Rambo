@@ -33,6 +33,11 @@ export type ConnectorCredentialPayload =
       /** Per-connection Desktop OAuth client used for token refresh. */
       oauthClientId?: string;
       oauthClientSecret?: string;
+    }
+  | {
+      kind: 'model-api-key';
+      providerId: string;
+      apiKey: string;
     };
 
 type StoredCredential = {
@@ -341,6 +346,15 @@ function validatePayload(payload: ConnectorCredentialPayload): void {
           (key.salt !== null && !/^[a-f0-9]{32}$/iu.test(key.salt))) {
         throw new ConnectorCredentialsError('微信数据库密钥格式无效');
       }
+    }
+    return;
+  }
+  if (payload.kind === 'model-api-key') {
+    if (!payload || typeof payload.providerId !== 'string' ||
+        payload.providerId.length > 100 || !/^[\w.-]+$/u.test(payload.providerId) ||
+        typeof payload.apiKey !== 'string' || !payload.apiKey.trim() ||
+        payload.apiKey.length > 16_384 || payload.apiKey.includes('\0')) {
+      throw new ConnectorCredentialsError('模型 API 凭证格式无效');
     }
     return;
   }

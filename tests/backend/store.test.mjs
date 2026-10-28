@@ -70,7 +70,7 @@ test('randomizes legacy Bot eye poses once while preserving robot appearance set
       assert.match(savedLegacyAvatar, /^agent-robot:v2:100:violet:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.match(migrated.bot(robot.id).avatar, /^agent-robot:v2:100:orange:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.equal(migrated.bot(alreadyCurrent.id).avatar, 'agent-robot:v2:100:red:angry');
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
     } finally { migrated.close(); }
 
     const reopened = new Store(directory);
@@ -106,7 +106,7 @@ test('replaces a persisted input eye once now that input is not selectable', asy
       savedInputAvatar = migrated.bot(inputBot.id).avatar;
       assert.match(savedInputAvatar, /^agent-robot:v2:100:blue:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.equal(migrated.bot(happyBot.id).avatar, 'agent-robot:v2:100:green:happy');
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
     } finally { migrated.close(); }
 
     const reopened = new Store(directory);
@@ -137,7 +137,7 @@ test('persists queued chat messages and Routine recovery decisions across store 
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
       assert.deepEqual(reopened.queuedChatMessages(chat.id).map(message => message.id), [queued.id]);
       assert.equal(reopened.messages(chat.id).find(message => message.id === uncertain.id)?.dispatchStatus, 'needs_user');
       const persistedRun = reopened.routineRun(run.id);
@@ -212,9 +212,37 @@ test('migrates saved groups to allow a retained group with no default Bot', asyn
       assert.deepEqual(store.group('group-old').memberIds, ['bot-old']);
       assert.equal(store.group('group-old').defaultBotId, 'bot-old');
       assert.equal(store.db.prepare('PRAGMA table_info(group_chats)').all().find(row => row.name === 'defaultBotId').notnull, 0);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 25);
       assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { store.close(); }
+  });
+});
+
+test('detects pasted attachment paths referenced by private and group messages', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const first = store.createBot('Attachment reference A', 'a');
+      const second = store.createBot('Attachment reference B', 'b');
+      const group = store.createGroup('Attachment reference room', [first.bot.id, second.bot.id]);
+      const privatePath = '/Users/test/Library/Application Support/Rambo/composer-attachments/pasted-image-1700000000000-11111111.png';
+      const groupPath = '/Users/test/Library/Application Support/Rambo/composer-attachments/pasted-image-1700000000001-22222222.png';
+      const absentPath = '/Users/test/Library/Application Support/Rambo/composer-attachments/pasted-image-1700000000002-33333333.png';
+
+      store.addMessage(
+        first.chat.id,
+        'user',
+        `请查看这张图片\n${privatePath}`,
+        'complete'
+      );
+      store.addGroupMessage(group.id, 'user', `群聊附件：${groupPath}`);
+
+      assert.equal(store.composerAttachmentReferenced(privatePath), true);
+      assert.equal(store.composerAttachmentReferenced(groupPath), true);
+      assert.equal(store.composerAttachmentReferenced(absentPath), false);
+    } finally {
+      store.close();
+    }
   });
 });
 
@@ -239,7 +267,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const migrated = new Store(directory);
     try {
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
       assert.equal(migrated.chat(currentChatId).threadId, 'thread-current-v12');
       assert.equal(migrated.chat(currentChatId).archived, false);
       assert.equal(migrated.chat('chat-newer-empty').archived, true);
@@ -259,7 +287,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
       assert.equal(reopened.chat('chat-newer-empty').archived, true);
       assert.deepEqual(reopened.chats().map(chat => chat.id), [currentChatId]);
       assert.deepEqual(reopened.allChats().map(chat => chat.id), [currentChatId]);
@@ -406,6 +434,11 @@ test('new Bots copy explicit execution defaults and independent resource switche
       store.setSetting('defaultBotModel', 'model-b');
       store.setSetting('defaultBotPermission', 'workspaceWrite');
       const second = store.createBot('Second defaults', 'default-avatar');
+      store.db.prepare('UPDATE bots SET createdAt=? WHERE id=?')
+        .run('2026-10-01T00:00:00.000Z', bot.id);
+      store.db.prepare('UPDATE bots SET createdAt=? WHERE id=?')
+        .run('2026-10-02T00:00:00.000Z', second.bot.id);
+      assert.deepEqual(store.bots().map(item => item.id), [second.bot.id, bot.id]);
       assert.equal(store.bot(bot.id).model, 'model-a');
       assert.equal(store.bot(bot.id).permission, 'readOnly');
       assert.equal(store.bot(bot.id).notificationsEnabled, true);
@@ -429,7 +462,7 @@ test('new Bots copy explicit execution defaults and independent resource switche
     try {
       const bots = reopened.bots();
       assert.deepEqual(bots.map(bot => [bot.model, bot.permission]), [
-        ['model-a', 'readOnly'], ['model-b', 'workspaceWrite']
+        ['model-b', 'workspaceWrite'], ['model-a', 'readOnly']
       ]);
       assert.equal(reopened.botResourceEnabled(bots[0].id, 'mcp:playwright'), true);
       assert.equal(reopened.botResourceEnabled(bots[1].id, 'mcp:playwright'), true);
@@ -615,6 +648,104 @@ test('group archive is reversible and permanent deletion cascades group history 
   });
 });
 
+test('conversation ordering uses pins and creation time instead of recent updates', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const older = store.createBot('Older Bot', 'a');
+      const newer = store.createBot('Newer Bot', 'b');
+      const peer = store.createBot('Peer Bot', 'c');
+      store.db.prepare('UPDATE bots SET createdAt=? WHERE id=?')
+        .run('2026-10-01T00:00:00.000Z', older.bot.id);
+      store.db.prepare('UPDATE bots SET createdAt=? WHERE id=?')
+        .run('2026-10-02T00:00:00.000Z', newer.bot.id);
+      store.db.prepare('UPDATE bots SET createdAt=? WHERE id=?')
+        .run('2026-09-30T00:00:00.000Z', peer.bot.id);
+      assert.deepEqual(store.bots().filter(item => !item.archived).map(item => item.id),
+        [newer.bot.id, older.bot.id, peer.bot.id]);
+
+      store.updateBot(older.bot.id, { role: 'updated recently' });
+      assert.deepEqual(store.bots().filter(item => !item.archived).map(item => item.id),
+        [newer.bot.id, older.bot.id, peer.bot.id]);
+
+      const olderGroup = store.createGroup('Older group', [older.bot.id, peer.bot.id]);
+      const newerGroup = store.createGroup('Newer group', [newer.bot.id, peer.bot.id]);
+      store.db.prepare('UPDATE group_chats SET createdAt=? WHERE id=?')
+        .run('2026-10-03T00:00:00.000Z', olderGroup.id);
+      store.db.prepare('UPDATE group_chats SET createdAt=? WHERE id=?')
+        .run('2026-10-04T00:00:00.000Z', newerGroup.id);
+      assert.deepEqual(store.groups().map(item => item.id), [newerGroup.id, olderGroup.id]);
+      store.addGroupMessage(olderGroup.id, 'user', 'recent group update');
+      assert.deepEqual(store.groups().map(item => item.id), [newerGroup.id, olderGroup.id]);
+
+      store.db.prepare('UPDATE bots SET pinnedAt=? WHERE id=?')
+        .run('2026-10-20T00:00:00.000Z', older.bot.id);
+      store.db.prepare('UPDATE group_chats SET pinnedAt=? WHERE id=?')
+        .run('2026-10-21T00:00:00.000Z', olderGroup.id);
+      assert.deepEqual(store.bots().filter(item => !item.archived).map(item => item.id),
+        [older.bot.id, newer.bot.id, peer.bot.id]);
+      assert.deepEqual(store.groups().map(item => item.id), [olderGroup.id, newerGroup.id]);
+
+      const unpinned = store.setBotPinned(older.bot.id, false);
+      assert.equal(unpinned.pinnedAt, null);
+      assert.deepEqual(store.bots().filter(item => !item.archived).map(item => item.id),
+        [newer.bot.id, older.bot.id, peer.bot.id]);
+      assert.throws(() => store.setBotPinned(older.bot.id, 'yes'), /置顶状态/u);
+      assert.throws(() => store.setGroupPinned(olderGroup.id, 1), /置顶状态/u);
+
+      const pinnedGroup = store.setGroupPinned(olderGroup.id, false);
+      assert.equal(pinnedGroup.pinnedAt, null);
+      store.setBotArchived(older.bot.id, true);
+      assert.equal(store.bot(older.bot.id).pinnedAt, null);
+      store.setGroupArchived(olderGroup.id, true);
+      assert.equal(store.group(olderGroup.id).pinnedAt, null);
+    } finally { store.close(); }
+  });
+});
+
+test('legacy group schemas retain newly pinned state during the no-default-Bot rebuild and migration', async () => {
+  await withDirectory(async (Store, directory) => {
+    const db = new DatabaseSync(join(directory, 'rambo.sqlite'));
+    db.exec(`CREATE TABLE bots (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT NOT NULL, role TEXT NOT NULL DEFAULT '',
+        instructions TEXT NOT NULL DEFAULT '', model TEXT, permission TEXT NOT NULL DEFAULT 'fullAccess',
+        archived INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL);
+      CREATE TABLE group_chats (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL,
+        defaultBotId TEXT NOT NULL REFERENCES bots(id) ON DELETE RESTRICT,
+        archived INTEGER NOT NULL DEFAULT 0,
+        pinnedAt TEXT,
+        createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
+      CREATE TABLE group_chat_members (
+        groupChatId TEXT NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
+        botId TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL, joinedAt TEXT NOT NULL,
+        PRIMARY KEY(groupChatId, botId), UNIQUE(groupChatId, position));
+      INSERT INTO bots(id,name,avatar,createdAt) VALUES('bot-a','A','a','2026-10-01T00:00:00.000Z');
+      INSERT INTO bots(id,name,avatar,createdAt) VALUES('bot-b','B','b','2026-10-02T00:00:00.000Z');
+      INSERT INTO group_chats(id,title,defaultBotId,archived,pinnedAt,createdAt,updatedAt)
+        VALUES('group-pinned','Pinned','bot-a',0,'2026-10-20T00:00:00.000Z',
+          '2026-10-03T00:00:00.000Z','2026-10-03T00:00:00.000Z');
+      INSERT INTO group_chat_members(groupChatId,botId,position,joinedAt)
+        VALUES('group-pinned','bot-a',0,'2026-10-03T00:00:00.000Z');
+      INSERT INTO group_chat_members(groupChatId,botId,position,joinedAt)
+        VALUES('group-pinned','bot-b',1,'2026-10-03T00:00:00.000Z');
+      PRAGMA user_version=7;`);
+    db.close();
+
+    const migrated = new Store(directory);
+    try {
+      assert.equal(migrated.group('group-pinned').pinnedAt, '2026-10-20T00:00:00.000Z');
+      assert.deepEqual(migrated.groups().map(item => item.id), ['group-pinned']);
+      const groupColumns = migrated.db.prepare('PRAGMA table_info(group_chats)').all().map(row => row.name);
+      const botColumns = migrated.db.prepare('PRAGMA table_info(bots)').all().map(row => row.name);
+      assert.equal(groupColumns.includes('pinnedAt'), true);
+      assert.equal(botColumns.includes('pinnedAt'), true);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+    } finally { migrated.close(); }
+  });
+});
+
 test('routine list is backed by SQLite and remains empty after reopening without created tasks', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
@@ -630,7 +761,7 @@ test('routine list is backed by SQLite and remains empty after reopening without
       assert.deepEqual(reopened.routines(), []);
       const table = reopened.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routines'").get();
       assert.equal(table?.name, 'routines');
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
     } finally { reopened.close(); }
   });
 });
@@ -656,7 +787,7 @@ test('migrates a version 13 routines table that predates scheduling columns', as
       const columns = store.db.prepare('PRAGMA table_info(routines)').all().map(row => row.name);
       assert.equal(columns.includes('nextRunAt'), true);
       assert.equal(columns.includes('lastScheduledFor'), true);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 24);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 25);
     } finally { store.close(); }
   });
 });
@@ -1327,13 +1458,13 @@ test('group messages persist in one shared timeline with one hidden member threa
       const user = store.addGroupMessage(group.id, 'user', 'Please summarize the shared notes.');
       const partial = store.groupAssistantItem(
         group.id, first.bot.id, 'commentary-1', 'I will check the shared notes.', true, 'streaming', 'turn-1', 'commentary'
-      );
+      ).message;
       const nextPhase = store.groupAssistantItem(
         group.id, first.bot.id, 'partial-1', 'I found the main points.', true, 'streaming', 'turn-1', 'partial_answer'
-      );
+      ).message;
       const completed = store.groupAssistantItem(
         group.id, first.bot.id, 'final-1', 'Here are the notes.', false, 'complete', 'turn-1', 'final_answer'
-      );
+      ).message;
       assert.equal(partial.id, completed.id);
       assert.equal(nextPhase.id, completed.id);
       assert.equal(completed.senderBotId, first.bot.id);

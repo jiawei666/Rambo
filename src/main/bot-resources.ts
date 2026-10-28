@@ -6,6 +6,22 @@ import type { BotResource } from '../shared/contracts';
 export interface BotResourceDiscovery {
   resources: BotResource[];
   errors: string[];
+  /**
+   * Runtime-only inventory for Plugin-owned MCP servers. This is deliberately
+   * kept out of Snapshot and renderer payloads because it can contain commands
+   * and environment configuration.
+   */
+  pluginMcpRuntimes: PluginMcpRuntime[];
+}
+
+/** Renderer-safe directory payload. Runtime-only Plugin MCP config stays out. */
+export type BotResourceDirectory = Pick<BotResourceDiscovery, 'resources' | 'errors'>;
+
+export interface PluginMcpRuntime {
+  resourceId: string;
+  pluginId: string;
+  serverNames: string[];
+  mcpServers: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -108,9 +124,54 @@ function pluginManifest(directory: string): Record<string, unknown> | null {
   return null;
 }
 
-function pluginResources(root: string): BotResource[] {
+interface PluginCandidate {
+  resource: BotResource;
+  runtime: PluginMcpRuntime;
+}
+
+function pluginMcpConfiguration(
+  manifest: Record<string, unknown>,
+  pluginRoot: string
+): { serverNames: string[]; mcpServers: Record<string, Record<string, unknown>> } {
+  let declared: unknown = manifest.mcpServers;
+  if (typeof declared === 'string' && declared.trim()) {
+    const path = resolve(pluginRoot, declared.trim());
+    try {
+      declared = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      return { serverNames: [], mcpServers: {} };
+    }
+  }
+  if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
+    return { serverNames: [], mcpServers: {} };
+  }
+  const record = declared as Record<string, unknown>;
+  const rawServers = record.mcpServers && typeof record.mcpServers === 'object' &&
+    !Array.isArray(record.mcpServers)
+    ? record.mcpServers as Record<string, unknown>
+    : record;
+  const mcpServers: Record<string, Record<string, unknown>> = {};
+  for (const [name, value] of Object.entries(rawServers)) {
+    if (!name.trim() || name.length > 200 || /[\u0000-\u001f\u007f]/u.test(name)) continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const next = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+    if (typeof next.command === 'string' && /^\.{1,2}[\\/]/u.test(next.command)) {
+      next.command = resolve(pluginRoot, next.command);
+    }
+    if (typeof next.cwd === 'string' && !next.cwd.startsWith('/')) {
+      next.cwd = resolve(pluginRoot, next.cwd);
+    }
+    mcpServers[name] = next;
+  }
+  return {
+    serverNames: Object.keys(mcpServers),
+    mcpServers
+  };
+}
+
+function pluginCandidates(root: string): PluginCandidate[] {
   if (!existsSync(root)) return [];
-  const found = new Map<string, BotResource>();
+  const found: PluginCandidate[] = [];
   let marketplaceEntries: string[] = [];
   try { marketplaceEntries = readdirSync(root); } catch { return []; }
   for (const marketplace of marketplaceEntries) {
@@ -121,6 +182,7 @@ function pluginResources(root: string): BotResource[] {
       if (pluginName.startsWith('.') || pluginName.startsWith('@')) continue;
       const pluginRoot = join(root, marketplace, pluginName);
       let manifest = pluginManifest(pluginRoot);
+      let manifestRoot = pluginRoot;
       if (!manifest) {
         let versions: string[] = [];
         try {
@@ -135,29 +197,82 @@ function pluginResources(root: string): BotResource[] {
             if (!statSync(versionRoot).isDirectory()) continue;
           } catch { continue; }
           manifest = pluginManifest(versionRoot);
-          if (manifest) break;
+          if (manifest) {
+            manifestRoot = versionRoot;
+            break;
+          }
         }
       }
       if (!manifest) continue;
       const manifestName = typeof manifest.name === 'string' && manifest.name.trim()
         ? manifest.name.trim()
         : pluginName;
+      const pluginId = `${manifestName}@${marketplace}`;
+      const existing = found.find(item =>
+        item.runtime.pluginId.toLocaleLowerCase() === pluginId.toLocaleLowerCase());
+      if (existing) continue;
       const id = `plugin:${manifestName.toLocaleLowerCase()}`;
-      if (found.has(id)) continue;
-      found.set(id, {
-        id,
-        kind: 'plugin',
-        name: manifestName,
-        description: typeof manifest.description === 'string'
-          ? manifest.description.slice(0, 240)
-          : '已安装的 Codex Plugin。',
-        source: `Plugin · ${marketplace}`,
-        bundled: marketplace.includes('bundled'),
-        configKey: null
+      const iface = manifest.interface && typeof manifest.interface === 'object' &&
+        !Array.isArray(manifest.interface)
+        ? manifest.interface as Record<string, unknown>
+        : {};
+      const runtimeConfiguration = pluginMcpConfiguration(manifest, manifestRoot);
+      found.push({
+        resource: {
+          id,
+          kind: 'plugin',
+          name: typeof iface.displayName === 'string' && iface.displayName.trim()
+            ? iface.displayName.trim()
+            : pluginName === 'unified-computer-use'
+              ? 'Computer Use'
+              : manifestName,
+          description: typeof iface.shortDescription === 'string' && iface.shortDescription.trim()
+            ? iface.shortDescription.trim().slice(0, 240)
+            : typeof manifest.description === 'string'
+              ? manifest.description.slice(0, 240)
+              : '已安装的 Codex Plugin。',
+          source: `Plugin · ${marketplace}`,
+          bundled: marketplace.includes('bundled'),
+          configKey: pluginId
+        },
+        runtime: {
+          resourceId: id,
+          pluginId,
+          serverNames: runtimeConfiguration.serverNames,
+          mcpServers: runtimeConfiguration.mcpServers
+        }
       });
     }
   }
-  return [...found.values()];
+  // The official Computer Use plugin id remains the user-facing package while
+  // current Codex builds route actual desktop control through the bundled
+  // unified runtime. Merge that runtime into the UI-facing Plugin entry rather
+  // than showing two Computer Use checkboxes.
+  const legacyComputerUse = found.find(item =>
+    item.runtime.pluginId.toLocaleLowerCase() === 'computer-use@openai-bundled');
+  const unifiedComputerUse = found.find(item =>
+    item.runtime.pluginId.toLocaleLowerCase() === 'unified-computer-use@openai-bundled');
+  if (legacyComputerUse && unifiedComputerUse?.runtime.serverNames.length) {
+    legacyComputerUse.runtime.pluginId = unifiedComputerUse.runtime.pluginId;
+    legacyComputerUse.runtime.serverNames = unifiedComputerUse.runtime.serverNames;
+    legacyComputerUse.runtime.mcpServers = unifiedComputerUse.runtime.mcpServers;
+    legacyComputerUse.resource.configKey = unifiedComputerUse.runtime.pluginId;
+    return found.filter(item => item !== unifiedComputerUse);
+  }
+  return found;
+}
+
+function cloneDiscovery(discovery: BotResourceDiscovery): BotResourceDiscovery {
+  return {
+    resources: discovery.resources.map(resource => ({ ...resource })),
+    errors: [...discovery.errors],
+    pluginMcpRuntimes: discovery.pluginMcpRuntimes.map(runtime => ({
+      resourceId: runtime.resourceId,
+      pluginId: runtime.pluginId,
+      serverNames: [...runtime.serverNames],
+      mcpServers: JSON.parse(JSON.stringify(runtime.mcpServers)) as Record<string, Record<string, unknown>>
+    }))
+  };
 }
 
 function skillFrontMatter(path: string): { name: string; description: string } {
@@ -302,12 +417,13 @@ export function discoverBotResources(
   const knownMcpServers = normalizedMcpServers(options);
   const key = cacheKey(options);
   const cached = cache.get(key);
-  if (cached && !refresh) return {
-    resources: cached.resources.map(resource => ({ ...resource })),
-    errors: [...cached.errors]
-  };
+  if (cached && !refresh) return cloneDiscovery(cached);
   const resources = new Map<string, BotResource>();
   const errors: string[] = [];
+  const plugins = pluginCandidates(roots.pluginRoot);
+  const pluginOwnedMcpNames = new Set(plugins
+    .flatMap(plugin => plugin.runtime.serverNames)
+    .map(name => name.toLocaleLowerCase()));
   for (const root of roots.skillRoots) {
     for (const path of walkSkillFiles(root.path)) {
       const id = basename(dirname(path)).toLocaleLowerCase();
@@ -348,6 +464,7 @@ export function discoverBotResources(
   ];
   for (const resource of mcpResources) resources.set(resource.id, resource);
   for (const resource of knownMcpResources(knownMcpServers)) {
+    if (pluginOwnedMcpNames.has(resource.name.toLocaleLowerCase())) continue;
     // The built-in entry is authoritative if config/read also reports the
     // same server name.
     if (!resources.has(resource.id)) resources.set(resource.id, resource);
@@ -364,16 +481,17 @@ export function discoverBotResources(
     }
   ];
   for (const resource of appResources) resources.set(resource.id, resource);
-  for (const resource of pluginResources(roots.pluginRoot)) resources.set(resource.id, resource);
+  for (const plugin of plugins) resources.set(plugin.resource.id, plugin.resource);
   const ordered = [...resources.values()].sort((a, b) =>
     a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, 'zh-CN')
   );
-  const result = { resources: ordered, errors };
-  cache.set(key, result);
-  return {
-    resources: ordered.map(resource => ({ ...resource })),
-    errors: [...errors]
+  const result: BotResourceDiscovery = {
+    resources: ordered,
+    errors,
+    pluginMcpRuntimes: plugins.map(plugin => plugin.runtime)
   };
+  cache.set(key, result);
+  return cloneDiscovery(result);
 }
 
 export function resourceIdsSetting(value: string | undefined): string[] {

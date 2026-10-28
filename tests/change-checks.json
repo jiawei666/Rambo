@@ -80,6 +80,22 @@
       "reason": "头像眼型首帧和鼠标跟随需要真实 Electron 渲染验证"
     },
     {
+      "id": "composer-attachments",
+      "label": "输入框附件与剪贴板图片",
+      "paths": [
+        "src/shared/composer-attachments.ts",
+        "src/main/composer-attachment-cleanup.ts",
+        "tests/backend/composer-attachments.test.mjs",
+        "tests/backend/composer-attachment-cleanup.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": [
+        "tests/backend/composer-attachments.test.mjs",
+        "tests/backend/composer-attachment-cleanup.test.mjs"
+      ],
+      "reason": "附件路径、图片解析与临时文件保留策略需要纯逻辑覆盖"
+    },
+    {
       "id": "backend-tests",
       "label": "后端测试文件",
       "paths": ["tests/backend/**/*.test.mjs", "tests/backend/*.test.mjs"],

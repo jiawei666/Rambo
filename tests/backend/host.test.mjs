@@ -621,6 +621,153 @@ test('MCP snapshots, resource IPC, and thread config share one redacted metadata
   });
 });
 
+test('Plugin-owned MCP is configured by the plugin switch and stays out of the MCP directory', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const originalHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), 'rambo-host-plugin-home-'));
+    const pluginRoot = join(
+      home, '.codex', 'plugins', 'cache', 'vendor', 'fixture-plugin', '1.0.0'
+    );
+    mkdirSync(join(pluginRoot, '.codex-plugin'), { recursive: true });
+    writeFileSync(join(pluginRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({
+      name: 'fixture-plugin',
+      description: 'Plugin with its own MCP runtime',
+      mcpServers: './.mcp.json'
+    }));
+    writeFileSync(join(pluginRoot, '.mcp.json'), JSON.stringify({
+      mcpServers: {
+        fixture_mcp: {
+          command: './bin/fixture-server',
+          args: ['--fixture'],
+          cwd: '.',
+          env: { PLUGIN_ONLY_SECRET: 'runtime-only-value' }
+        }
+      }
+    }));
+    process.env.HOME = home;
+    try {
+      runtime.globalMcpServers = {
+        fixture_mcp: {
+          description: 'Plugin-owned runtime',
+          command: 'must-not-be-used-as-an-independent-mcp'
+        }
+      };
+      const directory = await host.botResources(true);
+      assert.equal(directory.resources.some(resource =>
+        resource.id === 'mcp:fixture_mcp'), false);
+      assert.equal(directory.resources.some(resource =>
+        resource.id === 'plugin:fixture-plugin'), true);
+      assert.equal(JSON.stringify(directory).includes('runtime-only-value'), false);
+
+      store.syncBotResources(
+        ['plugin:fixture-plugin'],
+        ['plugin:fixture-plugin']
+      );
+      const enabled = store.createBot('Plugin enabled', 'a');
+      const enabledSend = host.send(enabled.chat.id, 'use the plugin');
+      await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+      const enabledThread = runtime.requests.find(request => request.method === 'thread/start');
+      assert.deepEqual(enabledThread.params.config.features, {
+        apps: false,
+        plugins: true
+      });
+      assert.deepEqual({ ...enabledThread.params.config.plugins }, {
+        'fixture-plugin@vendor': { enabled: true }
+      });
+      const pluginMcp = enabledThread.params.config.mcp_servers.fixture_mcp;
+      assert.equal(pluginMcp.enabled, true);
+      assert.equal(pluginMcp.command, join(pluginRoot, 'bin', 'fixture-server'));
+      assert.equal(pluginMcp.cwd, pluginRoot);
+      assert.deepEqual(pluginMcp.args, ['--fixture']);
+      assert.equal(pluginMcp.env.PLUGIN_ONLY_SECRET, 'runtime-only-value');
+      assert.equal(pluginMcp.env.CODEX_HOME, join(store.directory, 'codex-home'));
+      assert.equal(pluginMcp.env.CODEX_SQLITE_HOME, join(store.directory, 'codex-home'));
+      runtime.requests.find(request => request.method === 'turn/start')
+        .resolve({ turn: { id: 'plugin-enabled-turn' } });
+      await enabledSend;
+
+      store.syncBotResources(['plugin:fixture-plugin'], []);
+      const disabled = store.createBot('Plugin disabled', 'b');
+      const disabledSend = host.send(disabled.chat.id, 'do not use the plugin');
+      await waitFor(() => runtime.requests.filter(request =>
+        request.method === 'turn/start').length === 2);
+      const disabledThread = runtime.requests.filter(request =>
+        request.method === 'thread/start')[1];
+      assert.deepEqual(disabledThread.params.config.features, {
+        apps: false,
+        plugins: false
+      });
+      assert.deepEqual({ ...disabledThread.params.config.plugins }, {
+        'fixture-plugin@vendor': { enabled: false }
+      });
+      assert.deepEqual(disabledThread.params.config.mcp_servers.fixture_mcp, {
+        enabled: false
+      });
+      runtime.requests.filter(request => request.method === 'turn/start')[1]
+        .resolve({ turn: { id: 'plugin-disabled-turn' } });
+      await disabledSend;
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+test('MCP elicitation waits for an explicit user action and resolves once', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const { chat } = store.createBot('Plugin approval Bot', 'a');
+    const sending = host.send(chat.id, 'use Computer Use');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const threadId = store.chat(chat.id).threadId;
+
+    runtime.emit('serverRequest', {
+      id: 'elicitation-1',
+      method: 'mcpServer/elicitation/request',
+      params: {
+        serverName: 'cua_repl',
+        threadId,
+        turnId: 'plugin-turn',
+        mode: 'form',
+        message: 'Allow Computer Use to use "Google Chrome"?',
+        requestedSchema: {},
+        _meta: {
+          subtitle: 'Chrome tab access',
+          tool_name: 'js'
+        }
+      }
+    });
+
+    assert.equal(runtime.responses.length, 0);
+    const prompt = events.find(event => event.type === 'mcpElicitation')?.prompt;
+    assert.deepEqual(prompt, {
+      requestId: 'elicitation-1',
+      serverName: 'cua_repl',
+      threadId,
+      turnId: 'plugin-turn',
+      message: 'Allow Computer Use to use "Google Chrome"?',
+      detail: 'Chrome tab access',
+      toolName: 'js'
+    });
+
+    host.respondMcpElicitation('elicitation-1', 'decline');
+    assert.deepEqual(runtime.responses, [{
+      id: 'elicitation-1',
+      result: { action: 'decline' }
+    }]);
+    assert.ok(events.some(event =>
+      event.type === 'mcpElicitationResolved' &&
+      event.requestId === 'elicitation-1'));
+    assert.throws(
+      () => host.respondMcpElicitation('elicitation-1', 'accept'),
+      /已失效/u
+    );
+
+    runtime.requests.find(request => request.method === 'turn/start')
+      .resolve({ turn: { id: 'plugin-turn' } });
+    await sending;
+  });
+});
+
 test('runtime ready refreshes MCP metadata and App Server restart replaces the safe cache', async () => {
   await withHost(async ({ store, runtime, host, events }) => {
     runtime.globalMcpServers = {
@@ -3366,7 +3513,7 @@ test('two Routine results for the same source chat are handed back one after ano
   });
 });
 
-test('assistant phases replace one visible message while reasoning and tool activity stay in turn details', async () => {
+test('assistant phases replace one visible bubble while reasoning and tool activity stay internal', async () => {
   await withHost(async ({ store, runtime, host, events, Store }) => {
     const { chat } = store.createBot('Activity Bot', 'a');
     const sending = host.send(chat.id, 'inspect the project');
@@ -3417,11 +3564,21 @@ test('assistant phases replace one visible message while reasoning and tool acti
       turnId: 'activity-turn',
       item: { id: 'commentary-1', type: 'agentMessage', phase: 'commentary', text: '我先检查项目结构。' }
     });
+    const commentary = store.messages(chat.id).filter(message => message.role === 'assistant');
+    assert.equal(commentary.length, 1);
+    assert.equal(commentary[0].text, '我先检查项目结构。');
+    assert.equal(commentary[0].phase, 'commentary');
+    const bubbleId = commentary[0].id;
     runtime.emit('notification', 'item/completed', {
       threadId,
       turnId: 'activity-turn',
       item: { id: 'partial-1', type: 'agentMessage', phase: 'partial_answer', text: '我已经找到相关入口。' }
     });
+    const partial = store.messages(chat.id).filter(message => message.role === 'assistant');
+    assert.equal(partial.length, 1);
+    assert.equal(partial[0].id, bubbleId);
+    assert.equal(partial[0].text, '我已经找到相关入口。');
+    assert.equal(partial[0].phase, 'partial_answer');
     runtime.emit('notification', 'item/completed', {
       threadId,
       turnId: 'activity-turn',
@@ -3435,10 +3592,14 @@ test('assistant phases replace one visible message while reasoning and tool acti
     const messages = store.messages(chat.id);
     const assistantMessages = messages.filter(message => message.role === 'assistant');
     assert.equal(assistantMessages.length, 1);
+    assert.equal(assistantMessages[0].id, bubbleId);
     assert.equal(assistantMessages[0].itemId, 'final-1');
     assert.equal(assistantMessages[0].phase, 'final_answer');
     assert.equal(assistantMessages[0].turnId, 'activity-turn');
     assert.equal(assistantMessages[0].text, '检查已经完成。');
+    assert.ok(events.some(event =>
+      event.type === 'message' && event.message.id === bubbleId
+    ));
     const activities = store.activities(chat.id);
     assert.deepEqual(activities.map(activity => activity.kind), ['reasoning', 'command']);
     assert.equal(activities[0].detail, 'Check the relevant source first.');
@@ -3455,6 +3616,155 @@ test('assistant phases replace one visible message while reasoning and tool acti
     } finally {
       reopened.close();
     }
+  });
+});
+
+test('stage and final answer deltas replace the same bubble within one turn', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const { chat } = store.createBot('Final stream Bot', 'a');
+    const sending = host.send(chat.id, 'stream the final answer');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const start = runtime.requests.find(request => request.method === 'turn/start');
+    start.resolve({ turn: { id: 'final-stream-turn', status: 'inProgress' } });
+    await sending;
+    const threadId = store.chat(chat.id).threadId;
+
+    runtime.emit('notification', 'item/agentMessage/delta', {
+      threadId,
+      turnId: 'final-stream-turn',
+      itemId: 'final-stream-stage',
+      phase: 'commentary',
+      delta: '正在检查'
+    });
+    const commentary = store.messages(chat.id).filter(message => message.role === 'assistant');
+    assert.equal(commentary.length, 1);
+    assert.equal(commentary[0].text, '正在检查');
+    assert.equal(commentary[0].status, 'streaming');
+    const bubbleId = commentary[0].id;
+    runtime.emit('notification', 'item/agentMessage/delta', {
+      threadId,
+      turnId: 'final-stream-turn',
+      itemId: 'final-stream-stage-next',
+      phase: 'partial_answer',
+      delta: '下一步'
+    });
+    const partial = store.messages(chat.id).filter(message => message.role === 'assistant');
+    assert.equal(partial.length, 1);
+    assert.equal(partial[0].id, bubbleId);
+    assert.equal(partial[0].text, '下一步');
+    assert.equal(partial[0].status, 'streaming');
+
+    runtime.emit('notification', 'item/agentMessage/delta', {
+      threadId,
+      turnId: 'final-stream-turn',
+      itemId: 'final-stream-answer',
+      phase: 'final_answer',
+      delta: '最终'
+    });
+    runtime.emit('notification', 'item/agentMessage/delta', {
+      threadId,
+      turnId: 'final-stream-turn',
+      itemId: 'final-stream-answer',
+      phase: 'final_answer',
+      delta: '结果'
+    });
+    const streaming = store.messages(chat.id).filter(message =>
+      message.role === 'assistant' && message.itemId === 'final-stream-answer'
+    );
+    assert.equal(streaming.length, 1);
+    assert.equal(streaming[0].text, '最终结果');
+    assert.equal(streaming[0].status, 'streaming');
+    assert.equal(streaming[0].phase, 'final_answer');
+    assert.equal(streaming[0].id, bubbleId);
+  });
+});
+
+test('runtime disconnect keeps a completed stage bubble at its original position without rewriting it', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const { chat } = store.createBot('Disconnect stage Bot', 'a');
+    const sending = host.send(chat.id, 'disconnect while working');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const start = runtime.requests.find(request => request.method === 'turn/start');
+    start.resolve({ turn: { id: 'disconnect-stage-turn', status: 'inProgress' } });
+    await sending;
+    const threadId = store.chat(chat.id).threadId;
+
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'disconnect-stage-turn',
+      item: {
+        id: 'disconnect-stage-message',
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: '断开前的阶段内容'
+      }
+    });
+    const stage = store.messages(chat.id).find(message => message.role === 'assistant');
+    assert.equal(stage?.text, '断开前的阶段内容');
+
+    runtime.emit('state', { status: 'error', version: 'test', error: 'connection lost' });
+    const afterDisconnect = store.messages(chat.id).find(message => message.role === 'assistant');
+    assert.equal(afterDisconnect?.id, stage?.id);
+    assert.equal(afterDisconnect?.status, 'complete');
+    assert.equal(afterDisconnect?.text, '断开前的阶段内容');
+  });
+});
+
+test('a steered follow-up moves the next stage to the latest user message and keeps one bubble', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const { chat } = store.createBot('Routing stage Bot', 'a');
+    const firstSending = host.send(chat.id, '第一轮');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const firstStart = runtime.requests.find(request => request.method === 'turn/start');
+    firstStart.resolve({ turn: { id: 'routing-stage-first', status: 'inProgress' } });
+    await firstSending;
+    const threadId = store.chat(chat.id).threadId;
+    const firstUser = store.messages(chat.id).find(message =>
+      message.role === 'user' && message.text === '第一轮'
+    );
+    assert.ok(firstUser);
+
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'routing-stage-first',
+      item: { id: 'routing-commentary', type: 'agentMessage', phase: 'commentary', text: '第一轮阶段内容' }
+    });
+    const firstBubble = store.messages(chat.id).find(message => message.role === 'assistant');
+    assert.equal(firstBubble?.text, '第一轮阶段内容');
+
+    const secondSending = host.send(chat.id, '第二轮');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/steer'));
+    await secondSending;
+    runtime.emit('notification', 'item/completed', {
+      threadId,
+      turnId: 'routing-stage-first',
+      item: { id: 'routing-partial-second', type: 'agentMessage', phase: 'partial_answer', text: '第二轮阶段内容' }
+    });
+    let assistant = store.messages(chat.id).filter(message => message.role === 'assistant');
+    assert.equal(assistant.length, 1);
+    assert.notEqual(assistant[0].id, firstBubble?.id);
+    assert.equal(assistant[0].text, '第二轮阶段内容');
+    assert.ok(events.some(event =>
+      event.type === 'messageRemoved' && event.messageId === firstBubble?.id
+    ));
+    const secondBubbleId = assistant[0].id;
+    runtime.emit('notification', 'turn/completed', {
+      threadId,
+      turn: { id: 'routing-stage-first', status: 'completed' }
+    });
+
+    const visible = store.messages(chat.id);
+    assert.deepEqual(
+      visible.filter(message => message.role === 'user').map(message => message.text),
+      ['第一轮', '第二轮']
+    );
+    assert.deepEqual(
+      visible.filter(message => message.role === 'assistant').map(message => message.text),
+      ['第二轮阶段内容']
+    );
+    assert.equal(visible.some(message => message.text === '第一轮阶段内容'), false);
+    assert.equal(visible.find(message => message.role === 'assistant')?.id, secondBubbleId);
+    assert.equal(visible.find(message => message.role === 'assistant')?.status, 'complete');
   });
 });
 
@@ -5129,6 +5439,141 @@ test('group runtime tracks participant judgment, latest activity, and hides afte
     });
     assert.equal(host.snapshot().groupRuntimes[group.id], undefined);
     assert.ok(events.some(event => event.type === 'groupRuntime' && event.groupId === group.id && event.runtime === null));
+  });
+});
+
+test('group commentary creates a member bubble while later tool activity remains in runtime state', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const first = store.createBot('Stage Activity Researcher', 'a');
+    const second = store.createBot('Stage Activity Writer', 'b');
+    const group = store.createGroup('Stage activity room', [first.bot.id, second.bot.id]);
+    const sending = host.sendGroup(group.id, '@everyone inspect the issue');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    starts.forEach((start, index) => start.resolve({
+      turn: { id: `stage-activity-turn-${index}`, status: 'inProgress' }
+    }));
+    await sending;
+
+    const runtimeState = host.snapshot().groupRuntimes[group.id];
+    assert.ok(runtimeState);
+    const member = runtimeState.members.find(item => item.botId === first.bot.id);
+    assert.ok(member);
+    const start = starts.find(candidate =>
+      candidate.params.threadId === store.chat(member.chatId).threadId
+    );
+    assert.ok(start);
+    const turnId = `stage-activity-turn-${starts.indexOf(start)}`;
+
+    runtime.emit('notification', 'item/completed', {
+      threadId: start.params.threadId,
+      turnId,
+      item: { id: 'stage-activity-commentary', type: 'agentMessage', phase: 'commentary', text: '先检查入口' }
+    });
+    const commentary = store.groupMessages(group.id).filter(message => message.role === 'assistant');
+    assert.equal(commentary.length, 1);
+    assert.equal(commentary[0].senderBotId, first.bot.id);
+    assert.equal(commentary[0].text, '先检查入口');
+    let current = host.snapshot().groupRuntimes[group.id];
+    let currentMember = current?.members.find(item => item.botId === first.bot.id);
+    assert.equal(currentMember?.phase, 'working');
+    assert.equal(currentMember?.activityKind, null);
+
+    runtime.emit('notification', 'item/started', {
+      threadId: start.params.threadId,
+      turnId,
+      item: { id: 'stage-activity-web', type: 'webSearch', query: 'ordered runtime activity' }
+    });
+    current = host.snapshot().groupRuntimes[group.id];
+    currentMember = current?.members.find(item => item.botId === first.bot.id);
+    assert.equal(currentMember?.activityKind, 'web');
+    assert.ok(currentMember?.activityUpdatedAt);
+  });
+});
+
+test('group stages reuse one member bubble while other members remain isolated', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const first = store.createBot('Stage Researcher', 'a');
+    const second = store.createBot('Stage Writer', 'b');
+    const group = store.createGroup('Stage room', [first.bot.id, second.bot.id]);
+    const sending = host.sendGroup(group.id, '@everyone compare the documents');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    starts.forEach((start, index) => start.resolve({
+      turn: { id: `stage-group-turn-${index}`, status: 'inProgress' }
+    }));
+    await sending;
+
+    const runtimeState = host.snapshot().groupRuntimes[group.id];
+    assert.ok(runtimeState);
+    const firstMember = runtimeState.members.find(member => member.botId === first.bot.id);
+    const secondMember = runtimeState.members.find(member => member.botId === second.bot.id);
+    assert.ok(firstMember);
+    assert.ok(secondMember);
+    const firstStart = starts.find(start =>
+      start.params.threadId === store.chat(firstMember.chatId).threadId
+    );
+    const secondStart = starts.find(start =>
+      start.params.threadId === store.chat(secondMember.chatId).threadId
+    );
+    assert.ok(firstStart);
+    assert.ok(secondStart);
+
+    runtime.emit('notification', 'item/completed', {
+      threadId: firstStart.params.threadId,
+      turnId: 'stage-group-turn-0',
+      item: {
+        id: 'stage-group-commentary',
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: '正在核对文档差异'
+      }
+    });
+    let firstStage = store.groupMessages(group.id)
+      .find(message => message.role === 'assistant' && message.senderBotId === first.bot.id);
+    assert.equal(firstStage?.text, '正在核对文档差异');
+    const firstStageId = firstStage?.id;
+    runtime.emit('notification', 'item/completed', {
+      threadId: firstStart.params.threadId,
+      turnId: 'stage-group-turn-0',
+      item: {
+        id: 'stage-group-partial',
+        type: 'agentMessage',
+        phase: 'partial_answer',
+        text: '差异集中在开头'
+      }
+    });
+    firstStage = store.groupMessages(group.id)
+      .find(message => message.role === 'assistant' && message.senderBotId === first.bot.id);
+    assert.equal(firstStage?.id, firstStageId);
+    assert.equal(firstStage?.text, '差异集中在开头');
+
+    runtime.emit('notification', 'item/completed', {
+      threadId: secondStart.params.threadId,
+      turnId: 'stage-group-turn-1',
+      item: {
+        id: 'stage-group-final',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: '核对完成，两处措辞不同。'
+      }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: secondStart.params.threadId,
+      turn: { id: 'stage-group-turn-1', status: 'completed' }
+    });
+    const assistantMessages = store.groupMessages(group.id)
+      .filter(message => message.role === 'assistant');
+    assert.equal(assistantMessages.length, 2);
+    const firstReply = assistantMessages.find(message => message.senderBotId === first.bot.id);
+    const secondReply = assistantMessages.find(message => message.senderBotId === second.bot.id);
+    assert.equal(firstReply?.id, firstStageId);
+    assert.equal(firstReply?.text, '差异集中在开头');
+    assert.equal(secondReply?.text, '核对完成，两处措辞不同。');
+    assert.equal(secondReply?.phase, 'final_answer');
+    assert.ok(events.some(event =>
+      event.type === 'groupMessage' && event.message.senderBotId === first.bot.id
+    ));
   });
 });
 

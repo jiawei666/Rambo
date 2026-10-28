@@ -134,6 +134,7 @@ export interface ThreadModelObservation {
 const botFrom = (r: Row): Bot => ({
   ...r,
   archived: !!r.archived,
+  pinnedAt: typeof r.pinnedAt === 'string' ? r.pinnedAt : null,
   model: typeof r.model === 'string' ? r.model : '',
   resourceIds: resourceIdsFrom(r.resourceIdsJson),
   notificationsEnabled: r.notificationsEnabled !== 0
@@ -284,6 +285,7 @@ export class Store {
         id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT NOT NULL, role TEXT NOT NULL DEFAULT '',
         instructions TEXT NOT NULL DEFAULT '', model TEXT, permission TEXT NOT NULL DEFAULT 'fullAccess',
         archived INTEGER NOT NULL DEFAULT 0, notificationsEnabled INTEGER NOT NULL DEFAULT 1,
+        pinnedAt TEXT,
         createdAt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS chats (
         id TEXT PRIMARY KEY, botId TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -297,6 +299,7 @@ export class Store {
         id TEXT PRIMARY KEY, title TEXT NOT NULL,
         defaultBotId TEXT REFERENCES bots(id) ON DELETE RESTRICT,
         archived INTEGER NOT NULL DEFAULT 0,
+        pinnedAt TEXT,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS group_chat_members (
         groupChatId TEXT NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
@@ -452,8 +455,8 @@ export class Store {
         threadId TEXT PRIMARY KEY, chatId TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
         model TEXT, provider TEXT, source TEXT NOT NULL, observedAt TEXT NOT NULL);`);
     const schemaVersion = Number((this.db.prepare('PRAGMA user_version').get() as Row | undefined)?.user_version ?? 0);
-    if (schemaVersion > 24) throw new Error('本机数据库版本高于当前应用支持版本');
-    const groupColumns = this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[];
+    if (schemaVersion > 25) throw new Error('本机数据库版本高于当前应用支持版本');
+    let groupColumns = this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[];
     const defaultBotColumn = groupColumns.find(column => column.name === 'defaultBotId');
     if (defaultBotColumn?.notnull) {
       // Bot deletion may leave a saved group with no members. Rebuild only this
@@ -465,9 +468,11 @@ export class Store {
             id TEXT PRIMARY KEY, title TEXT NOT NULL,
             defaultBotId TEXT REFERENCES bots(id) ON DELETE RESTRICT,
             archived INTEGER NOT NULL DEFAULT 0,
+            pinnedAt TEXT,
             createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
-          INSERT INTO group_chats_v8(id,title,defaultBotId,archived,createdAt,updatedAt)
-            SELECT id,title,defaultBotId,${groupColumns.some(column => column.name === 'archived') ? 'archived' : '0'},createdAt,updatedAt FROM group_chats;
+          INSERT INTO group_chats_v8(id,title,defaultBotId,archived,pinnedAt,createdAt,updatedAt)
+            SELECT id,title,defaultBotId,${groupColumns.some(column => column.name === 'archived') ? 'archived' : '0'},
+              ${groupColumns.some(column => column.name === 'pinnedAt') ? 'pinnedAt' : 'NULL'},createdAt,updatedAt FROM group_chats;
           DROP TABLE group_chats;
           ALTER TABLE group_chats_v8 RENAME TO group_chats;
           COMMIT;`);
@@ -479,6 +484,7 @@ export class Store {
       }
       const violations = this.db.prepare('PRAGMA foreign_key_check').all();
       if (violations.length) throw new Error('群聊数据迁移后未通过外键检查');
+      groupColumns = this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[];
     }
     if (!(this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[]).some(column => column.name === 'archived')) {
       this.db.exec('ALTER TABLE group_chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
@@ -516,6 +522,12 @@ export class Store {
     }
     if (!botColumns.some(column => column.name === 'notificationsEnabled')) {
       this.db.exec('ALTER TABLE bots ADD COLUMN notificationsEnabled INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!botColumns.some(column => column.name === 'pinnedAt')) {
+      this.db.exec('ALTER TABLE bots ADD COLUMN pinnedAt TEXT');
+    }
+    if (!groupColumns.some(column => column.name === 'pinnedAt')) {
+      this.db.exec('ALTER TABLE group_chats ADD COLUMN pinnedAt TEXT');
     }
     if (!chatColumns.some(column => column.name === 'groupChatId')) this.db.exec('ALTER TABLE chats ADD COLUMN groupChatId TEXT REFERENCES group_chats(id) ON DELETE CASCADE');
     if (!chatColumns.some(column => column.name === 'model')) this.db.exec('ALTER TABLE chats ADD COLUMN model TEXT');
@@ -711,8 +723,22 @@ export class Store {
         throw error;
       }
     }
+    if (schemaVersion < 25) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec('PRAGMA user_version=25');
+        this.db.exec('COMMIT');
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch { /* migration may already have closed */ }
+        throw error;
+      }
+    }
   }
-  bots(): Bot[] { return (this.db.prepare('SELECT * FROM bots ORDER BY createdAt').all() as Row[]).map(botFrom); }
+  bots(): Bot[] {
+    return (this.db.prepare(`SELECT * FROM bots
+      ORDER BY CASE WHEN pinnedAt IS NULL THEN 1 ELSE 0 END, pinnedAt DESC, createdAt DESC, id DESC`)
+      .all() as Row[]).map(botFrom);
+  }
   connectorConnections(): ConnectorConnection[] {
     const capabilityRows = this.db.prepare(
       'SELECT connectionId,capability,status FROM connector_connection_capabilities'
@@ -863,11 +889,13 @@ export class Store {
       .run(readAt, Number(lastRow.rowId ?? 0), chatId);
   }
   groups(): GroupChat[] {
-    const rows = this.db.prepare('SELECT id FROM group_chats WHERE archived=0 ORDER BY updatedAt DESC, createdAt DESC').all() as Row[];
+    const rows = this.db.prepare(`SELECT id FROM group_chats WHERE archived=0
+      ORDER BY CASE WHEN pinnedAt IS NULL THEN 1 ELSE 0 END, pinnedAt DESC, createdAt DESC, id DESC`).all() as Row[];
     return rows.map(row => this.group(String(row.id)));
   }
   archivedGroups(): GroupChat[] {
-    const rows = this.db.prepare('SELECT id FROM group_chats WHERE archived=1 ORDER BY updatedAt DESC, createdAt DESC').all() as Row[];
+    const rows = this.db.prepare(`SELECT id FROM group_chats WHERE archived=1
+      ORDER BY CASE WHEN pinnedAt IS NULL THEN 1 ELSE 0 END, pinnedAt DESC, createdAt DESC, id DESC`).all() as Row[];
     return rows.map(row => this.group(String(row.id)));
   }
   private routineFrom(row: Row): RoutineListItem {
@@ -1268,6 +1296,7 @@ export class Store {
     return {
       id: String(row.id), title: String(row.title),
       archived: Boolean(row.archived),
+      pinnedAt: typeof row.pinnedAt === 'string' ? row.pinnedAt : null,
       defaultBotId: typeof row.defaultBotId === 'string' ? row.defaultBotId : null,
       memberIds: members.map(member => String(member.botId)),
       createdAt: String(row.createdAt), updatedAt: String(row.updatedAt)
@@ -1632,6 +1661,12 @@ export class Store {
     }
     return this.bot(id);
   }
+  setBotPinned(id: string, pinned: boolean): Bot {
+    this.bot(id);
+    if (typeof pinned !== 'boolean') throw new Error('无效的置顶状态');
+    this.db.prepare('UPDATE bots SET pinnedAt=? WHERE id=?').run(pinned ? now() : null, id);
+    return this.bot(id);
+  }
   deleteBot(id: string): void {
     this.bot(id);
     this.db.exec('BEGIN IMMEDIATE');
@@ -1689,6 +1724,12 @@ export class Store {
     this.group(id);
     if (typeof archived !== 'boolean') throw new Error('无效的归档状态');
     this.db.prepare('UPDATE group_chats SET archived=?,updatedAt=? WHERE id=?').run(Number(archived), now(), id);
+    return this.group(id);
+  }
+  setGroupPinned(id: string, pinned: boolean): GroupChat {
+    this.group(id);
+    if (typeof pinned !== 'boolean') throw new Error('无效的置顶状态');
+    this.db.prepare('UPDATE group_chats SET pinnedAt=? WHERE id=?').run(pinned ? now() : null, id);
     return this.group(id);
   }
   deleteGroup(id: string): void {
@@ -1821,11 +1862,12 @@ export class Store {
     status: MessageStatus,
     turnId: string | null = null,
     phase: GroupMessage['phase'] = null
-  ): GroupMessage {
+  ): { message: GroupMessage; replacedMessageId: string | null } {
     const bot = this.bot(botId);
     let existingRow: Row | undefined;
+    let replacedMessageId: string | null = null;
     if (turnId) {
-      const rows = this.db.prepare("SELECT * FROM group_messages WHERE groupId=? AND senderBotId=? AND turnId=? AND role='assistant' ORDER BY rowid DESC")
+      const rows = this.db.prepare("SELECT rowid AS timelineRowId, * FROM group_messages WHERE groupId=? AND senderBotId=? AND turnId=? AND role='assistant' ORDER BY rowid DESC")
         .all(groupId, botId, turnId) as Row[];
       existingRow = rows.find(row => typeof row.contentJson !== 'string');
       if (!existingRow) {
@@ -1836,19 +1878,34 @@ export class Store {
           : [];
         existingRow = rows.find(row => isGeneratedImageContent(groupMessageFrom(row).content, generatedPaths));
       }
+      const latestUser = this.db.prepare(
+        "SELECT rowid AS timelineRowId FROM group_messages WHERE groupId=? AND role='user' ORDER BY rowid DESC LIMIT 1"
+      ).get(groupId) as Row | undefined;
+      if (existingRow && latestUser &&
+          Number(existingRow.timelineRowId) < Number(latestUser.timelineRowId)) {
+        replacedMessageId = String(existingRow.id);
+        this.db.prepare('DELETE FROM group_messages WHERE id=?').run(replacedMessageId);
+        existingRow = undefined;
+      }
     } else {
       existingRow = this.db.prepare("SELECT * FROM group_messages WHERE groupId=? AND senderBotId=? AND itemId=? AND role='assistant'")
         .get(groupId, botId, itemId) as Row | undefined;
     }
     if (!existingRow) {
-      return this.addGroupMessage(groupId, 'assistant', text, { senderBot: bot, status, itemId, turnId, phase });
+      return {
+        message: this.addGroupMessage(groupId, 'assistant', text, { senderBot: bot, status, itemId, turnId, phase }),
+        replacedMessageId
+      };
     }
     const existing = groupMessageFrom(existingRow);
     const value = append && existing.itemId === itemId ? existing.text + text : text;
     this.db.prepare('UPDATE group_messages SET text=?,status=?,itemId=?,turnId=COALESCE(?,turnId),phase=? WHERE id=?')
       .run(value, status, itemId, turnId, phase, existing.id);
     this.db.prepare('UPDATE group_chats SET updatedAt=? WHERE id=?').run(now(), groupId);
-    return { ...existing, text: value, status, itemId, turnId: turnId ?? existing.turnId, phase };
+    return {
+      message: { ...existing, text: value, status, itemId, turnId: turnId ?? existing.turnId, phase },
+      replacedMessageId
+    };
   }
   removeGroupAssistantTurn(groupId: string, botId: string, turnId: string | null, itemId: string): string | null {
     const row = turnId
@@ -1862,11 +1919,20 @@ export class Store {
     return id;
   }
   finishGroupMessages(groupId: string, botId: string, status: MessageStatus): GroupMessage[] {
-    const rows = this.db.prepare("SELECT * FROM group_messages WHERE groupId=? AND senderBotId=? AND role='assistant' AND status='streaming'")
+    const rows = this.db.prepare("SELECT rowid AS timelineRowId, * FROM group_messages WHERE groupId=? AND senderBotId=? AND role='assistant' AND status='streaming'")
       .all(groupId, botId) as Row[];
-    this.db.prepare("UPDATE group_messages SET status=? WHERE groupId=? AND senderBotId=? AND role='assistant' AND status='streaming'")
-      .run(status, groupId, botId);
-    return rows.map(row => groupMessageFrom({ ...row, status }));
+    const latestUser = this.db.prepare(
+      "SELECT rowid AS timelineRowId FROM group_messages WHERE groupId=? AND role='user' ORDER BY rowid DESC LIMIT 1"
+    ).get(groupId) as Row | undefined;
+    return rows.map(row => {
+      const nextStatus = latestUser &&
+        Number(row.timelineRowId) < Number(latestUser.timelineRowId) &&
+        (row.phase === 'commentary' || row.phase === 'partial_answer')
+        ? 'complete'
+        : status;
+      this.db.prepare('UPDATE group_messages SET status=? WHERE id=?').run(nextStatus, String(row.id));
+      return groupMessageFrom({ ...row, status: nextStatus });
+    });
   }
   updateChat(id: string, patch: { model?: string | null; permission?: PermissionMode | null }): void {
     this.chat(id);
@@ -1913,6 +1979,14 @@ export class Store {
           ? message
           : { ...message, content: generatedImageContent(paths[0]) };
       });
+  }
+  composerAttachmentReferenced(path: string): boolean {
+    if (!isAbsolute(path) || path.includes('\0')) return false;
+    return Boolean(this.db.prepare(`SELECT 1 AS found FROM (
+      SELECT text FROM messages WHERE instr(text, ?) > 0
+      UNION ALL
+      SELECT text FROM group_messages WHERE instr(text, ?) > 0
+    ) LIMIT 1`).get(path, path));
   }
   enqueueChatMessage(chatId: string, text: string): Message {
     this.chat(chatId);
@@ -2309,32 +2383,50 @@ export class Store {
     status: MessageStatus,
     turnId: string | null = null,
     phase: Message['phase'] = null
-  ): Message {
+  ): { message: Message; replacedMessageId: string | null } {
     let existingRow: Row | undefined;
+    let replacedMessageId: string | null = null;
     if (turnId) {
-      const rows = this.db.prepare("SELECT * FROM messages WHERE chatId=? AND turnId=? AND role='assistant' ORDER BY rowid DESC")
+      const rows = this.db.prepare("SELECT rowid AS timelineRowId, * FROM messages WHERE chatId=? AND turnId=? AND role='assistant' ORDER BY rowid DESC")
         .all(chatId, turnId) as Row[];
       existingRow = rows.find(row => typeof row.contentJson !== 'string');
       if (!existingRow) {
         const generatedPaths = this.generatedImagePathsByTurn(chatId).get(turnId) ?? [];
         existingRow = rows.find(row => isGeneratedImageContent(messageFrom(row).content, generatedPaths));
       }
+      const latestUser = this.db.prepare(
+        "SELECT rowid AS timelineRowId FROM messages WHERE chatId=? AND role='user' ORDER BY rowid DESC LIMIT 1"
+      ).get(chatId) as Row | undefined;
+      if (existingRow && latestUser &&
+          Number(existingRow.timelineRowId) < Number(latestUser.timelineRowId)) {
+        replacedMessageId = String(existingRow.id);
+        this.db.prepare('DELETE FROM messages WHERE id=?').run(replacedMessageId);
+        existingRow = undefined;
+      }
     } else {
       existingRow = this.db.prepare("SELECT * FROM messages WHERE chatId=? AND itemId=? AND role='assistant'")
         .get(chatId, itemId) as Row | undefined;
     }
-    if (!existingRow) return this.addMessage(chatId, 'assistant', text, status, itemId, turnId, phase);
+    if (!existingRow) {
+      return {
+        message: this.addMessage(chatId, 'assistant', text, status, itemId, turnId, phase),
+        replacedMessageId
+      };
+    }
     const existing = messageFrom(existingRow);
     const value = append && existing.itemId === itemId ? existing.text + text : text;
     this.db.prepare('UPDATE messages SET text=?,status=?,itemId=?,turnId=COALESCE(?,turnId),phase=? WHERE id=?')
       .run(value, status, itemId, turnId, phase, existing.id);
     return {
-      ...existing,
-      text: value,
-      status,
-      itemId,
-      turnId: turnId ?? existing.turnId,
-      phase
+      message: {
+        ...existing,
+        text: value,
+        status,
+        itemId,
+        turnId: turnId ?? existing.turnId,
+        phase
+      },
+      replacedMessageId
     };
   }
   voiceItem(
@@ -2432,10 +2524,20 @@ export class Store {
     return activity;
   }
   finishMessages(chatId: string, status: MessageStatus): Message[] {
-    const rows = this.db.prepare("SELECT * FROM messages WHERE chatId=? AND role='assistant' AND status='streaming'")
+    const rows = this.db.prepare("SELECT rowid AS timelineRowId, * FROM messages WHERE chatId=? AND role='assistant' AND status='streaming'")
       .all(chatId) as Row[];
-    this.db.prepare("UPDATE messages SET status=? WHERE chatId=? AND status='streaming'").run(status, chatId);
-    return rows.map(row => messageFrom({ ...row, status }));
+    const latestUser = this.db.prepare(
+      "SELECT rowid AS timelineRowId FROM messages WHERE chatId=? AND role='user' ORDER BY rowid DESC LIMIT 1"
+    ).get(chatId) as Row | undefined;
+    return rows.map(row => {
+      const nextStatus = latestUser &&
+        Number(row.timelineRowId) < Number(latestUser.timelineRowId) &&
+        (row.phase === 'commentary' || row.phase === 'partial_answer')
+        ? 'complete'
+        : status;
+      this.db.prepare('UPDATE messages SET status=? WHERE id=?').run(nextStatus, String(row.id));
+      return messageFrom({ ...row, status: nextStatus });
+    });
   }
   search(query: string, botId?: string | null): Array<{ message: Message; chat: Chat; bot: Bot }> {
     if (!query.trim()) return [];

@@ -15,6 +15,7 @@
 - 应用目录：`dist/mac-arm64/Rambo.app`。
 - 活动开发机安装目录：`/Applications/Rambo.app`；默认使用同一份已重封的构建覆盖安装。
 - 本机安装不覆盖 `~/Library/Application Support/Rambo`，不得以安装为由清除 Bot、会话、连接或本地 AES 凭证。
+- 本地只保留活动应用 `/Applications/Rambo.app`；安装流程不得创建或保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`。Git 与 GitHub Releases 是版本归档来源。安装前正常退出并核验待安装包，替换失败即停止，不以预存旧应用作为回滚手段。
 - 上传格式：`Rambo-v<version>-macOS-arm64.zip`。
 - 校验文件：`Rambo-v<version>-macOS-arm64.zip.sha256`。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。

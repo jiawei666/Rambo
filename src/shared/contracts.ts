@@ -3,6 +3,7 @@ export type MessageStatus = 'complete' | 'streaming' | 'failed' | 'interrupted';
 export type TurnDispatchStatus = 'queued' | 'dispatching' | 'dispatched' | 'needs_user' | 'failed';
 export type MessagePhase = 'commentary' | 'partial_answer' | 'final_answer';
 export type MessageSource = 'text' | 'voice';
+export type ModelSourceKind = 'local' | 'chatgpt' | 'manualApi';
 export type BotResourceKind = 'app' | 'plugin' | 'skill' | 'mcp';
 export interface DirectMcpServer {
   id: string;
@@ -27,12 +28,24 @@ export interface BotResource {
   source: string;
   /** Bundled resources come from Rambo/Codex itself rather than a user config file. */
   bundled: boolean;
-  /** MCP name used in config/value/write. */
+  /** MCP server name or Plugin `name@marketplace` runtime key. */
   configKey: string | null;
+}
+export type McpElicitationAction = 'accept' | 'decline' | 'cancel';
+export interface McpElicitationPrompt {
+  requestId: string;
+  serverName: string;
+  threadId: string;
+  turnId: string | null;
+  message: string;
+  detail: string | null;
+  toolName: string | null;
 }
 export interface Bot {
   id: string; name: string; avatar: string; role: string; instructions: string;
   model: string; permission: PermissionMode; archived: boolean; createdAt: string;
+  /** Timestamp of the latest pin action; null means not pinned. */
+  pinnedAt: string | null;
   resourceIds: string[];
   /** Whether completed Bot replies may show a macOS notification. */
   notificationsEnabled: boolean;
@@ -88,6 +101,8 @@ export interface Chat {
 }
 export interface GroupChat {
   id: string; title: string; archived: boolean;
+  /** Timestamp of the latest pin action; null means not pinned. */
+  pinnedAt: string | null;
   /** Members are ordered by when they were added; retained defaultBotId is legacy data and is not a responder rule. */
   memberIds: string[];
   /** Legacy schema value. New groups leave this null and group dispatch ignores it. */
@@ -279,10 +294,40 @@ export interface TurnActivity {
   status: ActivityStatus; title: string; detail: string; createdAt: string; updatedAt: string;
 }
 export interface RuntimeState { status: 'stopped' | 'starting' | 'ready' | 'error'; version: string; error: string | null }
+export interface ManualApiConfig {
+  serviceName: string;
+  baseUrl: string;
+  model: string;
+}
+export interface ModelSourceState {
+  kind: ModelSourceKind;
+  manual: ManualApiConfig;
+  /** Whether an encrypted API key is already available for the manual source. */
+  hasApiKey: boolean;
+}
+export interface ModelConnectionTestResult {
+  ok: boolean;
+  source: ModelSourceKind;
+  latencyMs: number;
+  message: string;
+  testedAt: string;
+  /** True when the tested source is not yet the persisted active source. */
+  sourcePending?: boolean;
+  /** True when the runtime was already loaded and the local config may have changed on disk. */
+  configMayBeStale?: boolean;
+}
 export type VoiceState = 'connecting' | 'live' | 'stopping' | 'error';
 export interface VoiceSessionState { chatId: string; state: VoiceState; realtimeSessionId: string | null; error: string | null }
 export interface VoiceTranscript { chatId: string; role: 'user' | 'assistant'; text: string; itemId: string | null; done: boolean }
-export interface AccountState { type: string | null; email: string | null; requiresLogin: boolean }
+export interface AccountState {
+  type: string | null;
+  email: string | null;
+  requiresLogin: boolean;
+  /** True when the persisted Codex auth file indicates a login, even if online status is unavailable. */
+  localLoginDetected?: boolean;
+  /** Online account lookup failure. Local auth may still be usable. */
+  statusError?: string | null;
+}
 export interface ModelOption { id: string; label: string; isDefault: boolean }
 export interface PlaywrightVerificationResult { verifiedAt: string }
 export interface Memory { id: string; botId: string | null; text: string; approved: boolean; createdAt: string }
@@ -315,6 +360,8 @@ export interface Snapshot {
   codexHome: string;
   /** Manual proxy applied to the Rambo-owned Codex App Server process. */
   runtimeProxy: string;
+  /** Application-level model service selection. It never contains secrets. */
+  modelSource: ModelSourceState;
   bots: Bot[]; chats: Chat[]; groups: GroupChat[]; archivedGroups: GroupChat[];
   routines: RoutineListItem[]; routineRuns: RoutineRun[]; runtime: RuntimeState;
   connectorProviders: ConnectorProvider[]; connections: ConnectorConnection[]; connectorGrants: ConnectorGrant[];
@@ -374,28 +421,44 @@ export type AppEvent =
   | { type: 'voiceSdp'; chatId: string; sdp: string }
   | { type: 'voiceTranscript'; transcript: VoiceTranscript }
   | { type: 'voiceEndRequested'; chatId: string; reason: string }
+  | { type: 'mcpElicitation'; prompt: McpElicitationPrompt }
+  | { type: 'mcpElicitationResolved'; requestId: string }
   | { type: 'focusBot'; botId: string }
   | { type: 'groupCreated'; group: GroupChat }
   | { type: 'error'; chatId?: string; message: string };
+export interface ComposerAttachment {
+  path: string;
+  name: string;
+  kind: 'image' | 'file';
+  previewUrl: string | null;
+}
+
+export interface ComposerAttachmentCleanupResult {
+  deletedPaths: string[];
+  draftProtectedPaths: string[];
+  referencedPaths: string[];
+  errors: Array<{ path: string; message: string }>;
+}
+
 export interface RamboAPI {
   pathForFile(file: File): string;
   appVersion(): Promise<string>;
   snapshot(): Promise<Snapshot>;
   selectLocalFiles(): Promise<string[]>;
+  registerLocalAttachments(paths: string[]): Promise<ComposerAttachment[]>;
+  savePastedImage(dataUrl: string): Promise<ComposerAttachment>;
+  setComposerDraftAttachments(ownerId: string, paths: string[]): Promise<void>;
+  releaseComposerDraftAttachments(ownerId: string): Promise<void>;
+  runComposerAttachmentCleanupForAcceptance(): Promise<ComposerAttachmentCleanupResult>;
   setVisibleChat(chatId: string | null): Promise<string | null>;
   setVisibleChatFocus(focused: boolean): Promise<void>;
   botResources(refresh?: boolean): Promise<{ resources: BotResource[]; errors: string[] }>;
-  importLocalSkill(directory?: string): Promise<{ resourceId: string; name: string }>;
-  addDirectMcp(input: {
-    name: string; description?: string; transport: 'stdio' | 'http';
-    command?: string; args?: string[]; cwd?: string; url?: string;
-    headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean;
-  }): Promise<{ resourceId: string; server: DirectMcpServer }>;
   setDirectMcpEnabled(id: string, enabled: boolean): Promise<DirectMcpServer>;
   deleteDirectMcp(id: string): Promise<void>;
   setGlobalResource(resourceId: string, included: boolean): Promise<{ globalResourceIds: string[]; globalDefaultResourceIds: string[] }>;
   setGlobalDefaultResource(resourceId: string, enabled: boolean): Promise<{ globalResourceIds: string[]; globalDefaultResourceIds: string[] }>;
   setBotResource(botId: string, resourceId: string, enabled: boolean): Promise<Bot>;
+  respondMcpElicitation(requestId: string, action: McpElicitationAction): Promise<void>;
   verifyPlaywrightConnection(): Promise<PlaywrightVerificationResult>;
   cancelPlaywrightVerification(): Promise<void>;
   connectorProviders(): Promise<ConnectorProvider[]>;
@@ -412,11 +475,13 @@ export interface RamboAPI {
   updateBot(id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>): Promise<Bot>;
   updateBotExecutionConfig(id: string, patch: { model: string; permission: PermissionMode }): Promise<Bot>;
   setBotArchived(id: string, archived: boolean): Promise<Bot>;
+  setBotPinned(id: string, pinned: boolean): Promise<Bot>;
   deleteBot(id: string): Promise<void>;
   ensureBotChat(botId: string): Promise<Chat>;
   createGroup(input: { title: string; botIds: string[] }): Promise<GroupChat>;
   addGroupMembers(groupId: string, botIds: string[]): Promise<GroupChat>;
   setGroupArchived(groupId: string, archived: boolean): Promise<GroupChat>;
+  setGroupPinned(groupId: string, pinned: boolean): Promise<GroupChat>;
   deleteGroup(groupId: string): Promise<void>;
   groupMemberChats(groupId: string): Promise<Chat[]>;
   groupMessages(groupId: string): Promise<GroupMessage[]>;
@@ -449,6 +514,9 @@ export interface RamboAPI {
   account(): Promise<AccountState>;
   login(): Promise<void>;
   models(): Promise<ModelOption[]>;
+  setModelSource(kind: ModelSourceKind): Promise<ModelSourceState>;
+  saveManualModelSource(input: ManualApiConfig & { apiKey?: string }): Promise<ModelSourceState>;
+  testModelConnection(source?: ModelSourceKind): Promise<ModelConnectionTestResult>;
   startVoice(chatId: string, offerSdp: string): Promise<{ chatId: string; threadId: string }>;
   stopVoice(chatId: string, reason?: string): Promise<void>;
   restartRuntime(): Promise<void>;

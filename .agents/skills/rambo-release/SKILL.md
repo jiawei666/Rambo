@@ -40,6 +40,8 @@ node .agents/skills/rambo-release/scripts/install-local.mjs
 
 脚本若发现 Rambo 正在运行，必须请求应用正常退出，等待进程结束后再替换应用。无法退出或替换后版本、Bundle ID、签名不一致时停止发布，不能直接清空应用数据。首次没有旧应用时也应继续安装。安装完成后检查：
 
+本地只保留活动的 `/Applications/Rambo.app`。安装流程不得创建或保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`；Git 与 GitHub Releases 是版本归档来源，替换失败即停止，不以预存旧应用作为回滚手段。
+
 ```sh
 plutil -extract CFBundleShortVersionString raw /Applications/Rambo.app/Contents/Info.plist
 codesign --verify --deep --strict /Applications/Rambo.app

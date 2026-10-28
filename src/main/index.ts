@@ -1,7 +1,20 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, session, shell, Tray, utilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
-import { closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createRequire } from 'node:module';
@@ -33,13 +46,24 @@ import {
   LoginItemController
 } from './login-item';
 import { SystemIndicators, type RunningBotIndicator } from './system-indicators';
+import { cleanupComposerAttachments } from './composer-attachment-cleanup';
 import {
   isMessageContent,
   type AppEvent,
+  type ComposerAttachment,
   type GroupRuntimePhase,
+  type McpElicitationAction,
   type MessageContent,
-  type VoiceState
+  type VoiceState,
+  type ModelConnectionTestResult,
+  type ModelSourceKind,
+  type ModelSourceState
 } from '../shared/contracts';
+import {
+  composerAttachmentKind,
+  composerAttachmentName,
+  parseImageDataUrl
+} from '../shared/composer-attachments';
 import {
   decideBotTurnFinishedNotification,
   decideRoutineFinishedNotification,
@@ -47,6 +71,16 @@ import {
   type NotificationRuntimeState
 } from '../shared/notifications';
 import type { PermissionMode } from '../shared/contracts';
+import {
+  manualApiConfigFrom,
+  manualModelSourceAvailable,
+  manualProviderConfig,
+  modelSourceKindFrom,
+  modelSourceStateFrom,
+  runtimeConfigOverrides,
+  testManualModelApi,
+  validateManualApiConfig
+} from './model-source';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'rambo-asset',
@@ -96,7 +130,11 @@ let mailRuntime: MailRuntime;
 let directMcpRegistry: DirectMcpRegistry;
 let loginItem: LoginItemController;
 let systemIndicators: SystemIndicators<Electron.NativeImage, Electron.Menu> | null = null;
+let manualModelCredentials: ConnectorCredentials;
+let composerAttachmentCleanupTimer: ReturnType<typeof setInterval> | null = null;
 const messageAssetGrants = new Map<string, { messageId: string; source: string; expiresAt: number }>();
+const composerAttachmentGrants = new Map<string, { path: string; mimeType: string; expiresAt: number }>();
+const composerDraftAttachmentPaths = new Map<string, Set<string>>();
 function resolvedDefaultPermission(value: string | undefined): PermissionMode {
   if (value === undefined || value === '') return 'fullAccess';
   if (value === 'fullAccess' || value === 'workspaceWrite' || value === 'readOnly') return value;
@@ -129,6 +167,191 @@ function wechatMediaToolPaths(): { ffmpegPath: string | null; silkDecoderPath: s
   };
 }
 
+function modelSourceState(): ModelSourceState {
+  const settings = store.settings();
+  const reference = settings.manualModelCredentialRef?.trim() ?? '';
+  let hasApiKey = false;
+  if (reference) {
+    try {
+      const credential = manualModelCredentials.load(reference);
+      hasApiKey = credential.kind === 'model-api-key' && Boolean(credential.apiKey.trim());
+    } catch {
+      hasApiKey = false;
+    }
+  }
+  return modelSourceStateFrom(settings, hasApiKey);
+}
+
+function manualModelApiKey(): string {
+  const reference = store.settings().manualModelCredentialRef?.trim() ?? '';
+  if (!reference) throw new Error('尚未保存手动 API 的 API Key');
+  const credential = manualModelCredentials.load(reference);
+  if (credential.kind !== 'model-api-key' || !credential.apiKey.trim()) {
+    throw new Error('手动 API 凭证无效，请重新保存');
+  }
+  return credential.apiKey;
+}
+
+function applyModelSourceRuntimeConfig(): void {
+  const source = modelSourceState();
+  if (source.kind === 'manualApi') {
+    const config = validateManualApiConfig(source.manual);
+    runtime.setModelSourceConfig(runtimeConfigOverrides(source.kind, config), {
+      [manualProviderConfig(config).apiKeyEnv]: manualModelApiKey()
+    });
+    return;
+  }
+  runtime.setModelSourceConfig([], {});
+}
+
+function persistModelSourceConfig(input: {
+  serviceName?: string;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+}): { previousKind: ModelSourceKind; previousSettings: Record<string, string> } {
+  const config = validateManualApiConfig(manualApiConfigFrom({
+    serviceName: typeof input.serviceName === 'string' ? input.serviceName : '',
+    baseUrl: typeof input.baseUrl === 'string' ? input.baseUrl : '',
+    model: typeof input.model === 'string' ? input.model : ''
+  }));
+  const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+  const settings = store.settings();
+  const previousKind = modelSourceKindFrom(settings.modelSource);
+  const previousSettings = {
+    manualModelServiceName: settings.manualModelServiceName ?? '',
+    manualModelBaseUrl: settings.manualModelBaseUrl ?? '',
+    manualModelId: settings.manualModelId ?? '',
+    manualModelCredentialRef: settings.manualModelCredentialRef ?? ''
+  };
+  const previousRef = previousSettings.manualModelCredentialRef.trim();
+  if (!apiKey && !previousRef) throw new Error('请填写手动 API 的 API Key');
+  let reference = previousRef;
+  if (apiKey) {
+    const payload = { kind: 'model-api-key' as const, providerId: manualProviderConfig(config).providerId, apiKey };
+    if (previousRef) {
+      try {
+        manualModelCredentials.replace(previousRef, payload);
+      } catch {
+        reference = manualModelCredentials.save(randomUUID(), payload);
+      }
+    } else {
+      reference = manualModelCredentials.save(randomUUID(), payload);
+    }
+  }
+  store.setSetting('manualModelServiceName', config.serviceName);
+  store.setSetting('manualModelBaseUrl', config.baseUrl);
+  store.setSetting('manualModelId', config.model);
+  store.setSetting('manualModelCredentialRef', reference);
+  return { previousKind, previousSettings };
+}
+
+function restoreManualModelSettings(previous: Record<string, string>): void {
+  store.setSetting('manualModelServiceName', previous.manualModelServiceName!);
+  store.setSetting('manualModelBaseUrl', previous.manualModelBaseUrl!);
+  store.setSetting('manualModelId', previous.manualModelId!);
+  store.setSetting('manualModelCredentialRef', previous.manualModelCredentialRef!);
+}
+
+async function restartRuntimeForModelSource(): Promise<void> {
+  if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再切换模型来源');
+  await runtime.stop();
+  try {
+    await runtime.start();
+    await host.syncMcpMetadata();
+  } catch (error) {
+    await runtime.stop().catch(() => {});
+    await runtime.start().catch(() => {});
+    throw error;
+  }
+}
+
+async function testModelConnection(
+  requestedSource?: ModelSourceKind
+): Promise<ModelConnectionTestResult> {
+  if (requestedSource !== undefined && modelSourceKindFrom(requestedSource) !== requestedSource) {
+    throw new Error('无效的模型来源');
+  }
+  const current = modelSourceState();
+  const sourceKind = requestedSource ?? current.kind;
+  const sourcePending = sourceKind !== current.kind;
+  const testedAt = new Date().toISOString();
+  if (sourceKind === 'manualApi') {
+    const startedAt = performance.now();
+    const failed = (message: string): ModelConnectionTestResult => ({
+      ok: false,
+      source: sourceKind,
+      latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      message,
+      testedAt,
+      sourcePending
+    });
+    try {
+      const config = validateManualApiConfig(current.manual);
+      const apiKey = manualModelApiKey();
+      const result = await testManualModelApi(config, apiKey);
+      return {
+        ok: true,
+        source: sourceKind,
+        latencyMs: result.latencyMs,
+        message: result.message,
+        testedAt,
+        sourcePending
+      };
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : String(error));
+    }
+  }
+  await runtime.start();
+  const startedAt = performance.now();
+  const failed = (message: string): {
+    ok: false; source: ModelSourceKind; latencyMs: number; message: string;
+    testedAt: string; sourcePending?: boolean; configMayBeStale?: boolean;
+  } => ({
+    ok: false,
+    source: sourceKind,
+    latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    message,
+    testedAt,
+    sourcePending,
+    configMayBeStale: true
+  });
+  try {
+    if (sourceKind === 'chatgpt') {
+      const account = await host.account();
+      return account.requiresLogin
+        ? failed('尚未登录 ChatGPT，请先完成登录')
+        : {
+            ok: true,
+            source: sourceKind,
+            latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            message: 'ChatGPT 登录状态可用。',
+            testedAt,
+            sourcePending
+          };
+    }
+    const [models, config] = await Promise.all([
+      host.modelsWithoutStart(),
+      runtime.request('config/read', { includeLayers: false })
+    ]);
+    const configuredModel = typeof config?.config?.model === 'string' ? config.config.model.trim() : '';
+    if (!configuredModel && !models.length) return failed('没有读取到可用模型配置');
+    return {
+      ok: true,
+      source: sourceKind,
+      latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      message: configuredModel
+        ? `本机 Codex 配置可用：${configuredModel}`
+        : `本机 Codex 模型目录可用（${models.length} 个模型）`,
+      testedAt,
+      sourcePending,
+      configMayBeStale: true
+    };
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : String(error));
+  }
+}
+
 const text = (value: unknown, max = 200_000): string => {
   if (typeof value !== 'string' || value.length > max) throw new Error('无效的文字参数');
   return value;
@@ -147,81 +370,225 @@ function issueMessageAssetUrl(messageId: string, source: string): string | null 
   return `rambo-asset://asset/${token}`;
 }
 
+const composerImageMimeTypes: Record<string, string> = {
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp'
+};
+
+function composerImageMimeType(path: string): string | null {
+  const extension = /\.([^.\\/]+)$/u.exec(path)?.[1]?.toLowerCase();
+  return extension ? composerImageMimeTypes[extension] ?? null : null;
+}
+
+function openComposerImage(path: string): {
+  path: string; size: number; mimeType: string; descriptor: number;
+} | null {
+  if (!isAbsolute(path) || path.includes('\0')) return null;
+  const mimeType = composerImageMimeType(path);
+  if (!mimeType) return null;
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, 'r');
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) {
+      closeSync(descriptor);
+      return null;
+    }
+    return { path, size: stat.size, mimeType, descriptor };
+  } catch {
+    if (descriptor !== null) {
+      try { closeSync(descriptor); } catch { /* 已关闭 */ }
+    }
+    return null;
+  }
+}
+
+function issueComposerAttachmentUrl(path: string): string | null {
+  const mimeType = composerImageMimeType(path);
+  if (!mimeType) return null;
+  const asset = openComposerImage(path);
+  if (!asset) return null;
+  closeSync(asset.descriptor);
+  const now = Date.now();
+  for (const [token, grant] of composerAttachmentGrants) {
+    if (grant.expiresAt <= now) composerAttachmentGrants.delete(token);
+  }
+  const token = randomUUID();
+  composerAttachmentGrants.set(token, { path, mimeType, expiresAt: now + 24 * 60 * 60_000 });
+  return `rambo-asset://asset/${token}`;
+}
+
+function composerAttachmentFromPath(path: string): ComposerAttachment {
+  if (!isAbsolute(path) || path.includes('\0')) throw new Error('附件必须使用绝对路径');
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, 'r');
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error('只能添加普通文件');
+  } catch (error) {
+    if (error instanceof Error && error.message === '只能添加普通文件') throw error;
+    throw new Error(`附件不存在或不可读取：${composerAttachmentName(path)}`);
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+  return {
+    path,
+    name: composerAttachmentName(path),
+    kind: composerAttachmentKind(path),
+    previewUrl: issueComposerAttachmentUrl(path)
+  };
+}
+
+function savePastedImage(dataUrl: unknown): ComposerAttachment {
+  const parsed = parseImageDataUrl(text(dataUrl, 72_000_000));
+  if (!parsed) throw new Error('剪贴板图片格式不受支持');
+  const estimatedBytes = Math.ceil(parsed.base64.length * 3 / 4);
+  if (estimatedBytes > 50 * 1024 * 1024) throw new Error('剪贴板图片不能超过 50 MiB');
+  const bytes = Buffer.from(parsed.base64, 'base64');
+  if (bytes.byteLength > 50 * 1024 * 1024) throw new Error('剪贴板图片不能超过 50 MiB');
+  const directory = join(app.getPath('userData'), 'composer-attachments');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const target = join(
+    directory,
+    `pasted-image-${Date.now()}-${randomUUID().slice(0, 8)}.${parsed.extension}`
+  );
+  writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
+  return {
+    path: target,
+    name: composerAttachmentName(target),
+    kind: 'image',
+    previewUrl: issueComposerAttachmentUrl(target)
+  };
+}
+
+function activeComposerDraftAttachmentPaths(): Set<string> {
+  return new Set([...composerDraftAttachmentPaths.values()].flatMap(paths => [...paths]));
+}
+
+function runComposerAttachmentCleanup() {
+  return Promise.resolve().then(() => cleanupComposerAttachments({
+    directory: join(app.getPath('userData'), 'composer-attachments'),
+    draftPaths: activeComposerDraftAttachmentPaths,
+    isReferenced: path => store.composerAttachmentReferenced(path)
+  }));
+}
+
+function startComposerAttachmentCleanup(): void {
+  const run = () => {
+    void runComposerAttachmentCleanup().then(result => {
+      if (result.errors.length) {
+        console.error('[Rambo] composer attachment cleanup failed for some files', result.errors);
+      }
+    }).catch(error => {
+      console.error('[Rambo] composer attachment cleanup failed', error);
+    });
+  };
+  run();
+  composerAttachmentCleanupTimer = setInterval(run, 24 * 60 * 60_000);
+  composerAttachmentCleanupTimer.unref?.();
+}
+
+function serveComposerAsset(asset: {
+  path: string; size: number; mimeType: string; descriptor: number;
+}, request: Request): Response {
+  const baseHeaders: Record<string, string> = {
+    'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Length, Content-Range',
+    'Cache-Control': 'no-store',
+    'Content-Length': String(asset.size),
+    'Content-Type': asset.mimeType,
+    'X-Content-Type-Options': 'nosniff'
+  };
+  if (request.method === 'HEAD') {
+    closeSync(asset.descriptor);
+    return new Response(null, { status: 200, headers: baseHeaders });
+  }
+  let start = 0;
+  let end = asset.size - 1;
+  let status = 200;
+  const range = request.headers.get('range');
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
+    if (!match || asset.size === 0 || !match[1] && !match[2]) {
+      closeSync(asset.descriptor);
+      return new Response(null, {
+        status: 416,
+        headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
+      });
+    }
+    if (!match[1]) {
+      const suffixLength = Number(match[2]);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+        closeSync(asset.descriptor);
+        return new Response(null, {
+          status: 416,
+          headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
+        });
+      }
+      start = Math.max(0, asset.size - suffixLength);
+    } else {
+      start = Number(match[1]);
+      end = match[2] ? Number(match[2]) : asset.size - 1;
+    }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= asset.size || end < start) {
+      closeSync(asset.descriptor);
+      return new Response(null, {
+        status: 416,
+        headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
+      });
+    }
+    end = Math.min(end, asset.size - 1);
+    status = 206;
+    baseHeaders['Content-Range'] = `bytes ${start}-${end}/${asset.size}`;
+    baseHeaders['Content-Length'] = String(end - start + 1);
+  }
+  const stream = createReadStream(asset.path, {
+    fd: asset.descriptor,
+    autoClose: true,
+    start,
+    end
+  });
+  return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, { status, headers: baseHeaders });
+}
+
 function installMessageAssetProtocol(): void {
   protocol.handle('rambo-asset', request => {
     const parsed = new URL(request.url);
     const token = parsed.hostname === 'asset' && /^\/[a-f\d-]{36}$/iu.test(parsed.pathname)
       ? parsed.pathname.slice(1)
       : '';
-    const grant = messageAssetGrants.get(token);
-    if (!grant || grant.expiresAt <= Date.now() || request.method !== 'GET' && request.method !== 'HEAD') {
-      messageAssetGrants.delete(token);
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
     }
-    const asset = host.openMessageAsset(grant.messageId, grant.source);
+    const messageGrant = messageAssetGrants.get(token);
+    if (!messageGrant || messageGrant.expiresAt <= Date.now()) {
+      messageAssetGrants.delete(token);
+    }
+    if (messageGrant) {
+      const asset = host.openMessageAsset(messageGrant.messageId, messageGrant.source);
+      if (!asset) {
+        messageAssetGrants.delete(token);
+        return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+      }
+      return serveComposerAsset(asset, request);
+    }
+    const composerGrant = composerAttachmentGrants.get(token);
+    if (!composerGrant || composerGrant.expiresAt <= Date.now()) {
+      composerAttachmentGrants.delete(token);
+      return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+    }
+    const asset = openComposerImage(composerGrant.path);
     if (!asset) {
-      messageAssetGrants.delete(token);
+      composerAttachmentGrants.delete(token);
       return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
     }
-    const baseHeaders: Record<string, string> = {
-      'Accept-Ranges': 'bytes',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Length, Content-Range',
-      'Cache-Control': 'no-store',
-      'Content-Length': String(asset.size),
-      'Content-Type': asset.mimeType,
-      'X-Content-Type-Options': 'nosniff'
-    };
-    if (request.method === 'HEAD') {
-      closeSync(asset.descriptor);
-      return new Response(null, { status: 200, headers: baseHeaders });
-    }
-    let start = 0;
-    let end = asset.size - 1;
-    let status = 200;
-    const range = request.headers.get('range');
-    if (range) {
-      const match = /^bytes=(\d*)-(\d*)$/u.exec(range);
-      if (!match || asset.size === 0 || !match[1] && !match[2]) {
-        closeSync(asset.descriptor);
-        return new Response(null, {
-          status: 416,
-          headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
-        });
-      }
-      if (!match[1]) {
-        const suffixLength = Number(match[2]);
-        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
-          closeSync(asset.descriptor);
-          return new Response(null, {
-            status: 416,
-            headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
-          });
-        }
-        start = Math.max(0, asset.size - suffixLength);
-      } else {
-        start = Number(match[1]);
-        end = match[2] ? Number(match[2]) : asset.size - 1;
-      }
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= asset.size || end < start) {
-        closeSync(asset.descriptor);
-        return new Response(null, {
-          status: 416,
-          headers: { ...baseHeaders, 'Content-Range': `bytes */${asset.size}`, 'Content-Length': '0' }
-        });
-      }
-      end = Math.min(end, asset.size - 1);
-      status = 206;
-      baseHeaders['Content-Range'] = `bytes ${start}-${end}/${asset.size}`;
-      baseHeaders['Content-Length'] = String(end - start + 1);
-    }
-    const stream = createReadStream(asset.path, {
-      fd: asset.descriptor,
-      autoClose: true,
-      start,
-      end
-    });
-    return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, { status, headers: baseHeaders });
+    return serveComposerAsset(asset, request);
   });
 }
 const id = (value: unknown) => text(value, 100);
@@ -449,11 +816,47 @@ function registerIPC(): void {
     selectLocalFiles: async (): Promise<string[]> => {
       if (!window) throw new Error('窗口尚未准备好');
       const result = await dialog.showOpenDialog(window, {
-        title: '选择要引用的本机文件',
-        buttonLabel: '插入路径',
+        title: '选择要添加到消息的本机文件',
+        buttonLabel: '添加附件',
         properties: ['openFile', 'multiSelections']
       });
       return result.canceled ? [] : result.filePaths;
+    },
+    registerLocalAttachments: (paths: unknown): ComposerAttachment[] => {
+      if (!Array.isArray(paths)) throw new Error('无效的附件列表');
+      const errorMessages: string[] = [];
+      const attachments = [...new Set(paths.map(value => text(value, 8_000)))]
+        .map(path => {
+          try {
+            return composerAttachmentFromPath(path);
+          } catch (error) {
+            errorMessages.push(error instanceof Error ? error.message : String(error));
+            return null;
+          }
+        })
+        .filter((attachment): attachment is ComposerAttachment => attachment !== null);
+      if (!attachments.length && errorMessages.length) throw new Error(errorMessages[0]);
+      return attachments;
+    },
+    savePastedImage,
+    setComposerDraftAttachments: (ownerValue: unknown, pathValues: unknown) => {
+      const ownerId = text(ownerValue, 200);
+      if (!ownerId) throw new Error('无效的草稿附件归属');
+      if (!Array.isArray(pathValues) || pathValues.length > 200) {
+        throw new Error('无效的草稿附件列表');
+      }
+      const paths = [...new Set(pathValues.map(path => text(path, 8_000)).filter(Boolean))];
+      if (paths.length) composerDraftAttachmentPaths.set(ownerId, new Set(paths));
+      else composerDraftAttachmentPaths.delete(ownerId);
+    },
+    releaseComposerDraftAttachments: (ownerValue: unknown) => {
+      const ownerId = text(ownerValue, 200);
+      if (!ownerId) throw new Error('无效的草稿附件归属');
+      composerDraftAttachmentPaths.delete(ownerId);
+    },
+    runComposerAttachmentCleanupForAcceptance: async () => {
+      if (!acceptanceRunId) throw new Error('仅验收实例允许触发附件清理');
+      return runComposerAttachmentCleanup();
     },
     setVisibleChat: chatId => {
       if (chatId === null) visibleChatId = null;
@@ -469,24 +872,6 @@ function registerIPC(): void {
       windowFocused = focused;
     },
     botResources: refresh => host.botResources(refresh === true),
-    importLocalSkill: async directory => {
-      let source: string | null = typeof directory === 'string' && directory.trim()
-        ? resolve(directory)
-        : null;
-      if (!source) {
-        if (!window) throw new Error('窗口尚未准备好');
-        const result = await dialog.showOpenDialog(window, {
-          title: '选择包含 SKILL.md 的技能文件夹',
-          properties: ['openDirectory']
-        });
-        source = result.canceled ? null : result.filePaths[0] ?? null;
-      }
-      if (!source) throw new Error('未选择 Skill 文件夹');
-      return host.importLocalSkill(source);
-    },
-    addDirectMcp: input => {
-      return host.addDirectMcp(input);
-    },
     setDirectMcpEnabled: (serverId, enabled) => {
       if (typeof enabled !== 'boolean') throw new Error('无效的 MCP 启用状态');
       const current = directMcpRegistry.get(id(serverId));
@@ -545,6 +930,12 @@ function registerIPC(): void {
       const bot = store.setBotResource(id(botIdValue), resourceId, enabled);
       host.changed();
       return bot;
+    },
+    respondMcpElicitation: (requestIdValue, actionValue) => {
+      if (actionValue !== 'accept' && actionValue !== 'decline' && actionValue !== 'cancel') {
+        throw new Error('无效的 MCP 权限操作');
+      }
+      host.respondMcpElicitation(id(requestIdValue), actionValue as McpElicitationAction);
     },
     verifyPlaywrightConnection: async () => {
       if (!playwrightExtensionVerifier) throw new Error('Playwright 连接验证器尚未启动，请重启 Rambo 后重试。');
@@ -839,9 +1230,21 @@ function registerIPC(): void {
       host.changed();
       return bot;
     },
+    setBotPinned: (botId, pinned) => {
+      if (typeof pinned !== 'boolean') throw new Error('无效的置顶状态');
+      const bot = store.setBotPinned(id(botId), pinned);
+      host.changed();
+      return bot;
+    },
     setGroupArchived: (groupId, archived) => {
       if (typeof archived !== 'boolean') throw new Error('无效的归档状态');
       const group = store.setGroupArchived(id(groupId), archived);
+      host.changed();
+      return group;
+    },
+    setGroupPinned: (groupId, pinned) => {
+      if (typeof pinned !== 'boolean') throw new Error('无效的置顶状态');
+      const group = store.setGroupPinned(id(groupId), pinned);
       host.changed();
       return group;
     },
@@ -1016,8 +1419,12 @@ function registerIPC(): void {
     setSetting: async (keyValue, value) => {
       const key = text(keyValue, 100);
       const settingValue = text(value, 20_000);
-      if (key !== 'defaultBotModel' && key !== 'defaultBotPermission' && key !== 'runtimeProxy') {
+      if (key !== 'defaultBotModel' && key !== 'defaultBotPermission' &&
+          key !== 'runtimeProxy' && key !== 'initialSetupPrompted') {
         throw new Error('不支持的应用设置');
+      }
+      if (key === 'initialSetupPrompted' && settingValue !== 'true' && settingValue !== 'false') {
+        throw new Error('无效的首次设置状态');
       }
       if (key === 'defaultBotPermission' &&
           !['fullAccess', 'workspaceWrite', 'readOnly'].includes(settingValue)) {
@@ -1107,6 +1514,19 @@ function registerIPC(): void {
         });
         return;
       }
+      if (value.type === 'groupMessage') {
+        const groupId = id(value.groupId);
+        const message = object(value.message);
+        if (message.groupId !== groupId) throw new Error('验收群聊消息不属于当前群聊');
+        emit({ type: 'groupMessage', groupId, message: message as any });
+        return;
+      }
+      if (value.type === 'groupMessageRemoved') {
+        const groupId = id(value.groupId);
+        store.group(groupId);
+        emit({ type: 'groupMessageRemoved', groupId, messageId: id(value.messageId) });
+        return;
+      }
       if (value.type === 'visibilityFocus') {
         if (!window || window.isDestroyed()) throw new Error('窗口不存在');
         if (typeof value.focused !== 'boolean') throw new Error('验收事件缺少有效的焦点状态');
@@ -1147,6 +1567,23 @@ function registerIPC(): void {
           chatId,
           error: value.error === null || value.error === undefined ? null : text(value.error, 500)
         });
+        return;
+      }
+      if (value.type === 'mcpElicitation') {
+        const requestId = id(value.requestId);
+        const prompt = {
+          requestId,
+          serverName: text(value.serverName, 200),
+          threadId: id(value.threadId),
+          turnId: value.turnId === null || value.turnId === undefined ? null : id(value.turnId),
+          message: text(value.message, 4_000),
+          detail: value.detail === null || value.detail === undefined ? null : text(value.detail, 4_000),
+          toolName: value.toolName === null || value.toolName === undefined ? null : text(value.toolName, 200)
+        };
+        if (!prompt.requestId || !prompt.serverName || !prompt.threadId || !prompt.message) {
+          throw new Error('验收 MCP 权限请求缺少必要字段');
+        }
+        host.acceptMcpElicitationForAcceptance(prompt);
         return;
       }
       if (value.type === 'message') {
@@ -1240,6 +1677,47 @@ function registerIPC(): void {
     account: () => host.account(),
     login: async () => { const url = await host.login(); if (url) { if (!url.startsWith('https://')) throw new Error('登录地址协议无效'); await shell.openExternal(url); } },
     models: () => host.models(),
+    setModelSource: async kindValue => {
+      const kind = modelSourceKindFrom(kindValue);
+      if (kind !== kindValue) throw new Error('无效的模型来源');
+      const current = modelSourceState();
+      if (kind === 'manualApi' && !manualModelSourceAvailable(current)) {
+        throw new Error('请先填写并保存手动 API 的服务名称、Base URL、模型 ID 和 API Key');
+      }
+      store.setSetting('modelSource', kind);
+      applyModelSourceRuntimeConfig();
+      try {
+        await restartRuntimeForModelSource();
+      } catch (error) {
+        store.setSetting('modelSource', current.kind);
+        applyModelSourceRuntimeConfig();
+        throw new Error(`模型来源切换失败，已保留原来源：${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
+      host.changed();
+      return modelSourceState();
+    },
+    saveManualModelSource: async inputValue => {
+      const input = object(inputValue);
+      const { previousKind, previousSettings } = persistModelSourceConfig(input);
+      if (store.settings().modelSource === 'manualApi' && host.activeTurns.size === 0) {
+        applyModelSourceRuntimeConfig();
+        try {
+          await restartRuntimeForModelSource();
+        } catch (error) {
+          restoreManualModelSettings(previousSettings);
+          store.setSetting('modelSource', previousKind);
+          applyModelSourceRuntimeConfig();
+          throw new Error(`手动 API 配置保存失败，已保留原来源：${
+            error instanceof Error ? error.message : String(error)
+          }`);
+        }
+      }
+      host.changed();
+      return modelSourceState();
+    },
+    testModelConnection: source => testModelConnection(source),
     startVoice: (chatId, offerSdp) => host.startVoice(id(chatId), text(offerSdp, 128_000)),
     stopVoice: (chatId, reason) => host.stopVoice(
       id(chatId),
@@ -1282,7 +1760,14 @@ function showWindow(): void {
   window.on('focus', () => { windowFocused = true; });
   window.on('blur', () => { windowFocused = false; });
   window.on('hide', () => { windowFocused = false; });
-  window.on('closed', () => { window = null; windowFocused = false; visibleChatId = null; });
+  window.webContents.on('render-process-gone', () => composerDraftAttachmentPaths.clear());
+  window.webContents.on('did-start-loading', () => composerDraftAttachmentPaths.clear());
+  window.on('closed', () => {
+    window = null;
+    windowFocused = false;
+    visibleChatId = null;
+    composerDraftAttachmentPaths.clear();
+  });
   if (devURL) void window.loadURL(devURL); else void window.loadFile(rendererFile);
 }
 
@@ -1335,7 +1820,9 @@ else {
     // Electron's dock image loader cannot decode that ICNS path; use the source PNG only in dev.
     if (!app.isPackaged) app.dock?.setIcon(join(app.getAppPath(), 'assets/branding/app-logo-source.png'));
     store = new Store(app.getPath('userData'));
+    startComposerAttachmentCleanup();
     connectorCredentials = new ConnectorCredentials(app.getPath('userData'));
+    manualModelCredentials = connectorCredentials;
     directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
     const initialSettings = store.settings();
     mailRuntime = new MailRuntime(new SecureMailAdapterRegistry(
@@ -1395,8 +1882,15 @@ else {
     const wechatMediaProcessor = new WechatMediaContentProcessor(wechatMediaToolPaths());
     host = new Host(
       store, runtime, emit, mailRuntime, connectorCredentials,
-      undefined, undefined, wechatReader, wechatMediaProcessor
+      undefined, undefined, wechatReader, wechatMediaProcessor,
+      () => modelSourceState(),
+      () => testModelConnection()
     );
+    try {
+      applyModelSourceRuntimeConfig();
+    } catch (error) {
+      console.error('[Rambo] model source configuration is unavailable', error);
+    }
     void refreshNotificationRuntimeState().then(syncNotificationRuntimeState);
     if (!initialSettings.globalResourceIds) {
       const discovered = new Set(host.snapshot().botResources.map(resource => resource.id));
@@ -1500,6 +1994,8 @@ else {
   app.on('before-quit', event => {
     if (quitting) return;
     quitting = true; event.preventDefault();
+    if (composerAttachmentCleanupTimer) clearInterval(composerAttachmentCleanupTimer);
+    composerAttachmentCleanupTimer = null;
     void (async () => {
       for (const [challengeId, controller] of wechatAuthControllers) {
         controller.abort();

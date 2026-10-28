@@ -199,6 +199,36 @@ test('MCP header and environment secrets are encrypted as one opaque credential 
   });
 });
 
+test('model API keys are encrypted and reject malformed provider payloads', async () => {
+  await withModule(async ({ ConnectorCredentials, ConnectorCredentialsError }, directory) => {
+    const store = new ConnectorCredentials(join(directory, 'profile'));
+    const reference = store.save(connectionId, {
+      kind: 'model-api-key',
+      providerId: 'rambo_manual',
+      apiKey: 'sk-model-secret'
+    });
+    assert.deepEqual(store.load(reference), {
+      kind: 'model-api-key',
+      providerId: 'rambo_manual',
+      apiKey: 'sk-model-secret'
+    });
+    const database = new DatabaseSync(join(directory, 'profile', 'connector-credentials', 'credentials.sqlite'));
+    const stored = database.prepare('SELECT body FROM connector_credentials WHERE reference=?').get(reference);
+    database.close();
+    assert.equal(String(stored.body).includes('sk-model-secret'), false);
+    assert.throws(() => store.save(connectionId, {
+      kind: 'model-api-key',
+      providerId: 'bad provider/id',
+      apiKey: 'sk-model-secret'
+    }), ConnectorCredentialsError);
+    assert.throws(() => store.save(connectionId, {
+      kind: 'model-api-key',
+      providerId: 'rambo_manual',
+      apiKey: '   '
+    }), /模型 API 凭证格式无效/u);
+  });
+});
+
 test('WeChat SQLCipher credentials round-trip an absolute account directory and reject invalid key material', async () => {
   await withModule(async ({ ConnectorCredentials, ConnectorCredentialsError }, directory) => {
     const store = new ConnectorCredentials(directory, fakeCipher());

@@ -35,6 +35,30 @@ Rambo 的界面与交互基于对 **Grok Bot** 桌面端的反编译和界面研
 
 > **项目状态：** Rambo 正在快速迭代。最新版本可以用于日常探索和试用，但还不是一个已经完成全量验收的成熟产品。详情见[项目状态](#项目状态)。
 
+## 应用截图
+
+### 连接应用
+
+<p align="center">
+  <a href="assets/screenshots/connected-apps.png">
+    <img src="assets/screenshots/connected-apps.png" alt="Rambo 连接应用页面，展示 Gmail、QQ 邮箱、微信、日历和 GitHub" width="100%" />
+  </a>
+</p>
+
+<p align="center"><sub>邮箱和本机服务只需连接一次，再按 Bot 独立分配访问权限。</sub></p>
+
+### 本机微信读取
+
+<p align="center">
+  <a href="assets/screenshots/wechat-local-read.png">
+    <img src="assets/screenshots/wechat-local-read.png" alt="Rambo 在聊天中总结本机微信最近会话" width="100%" />
+  </a>
+</p>
+
+<p align="center"><sub>在完成本机访问配置和授权后，可以让 Bot 汇总最近的微信会话，不需要把原始数据库交给云端服务。</sub></p>
+
+<p align="center"><sub>截图中的个人会话内容与账号标识已遮挡。</sub></p>
+
 ## 功能亮点
 
 - **本机运行。** Bot、聊天、Routine、设置和记忆保存在自己的 Mac 上，使用独立的应用数据目录。

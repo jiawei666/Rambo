@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   ActivityKind, ActivityStatus, AppEvent, AccountState, Bot, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
   ConnectorConnection, ModelOption, Message, QuestionMessageContent, ResultCardMessageContent,
   PermissionMode, Snapshot, TurnActivity, TurnModelSource, TurnPermissionSnapshot, TurnRecord,
-  RoutineDefinition, RoutineRun, TurnStatus, VoiceSessionState, BotResource
+  RoutineDefinition, RoutineRun, TurnStatus, VoiceSessionState, BotResource,
+  ModelSourceState, ModelConnectionTestResult, McpElicitationAction, McpElicitationPrompt
 } from '../shared/contracts';
 import { botExecutionConfigError } from '../shared/execution-config';
 import {
@@ -15,7 +16,7 @@ import {
   resourceIdsSetting,
   type KnownMcpServer
 } from './bot-resources';
-import type { BotResourceDiscovery } from './bot-resources';
+import type { BotResourceDirectory, BotResourceDiscovery } from './bot-resources';
 import type { CodexRuntime } from './runtime';
 import type { BotReplyNotificationRecord, NotificationRuntimeState } from '../shared/notifications';
 import { Store, type MessageAnswerTarget, type UnknownTurnOperation } from './store';
@@ -832,6 +833,11 @@ export class Host {
   private readonly directMcpRegistry: DirectMcpRegistry;
   private mcpMetadataFingerprint: string | null = null;
   private mcpMetadataSync: Promise<{ changed: boolean; servers: KnownMcpServer[] }> | null = null;
+  private readonly pendingMcpElicitations = new Map<string, {
+    requestId: string | number;
+    prompt: McpElicitationPrompt;
+    acceptanceOnly?: boolean;
+  }>();
   private readonly wechatReader: SqlCipherWechatReader;
   private readonly wechatMediaProcessor: WechatMediaContentProcessor | null;
 
@@ -844,7 +850,9 @@ export class Host {
     private readonly timezone = SYSTEM_TIMEZONE,
     private readonly now: () => Date = () => new Date(),
     wechatReader?: SqlCipherWechatReader,
-    wechatMediaProcessor?: WechatMediaContentProcessor
+    wechatMediaProcessor?: WechatMediaContentProcessor,
+    private readonly modelSourceStatus?: () => ModelSourceState,
+    private readonly testModelConnection?: () => Promise<ModelConnectionTestResult>
   ) {
     this.managedSkillLibrary = new ManagedSkillLibrary(store.directory);
     this.directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
@@ -875,6 +883,10 @@ export class Host {
     }
     runtime.on('state', state => {
       if (state.status !== 'ready') {
+        for (const requestId of this.pendingMcpElicitations.keys()) {
+          publish({ type: 'mcpElicitationResolved', requestId });
+        }
+        this.pendingMcpElicitations.clear();
         this.loadedThreads.clear();
         this.threadConfigFingerprints.clear();
         this.skillsExtraRootsRegistered = false;
@@ -964,7 +976,9 @@ export class Host {
       }
     });
     runtime.on('serverRequest', request => {
-      if (request?.params?.namespace === BOT_SELF_TOOL_NAMESPACE) void this.handleBotToolCall(request);
+      if (request?.method === 'mcpServer/elicitation/request') {
+        this.handleMcpElicitationRequest(request);
+      } else if (request?.params?.namespace === BOT_SELF_TOOL_NAMESPACE) void this.handleBotToolCall(request);
       else if (request?.params?.namespace === BOT_RESOURCE_TOOL_NAMESPACE) void this.handleBotResourceToolCall(request);
       else if (request?.params?.namespace === BOT_CREDENTIAL_TOOL_NAMESPACE) void this.handleBotCredentialToolCall(request);
       else if (request?.params?.namespace === MEMORY_TOOL_NAMESPACE) void this.handleMemoryToolCall(request);
@@ -987,6 +1001,11 @@ export class Host {
     return {
       codexHome: join(resolve(this.store.directory), 'codex-home'),
       runtimeProxy: settings.runtimeProxy?.trim() ?? '',
+      modelSource: this.modelSourceStatus?.() ?? {
+        kind: 'local',
+        manual: { serviceName: '', baseUrl: '', model: '' },
+        hasApiKey: false
+      },
       bots: this.store.bots(), chats: this.store.chats(),
       connectorProviders: connectorProviders(), connections: this.store.connectorConnections(),
       connectorGrants: this.store.connectorGrants(),
@@ -1029,7 +1048,7 @@ export class Host {
     this.wechatReader.dispose();
   }
 
-  async botResources(refresh = false): Promise<BotResourceDiscovery> {
+  async botResources(refresh = false): Promise<BotResourceDirectory> {
     let refreshError: string | null = null;
     if (refresh) {
       try {
@@ -1045,6 +1064,74 @@ export class Host {
       resources: discovery.resources.map(resource => ({ ...resource })),
       errors: [...discovery.errors, ...(refreshError ? [refreshError] : [])]
     };
+  }
+
+  respondMcpElicitation(requestId: string, action: McpElicitationAction): void {
+    if (action !== 'accept' && action !== 'decline' && action !== 'cancel') {
+      throw new Error('无效的 MCP 权限操作');
+    }
+    const pending = this.pendingMcpElicitations.get(requestId);
+    if (!pending) throw new Error('该 MCP 权限请求已失效');
+    const result = action === 'accept'
+      ? { action, content: {} }
+      : { action };
+    try {
+      if (!pending.acceptanceOnly) {
+        this.runtime.respondToServerRequest(pending.requestId, result);
+      }
+    } finally {
+      this.pendingMcpElicitations.delete(requestId);
+      this.publish({ type: 'mcpElicitationResolved', requestId });
+    }
+  }
+
+  acceptMcpElicitationForAcceptance(prompt: McpElicitationPrompt): void {
+    this.pendingMcpElicitations.set(prompt.requestId, {
+      requestId: prompt.requestId,
+      prompt,
+      acceptanceOnly: true
+    });
+    this.publish({ type: 'mcpElicitation', prompt });
+  }
+
+  private handleMcpElicitationRequest(request: any): void {
+    const requestKey = String(request?.id ?? '');
+    if (!requestKey || this.pendingMcpElicitations.has(requestKey)) return;
+    const params = request?.params && typeof request.params === 'object'
+      ? request.params as Record<string, any>
+      : {};
+    const serverName = typeof params.serverName === 'string' ? params.serverName.trim().slice(0, 200) : '';
+    const threadId = typeof params.threadId === 'string' ? params.threadId.trim() : '';
+    const message = typeof params.message === 'string' ? params.message.trim().slice(0, 4_000) : '';
+    if (!serverName || !threadId || !message) {
+      try {
+        this.runtime.respondToServerRequest(request.id, { action: 'decline' });
+      } catch { /* runtime may have disconnected */ }
+      return;
+    }
+    const meta = params._meta && typeof params._meta === 'object'
+      ? params._meta as Record<string, unknown>
+      : {};
+    const detail = typeof meta.subtitle === 'string'
+      ? meta.subtitle.trim().slice(0, 4_000)
+      : null;
+    const toolName = typeof meta.tool_name === 'string'
+      ? meta.tool_name.trim().slice(0, 200)
+      : null;
+    const prompt: McpElicitationPrompt = {
+      requestId: requestKey,
+      serverName,
+      threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : null,
+      message,
+      detail,
+      toolName
+    };
+    this.pendingMcpElicitations.set(requestKey, {
+      requestId: request.id,
+      prompt
+    });
+    this.publish({ type: 'mcpElicitation', prompt });
   }
 
   async importLocalSkill(directory: string): Promise<{ resourceId: string; name: string }> {
@@ -2664,12 +2751,37 @@ export class Host {
       mcpServers.playwright = { enabled: false };
     }
     const appsEnabled = globalIds.has('app:chatgpt') && selectedIds.has('app:chatgpt');
-    const pluginsEnabled = discovery.resources
-      .filter(resource => resource.kind === 'plugin')
-      .some(resource => globalIds.has(resource.id) && selectedIds.has(resource.id));
+    const selectedPluginIds = new Set(discovery.resources
+      .filter(resource =>
+        resource.kind === 'plugin' &&
+        globalIds.has(resource.id) &&
+        selectedIds.has(resource.id))
+      .map(resource => resource.id));
+    const pluginsEnabled = selectedPluginIds.size > 0;
+    const pluginConfig = objectMap();
+    const runtimeCodexHome = join(resolve(this.store.directory), 'codex-home');
+    for (const plugin of discovery.pluginMcpRuntimes) {
+      pluginConfig[plugin.pluginId] = {
+        enabled: selectedPluginIds.has(plugin.resourceId)
+      };
+      if (!selectedPluginIds.has(plugin.resourceId)) continue;
+      for (const [name, server] of Object.entries(plugin.mcpServers)) {
+        const env = server.env && typeof server.env === 'object' && !Array.isArray(server.env)
+          ? { ...server.env as Record<string, unknown> }
+          : {};
+        env.CODEX_HOME = runtimeCodexHome;
+        env.CODEX_SQLITE_HOME = runtimeCodexHome;
+        mcpServers[name] = {
+          ...server,
+          enabled: true,
+          env
+        };
+      }
+    }
     return {
       mcp_servers: mcpServers,
       features: { apps: appsEnabled, plugins: pluginsEnabled },
+      plugins: pluginConfig,
       skills: {
         bundled: { enabled: false },
         include_instructions: true,
@@ -2682,6 +2794,7 @@ export class Host {
     const relevant = {
       mcp_servers: config.mcp_servers ?? {},
       features: config.features ?? {},
+      plugins: config.plugins ?? {},
       skills: config.skills ?? {}
     };
     return createHash('sha256').update(JSON.stringify(relevant)).digest('hex');
@@ -4331,15 +4444,32 @@ export class Host {
         ? p.phase as Message['phase']
         : null;
       if (this.voiceSessions.has(chatId)) this.supersedeVoiceDraft(chatId);
-      const message = this.store.assistantItem(chatId, p.itemId, p.delta, true, 'streaming', turnId, phase);
+      const delta = typeof p.delta === 'string' ? p.delta : '';
+      const { message, replacedMessageId } = this.store.assistantItem(
+        chatId, p.itemId, delta, true, 'streaming', turnId, phase
+      );
+      if (replacedMessageId) {
+        this.publish({ type: 'messageRemoved', chatId, messageId: replacedMessageId });
+      }
       this.publish({ type: 'message', message });
-      if (groupSession?.purpose === 'member' && phase) {
-        const groupMessage = this.store.groupAssistantItem(
-          groupSession.groupId, groupSession.botId, p.itemId, p.delta, true, 'streaming', turnId, phase
-        );
+      if (groupSession?.purpose === 'member') {
+        const { message: groupMessage, replacedMessageId: replacedGroupMessageId } =
+          this.store.groupAssistantItem(
+            groupSession.groupId, groupSession.botId, p.itemId, delta, true, 'streaming', turnId, phase
+          );
+        if (replacedGroupMessageId) {
+          this.removeGroupMessage(groupSession.groupId, replacedGroupMessageId);
+        }
         const groupText = groupMessage.text.trim();
-        const isNoReplyMarker = groupText.includes(NO_GROUP_REPLY_TOKEN) || NO_GROUP_REPLY_TOKEN.startsWith(groupText);
+        const isNoReplyMarker = groupText.includes(NO_GROUP_REPLY_TOKEN) ||
+          NO_GROUP_REPLY_TOKEN.startsWith(groupText);
         if (!isNoReplyMarker) this.publishGroupMessage(groupMessage);
+      }
+      if (phase === 'commentary' || phase === 'partial_answer') {
+        this.updateGroupRuntimeMember(chatId, member => ({
+          ...member,
+          phase: 'working'
+        }));
       }
     } else if (method === 'item/completed' && p.item?.type === 'agentMessage') {
       const turnId = typeof p.turnId === 'string'
@@ -4348,9 +4478,12 @@ export class Host {
       if (p.item.id) this.rememberItemTurn(p.item.id, turnId);
       const phase = agentMessagePhase(p.item);
       if (this.voiceSessions.has(chatId)) this.supersedeVoiceDraft(chatId);
-      const message = this.store.assistantItem(
+      const { message, replacedMessageId } = this.store.assistantItem(
         chatId, p.item.id, p.item.text ?? '', false, 'complete', turnId, phase
       );
+      if (replacedMessageId) {
+        this.publish({ type: 'messageRemoved', chatId, messageId: replacedMessageId });
+      }
       const messageWithImage = turnId
         ? this.store.attachGeneratedImageToTurn(chatId, turnId) ?? message
         : message;
@@ -4379,14 +4512,26 @@ export class Host {
             this.publishGroupMessage(failure);
           }
         } else {
-          const groupMessage = this.store.groupAssistantItem(
+          const {
+            message: groupMessage,
+            replacedMessageId: replacedGroupMessageId
+          } = this.store.groupAssistantItem(
             groupSession.groupId, groupSession.botId, p.item.id, p.item.text ?? '', false, 'complete', turnId, phase
           );
+          if (replacedGroupMessageId) {
+            this.removeGroupMessage(groupSession.groupId, replacedGroupMessageId);
+          }
           const groupMessageWithImage = turnId
             ? this.store.attachGeneratedImageToGroupTurn(groupSession.groupId, groupSession.botId, chatId, turnId) ?? groupMessage
             : groupMessage;
           this.publishGroupMessage(groupMessageWithImage);
         }
+      }
+      if (phase === 'commentary' || phase === 'partial_answer') {
+        this.updateGroupRuntimeMember(chatId, member => ({
+          ...member,
+          phase: 'working'
+        }));
       }
     } else if (method === 'item/completed') {
       const item = p.item;
@@ -4748,8 +4893,39 @@ export class Host {
 
   async account(): Promise<AccountState> {
     await this.runtime.start();
-    const result = await this.runtime.request('account/read', { refreshToken: false });
-    return { type: result.account?.type ?? null, email: result.account?.email ?? null, requiresLogin: !result.account };
+    let localLoginDetected = false;
+    try {
+      const auth = JSON.parse(readFileSync(join(this.store.directory, 'codex-home', 'auth.json'), 'utf8'));
+      localLoginDetected =
+        (auth?.auth_mode === 'chatgpt') ||
+        (typeof auth?.OPENAI_API_KEY === 'string' && Boolean(auth.OPENAI_API_KEY.trim())) ||
+        (auth?.tokens && typeof auth.tokens === 'object');
+    } catch {
+      // Missing or malformed auth is not a usable local login.
+    }
+    try {
+      const result = await this.runtime.request('account/read', { refreshToken: false });
+      return {
+        type: result.account?.type ?? null,
+        email: result.account?.email ?? null,
+        requiresLogin: !result.account,
+        localLoginDetected,
+        statusError: null
+      };
+    } catch (error) {
+      if (!localLoginDetected) throw error;
+      return {
+        type: null,
+        email: null,
+        requiresLogin: false,
+        localLoginDetected,
+        statusError: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  async verifyModelConnection(): Promise<ModelConnectionTestResult> {
+    if (!this.testModelConnection) throw new Error('模型连接测试尚未初始化');
+    return this.testModelConnection();
   }
   async login(): Promise<string | null> {
     await this.runtime.start();

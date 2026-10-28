@@ -1,10 +1,12 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
   type DragEvent as ReactDragEvent,
   type FormEvent,
@@ -24,9 +26,20 @@ import {
   parseRobotAvatar
 } from './robot-avatar';
 import { runGroupCreateAction } from './group-create-actions';
-import { partitionBots, privateChatForBot, selectedPrivateChat, shouldShowReturnToChat } from './chat-list-model';
+import {
+  partitionBots,
+  privateChatForBot,
+  selectedPrivateChat,
+  shouldShowReturnToChat,
+  sidebarConversations
+} from './chat-list-model';
 import { runAfterExplicitConfirmation } from './management-actions';
 import { MessageContentView } from './message-content';
+import {
+  formatMessageDivider,
+  formatMessageHoverTime,
+  shouldShowMessageTimeDivider
+} from './message-time';
 import { insertMention, mentionOptions, mentionRange, type MentionOption } from './mention-autocomplete';
 import {
   centerVoiceFrequencyBands,
@@ -41,6 +54,7 @@ import type {
   Bot,
   BotResource,
   Chat,
+  ComposerAttachment,
   ConnectorAuthChallenge,
   ConnectorCategory,
   ConnectorConnection,
@@ -53,8 +67,13 @@ import type {
   GroupRuntimeMember,
   GroupRuntimeState,
   Memory,
+  McpElicitationAction,
+  McpElicitationPrompt,
   Message,
+  ModelConnectionTestResult,
   ModelOption,
+  ModelSourceKind,
+  ModelSourceState,
   PermissionMode,
   PlaywrightVerificationResult,
   RoutineListItem,
@@ -64,10 +83,17 @@ import type {
   TurnActivity,
   VoiceState
 } from '../shared/contracts';
+import {
+  composeComposerMessage,
+  dedupeComposerAttachments,
+  parseImageDataUrl
+} from '../shared/composer-attachments';
 import { botExecutionConfigError } from '../shared/execution-config';
+import { needsInitialSetup as shouldOpenInitialSetup } from '../main/model-source';
 
 type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
-type SystemSettingsTab = 'general' | 'model' | 'resources' | 'routines';
+type SystemSettingsTab = 'general' | 'account' | 'model' | 'resources' | 'routines';
+type ResourceSection = 'skills' | 'mcp' | 'plugins';
 type AutoSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type LiveVoiceUi = {
   chatId: string;
@@ -83,6 +109,11 @@ type VoiceErrorPresentation = {
 const EMPTY_SNAPSHOT: Snapshot = {
   codexHome: '',
   runtimeProxy: '',
+  modelSource: {
+    kind: 'local',
+    manual: { serviceName: '', baseUrl: '', model: '' },
+    hasApiKey: false
+  },
   bots: [],
   chats: [],
   connectorProviders: [],
@@ -256,6 +287,11 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function extensionLabel(fileName: string): string {
+  const extension = /\.([^.]+)$/u.exec(fileName)?.[1];
+  return extension ? extension.slice(0, 4).toUpperCase() : 'FILE';
 }
 
 function permissionModeFromSetting(value: string | undefined): PermissionMode | null {
@@ -510,6 +546,8 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [deletingBot, setDeletingBot] = useState<Bot | null>(null);
   const [deletingGroup, setDeletingGroup] = useState<GroupChat | null>(null);
+  const [mcpElicitations, setMcpElicitations] = useState<McpElicitationPrompt[]>([]);
+  const [mcpElicitationBusy, setMcpElicitationBusy] = useState(false);
   const [sidebarMenu, setSidebarMenu] = useState<
     | { kind: 'bot'; bot: Bot; conversationId: string; x: number; y: number }
     | { kind: 'group'; group: GroupChat; conversationId: string; x: number; y: number }
@@ -523,6 +561,7 @@ function App() {
   } | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
+  const firstRunSettingsRef = useRef(false);
   const [voice, setVoice] = useState<LiveVoiceUi | null>(null);
   const botsRef = useRef<Bot[]>([]);
   const voiceRef = useRef<LiveVoiceUi | null>(null);
@@ -792,6 +831,16 @@ function App() {
         setSnapshot(keepVisibleChatRead(next));
         if (!initializedRef.current) {
           initializedRef.current = true;
+          if (!firstRunSettingsRef.current && shouldOpenInitialSetup({
+            ...next.modelSource,
+            runtimeReady: next.runtime.status === 'ready',
+            executionDefaultsReady: next.executionDefaults.ready
+          }) && next.settings.initialSetupPrompted !== 'true') {
+            firstRunSettingsRef.current = true;
+            await window.rambo.setSetting('initialSetupPrompted', 'true');
+            setSystemSettingsTab('general');
+            setView('settings');
+          }
           const firstBot = next.bots.find(bot => !bot.archived);
           if (firstBot) {
             setSelectedBotId(firstBot.id);
@@ -1003,6 +1052,14 @@ function App() {
         void voiceSessionRef.current?.close();
         voiceSessionRef.current = null;
         void loadMessages(event.chatId, { clearCurrent: false, resetStreamBuffer: true });
+      } else if (event.type === 'mcpElicitation') {
+        setMcpElicitations(current => current.some(item =>
+          item.requestId === event.prompt.requestId)
+          ? current
+          : [...current, event.prompt]);
+      } else if (event.type === 'mcpElicitationResolved') {
+        setMcpElicitations(current =>
+          current.filter(item => item.requestId !== event.requestId));
       } else if (event.type === 'error') {
         if (!event.chatId || event.chatId === selectedChatRef.current) setAppError(event.message);
       }
@@ -1134,6 +1191,7 @@ function App() {
   const activeBots = botSections.active;
   const archivedBots = botSections.archived;
   const archivedGroups = currentSnapshot.archivedGroups ?? [];
+  const visibleConversations = sidebarConversations(currentSnapshot.bots, currentSnapshot.groups);
   const currentBot = activeBots.find(bot => bot.id === selectedBotId) ?? null;
   const currentBotExecutionError = currentBot ? botExecutionConfigError(currentBot) : null;
   const settingsBot = currentSnapshot.bots.find(bot => bot.id === selectedBotId) ?? null;
@@ -1299,6 +1357,26 @@ function App() {
     setAppError(null);
   };
 
+  const setConversationPinned = async (menu: NonNullable<typeof sidebarMenu>) => {
+    setSidebarMenu(null);
+    try {
+      if (menu.kind === 'bot') {
+        const pinned = !menu.bot.pinnedAt;
+        await window.rambo.setBotPinned(menu.bot.id, pinned);
+        setSnapshot(await window.rambo.snapshot());
+        setSidebarNotice(pinned ? `已置顶 ${menu.bot.name}` : `已取消置顶 ${menu.bot.name}`);
+      } else {
+        const pinned = !menu.group.pinnedAt;
+        await window.rambo.setGroupPinned(menu.group.id, pinned);
+        setSnapshot(await window.rambo.snapshot());
+        setSidebarNotice(pinned ? `已置顶群聊 ${menu.group.title}` : `已取消置顶群聊 ${menu.group.title}`);
+      }
+      setAppError(null);
+    } catch (error) {
+      setAppError(toError(error));
+    }
+  };
+
   const restoreBot = async (botId: string) => {
     try { await setBotArchived(botId, false); }
     catch (error) { setAppError(toError(error)); }
@@ -1372,7 +1450,7 @@ function App() {
     event.stopPropagation();
     if (target.kind === 'bot' && !target.chat) return;
     const width = 196;
-    const height = 126;
+    const height = 164;
     const x = Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8));
     const y = Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8));
     setSidebarNotice(null);
@@ -1438,44 +1516,54 @@ function App() {
           ) : (
             <>
               <div className="bot-list" aria-label="会话列表">
-                {activeBots.map(bot => {
-                  const chat = privateChatForBot(currentSnapshot.chats, bot.id);
-                  const running = Boolean(chat && (
-                    currentSnapshot.activeTurns[chat.id] || currentSnapshot.startingTurns[chat.id]
-                  ));
-                  const preview = chat ? currentSnapshot.recentMessages[chat.id]?.trim() : '';
-                  return (
-                    <div className="bot-group" key={bot.id}>
-                      <div className={'bot-list-row' + (selectedBotId === bot.id && view === 'chat' ? ' selected' : '')}
-                        data-avatar-follow-region=""
-                        data-running={running ? 'true' : undefined}
-                        onContextMenu={event => openSidebarMenu(event, { kind: 'bot', bot, chat })}>
-                        <button type="button" className="bot-select" onClick={() => void chooseBot(bot)}
-                          aria-current={selectedBotId === bot.id && view === 'chat' ? 'true' : undefined}>
-                          <span className="bot-avatar-wrap">
-                            <Avatar value={bot.avatar} size="sidebar" followOnHover />
-                            <UnreadBadge count={chat ? currentSnapshot.unreadCounts[chat.id] ?? 0 : 0} />
-                          </span>
-                          <span className="bot-card-copy">
-                            <span className="bot-row-name">{bot.name}</span>
-                            <span className="bot-row-summary">{preview || bot.role.trim() || '开始聊天'}</span>
-                          </span>
-                        </button>
+                {visibleConversations.map(item => {
+                  if (item.kind === 'bot') {
+                    const bot = item.bot;
+                    const chat = privateChatForBot(currentSnapshot.chats, bot.id);
+                    const running = Boolean(chat && (
+                      currentSnapshot.activeTurns[chat.id] || currentSnapshot.startingTurns[chat.id]
+                    ));
+                    const preview = chat ? currentSnapshot.recentMessages[chat.id]?.trim() : '';
+                    return (
+                      <div
+                        className="bot-group"
+                        key={bot.id}
+                      >
+                        <div className={'bot-list-row' + (bot.pinnedAt ? ' pinned' : '') + (selectedBotId === bot.id && view === 'chat' ? ' selected' : '')}
+                          data-pinned={bot.pinnedAt ? 'true' : undefined}
+                          data-avatar-follow-region=""
+                          data-running={running ? 'true' : undefined}
+                          onContextMenu={event => openSidebarMenu(event, { kind: 'bot', bot, chat })}>
+                          <button type="button" className="bot-select" onClick={() => void chooseBot(bot)}
+                            aria-current={selectedBotId === bot.id && view === 'chat' ? 'true' : undefined}>
+                            <span className="bot-avatar-wrap">
+                              <Avatar value={bot.avatar} size="sidebar" followOnHover />
+                              <UnreadBadge count={chat ? currentSnapshot.unreadCounts[chat.id] ?? 0 : 0} />
+                            </span>
+                            <span className="bot-card-copy">
+                              <span className="bot-row-name"><span>{bot.name}</span></span>
+                              <span className="bot-row-summary">{preview || bot.role.trim() || '开始聊天'}</span>
+                            </span>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-                {currentSnapshot.groups.map(group => {
+                    );
+                  }
+                  const group = item.group;
                   const members = group.memberIds.map(id => currentSnapshot.bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
                   return (
-                    <div className="bot-group" key={group.id}>
-                      <div className={'bot-list-row' + (selectedGroupId === group.id && view === 'group-chat' ? ' selected' : '')}
+                    <div
+                      className="bot-group"
+                      key={group.id}
+                    >
+                      <div className={'bot-list-row' + (group.pinnedAt ? ' pinned' : '') + (selectedGroupId === group.id && view === 'group-chat' ? ' selected' : '')}
+                        data-pinned={group.pinnedAt ? 'true' : undefined}
                         onContextMenu={event => openSidebarMenu(event, { kind: 'group', group })}>
                         <button type="button" className="bot-select" onClick={() => openGroup(group)}
                           aria-current={selectedGroupId === group.id && view === 'group-chat' ? 'page' : undefined}>
                           <GroupAvatar group={group} bots={currentSnapshot.bots} />
                           <span className="bot-card-copy">
-                            <span className="bot-row-name">{group.title}</span>
+                            <span className="bot-row-name"><span>{group.title}</span></span>
                             <span className="bot-row-summary">{members.map(bot => bot.name).join('、') || '群聊'}</span>
                           </span>
                         </button>
@@ -1654,6 +1742,7 @@ function App() {
             runtime={currentSnapshot.runtime}
             codexHome={currentSnapshot.codexHome}
             runtimeProxy={currentSnapshot.runtimeProxy}
+            modelSource={currentSnapshot.modelSource}
             notificationUnavailable={currentSnapshot.notifications.unavailableMessage}
             launchAtLogin={currentSnapshot.settings.launchAtLogin !== 'false'}
             globalModel={currentSnapshot.settings.defaultBotModel ?? ''}
@@ -1675,16 +1764,6 @@ function App() {
             onSetGlobalResource={async (resourceId, included) => {
               await window.rambo.setGlobalResource(resourceId, included);
               setSnapshot(await window.rambo.snapshot());
-            }}
-            onImportLocalSkill={async () => {
-              const imported = await window.rambo.importLocalSkill();
-              setSnapshot(await window.rambo.snapshot());
-              return imported;
-            }}
-            onAddDirectMcp={async input => {
-              const added = await window.rambo.addDirectMcp(input);
-              setSnapshot(await window.rambo.snapshot());
-              return added;
             }}
             onSetDirectMcpEnabled={async (id, enabled) => {
               const server = await window.rambo.setDirectMcpEnabled(id, enabled);
@@ -1727,6 +1806,17 @@ function App() {
               await window.rambo.setSetting('runtimeProxy', value);
               setSnapshot(await window.rambo.snapshot());
             }}
+            onSetModelSource={async kind => {
+              const source = await window.rambo.setModelSource(kind);
+              setSnapshot(await window.rambo.snapshot());
+              return source;
+            }}
+            onSaveManualModelSource={async input => {
+              const source = await window.rambo.saveManualModelSource(input);
+              setSnapshot(await window.rambo.snapshot());
+              return source;
+            }}
+            onTestModelConnection={source => window.rambo.testModelConnection(source)}
             onSetRoutineStatus={async (routineId, status) => {
               await window.rambo.setRoutineStatus(routineId, status);
               setSnapshot(current => current ? {
@@ -1783,12 +1873,16 @@ function App() {
                 <div className="messages-loading" aria-label="正在读取聊天" />
               ) : (
                 <div className="message-column">
-                  {messages.map(message => (
-                    <MessageRow
-                      key={message.id}
-                      message={message}
-                      entering={enteringMessageIds.has(message.id)}
-                    />
+                  {messages.map((message, index) => (
+                    <Fragment key={message.id}>
+                      {shouldShowMessageTimeDivider(messages, index) && (
+                        <MessageTimeDivider value={message.createdAt} />
+                      )}
+                      <MessageRow
+                        message={message}
+                        entering={enteringMessageIds.has(message.id)}
+                      />
+                    </Fragment>
                   ))}
                 </div>
               )}
@@ -1803,7 +1897,11 @@ function App() {
                     autoAnimate
                     label={(() => {
                       const latest = activities
-                        .filter(activity => activity.turnId === currentSnapshot.activeTurns[currentChat.id])
+                        .filter(activity =>
+                          activity.chatId === currentChat.id &&
+                          activity.turnId === currentSnapshot.activeTurns[currentChat.id]
+                        )
+                        .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
                         .at(-1);
                       if (isStartingTurn) return '正在读消息';
                       return latest ? ACTIVITY_LABELS[latest.kind] : '正在思考';
@@ -1908,6 +2006,13 @@ function App() {
           onPointerDown={event => event.stopPropagation()}
           onContextMenu={event => event.preventDefault()}>
           <button type="button" role="menuitem"
+            className="sidebar-context-menu-text-only"
+            onClick={() => void setConversationPinned(sidebarMenu)}>
+            <span>{(sidebarMenu.kind === 'bot' ? sidebarMenu.bot.pinnedAt : sidebarMenu.group.pinnedAt)
+              ? '取消置顶'
+              : '置顶'}</span>
+          </button>
+          <button type="button" role="menuitem"
             onClick={() => void copySidebarChatId(sidebarMenu.conversationId)}>
             <Icon name="copy" size={14} />
             <span>复制对话 ID</span>
@@ -1943,6 +2048,26 @@ function App() {
           confirmLabel="永久删除群聊"
           onCancel={() => setDeletingGroup(null)}
           onConfirm={permanentlyDeleteGroup}
+        />
+      )}
+      {mcpElicitations[0] && (
+        <McpElicitationDialog
+          prompt={mcpElicitations[0]}
+          busy={mcpElicitationBusy}
+          onAction={async action => {
+            const prompt = mcpElicitations[0];
+            setMcpElicitationBusy(true);
+            setAppError(null);
+            try {
+              await window.rambo.respondMcpElicitation(prompt.requestId, action);
+              setMcpElicitations(current =>
+                current.filter(item => item.requestId !== prompt.requestId));
+            } catch (error) {
+              setAppError(toError(error));
+            } finally {
+              setMcpElicitationBusy(false);
+            }
+          }}
         />
       )}
       {connectorDialog && (
@@ -2597,7 +2722,7 @@ function ConnectorDialog({
                 {bots.length ? bots.map(bot => {
                   const granted = grantedIds.has(bot.id);
                   return (
-                    <label key={bot.id} className={'connector-dialog-bot' + (granted ? ' granted' : '')}>
+                    <label key={bot.id} className="connector-dialog-bot">
                       <span className="connector-dialog-bot-identity">
                         <Avatar value={bot.avatar} size="small" followOnHover={false} />
                         <span>
@@ -3217,10 +3342,28 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
   const activeMembers = members.filter(bot => !bot.archived);
   const hasUnreadyMembers = activeMembers.some(bot => botExecutionConfigError(bot) !== null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const transcriptFollowsLatestRef = useRef(true);
+  const preservedScrollRef = useRef<{
+    scrollTop: number; scrollHeight: number; followsLatest: boolean;
+  } | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
+    const previous = preservedScrollRef.current;
+    if (!element) return;
+    if (transcriptFollowsLatestRef.current) {
+      element.scrollTop = element.scrollHeight;
+    } else if (previous && !previous.followsLatest) {
+      const heightDelta = element.scrollHeight - previous.scrollHeight;
+      if (heightDelta < 0) {
+        element.scrollTop = Math.max(0, previous.scrollTop + heightDelta);
+      }
+    }
+    preservedScrollRef.current = {
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      followsLatest: transcriptFollowsLatestRef.current
+    };
   }, [messages, runtime?.members]);
 
   const runningMembers = runtime?.members
@@ -3234,22 +3377,31 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
     ? ACTIVITY_LABELS[latestActivity.member.activityKind]
     : runningMembers.some(item => item.member.phase === 'starting')
       ? '正在读消息'
-    : runningMembers.length > 0 && runningMembers.every(item => item.member.phase === 'judging')
-      ? '正在判断'
-      : '正在思考';
+      : runningMembers.length > 0 && runningMembers.every(item => item.member.phase === 'judging')
+        ? '正在判断'
+        : '正在思考';
 
   return (
       <section className="chat-workspace" aria-label={group.title}>
-      <div className="transcript-scroll" ref={scrollRef} aria-label="群聊消息">
+      <div className="transcript-scroll" ref={scrollRef} aria-label="群聊消息"
+        onScroll={event => {
+          const element = event.currentTarget;
+          transcriptFollowsLatestRef.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+        }}>
         {loading ? <div className="messages-loading" aria-label="正在读取群聊" /> : messages.length > 0 ? (
           <div className="message-column">
-            {messages.map(message => (
-              <GroupMessageRow
-                key={message.id}
-                message={message}
-                bots={bots}
-                entering={enteringMessageIds.has(message.id)}
-              />
+            {messages.map((message, index) => (
+              <Fragment key={message.id}>
+                {shouldShowMessageTimeDivider(messages, index) && (
+                  <MessageTimeDivider value={message.createdAt} />
+                )}
+                <GroupMessageRow
+                  message={message}
+                  bots={bots}
+                  entering={enteringMessageIds.has(message.id)}
+                />
+              </Fragment>
             ))}
           </div>
         ) : (
@@ -3272,7 +3424,11 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
           disabled={activeMembers.length === 0}
           disabledReason={activeMembers.length === 0 ? '群聊中没有活跃的 Bot' : null}
           placeholder="发送群聊消息…" ariaLabel="群聊消息输入框"
-          onSend={onSend} onStop={onStop} />
+          onSend={async text => {
+            transcriptFollowsLatestRef.current = true;
+            await onSend(text);
+          }}
+          onStop={onStop} />
         {hasUnreadyMembers && (
           <div className="form-error composer-readiness-error" role="status">
             群聊中有 Bot 尚未完成“模型与权限”配置。普通消息和 @everyone 需要所有活跃成员配置完成；也可以 @名字 指定已配置的 Bot。
@@ -3318,6 +3474,7 @@ function GroupMessageRow({ message, bots, entering = false }: {
         {(message.status === 'failed' || message.status === 'interrupted') && (
           <div className="message-status">{message.status === 'failed' ? '未完成' : '已停止'}</div>
         )}
+        <MessageHoverTime value={message.createdAt} align={message.role === 'user' ? 'right' : 'left'} />
       </div>
     </article>
   );
@@ -3334,6 +3491,22 @@ function timestampLabel(value: string | null): string {
   if (!value) return '未知';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN');
+}
+
+function MessageTimeDivider({ value }: { value: string }) {
+  return (
+    <div className="message-time-divider" role="separator" aria-label={`时间 ${formatMessageDivider(value)}`}>
+      <time dateTime={value}>{formatMessageDivider(value)}</time>
+    </div>
+  );
+}
+
+function MessageHoverTime({ value, align }: { value: string; align: 'left' | 'right' }) {
+  return (
+    <time className={`message-hover-time message-hover-time-${align}`} dateTime={value}>
+      {formatMessageHoverTime(value)}
+    </time>
+  );
 }
 
 const ACTIVITY_LABELS: Record<TurnActivity['kind'], string> = {
@@ -3586,6 +3759,7 @@ function MessageRow({
                 message.dispatchStatus === 'failed' ? '发送失败' : null}
           </div>
         )}
+        <MessageHoverTime value={message.createdAt} align={message.role === 'user' ? 'right' : 'left'} />
       </div>
     </article>
   );
@@ -3688,20 +3862,42 @@ function Composer({
   ariaLabel?: string;
 }) {
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [selectingFiles, setSelectingFiles] = useState(false);
   const draftRef = useRef('');
+  const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  const attachmentOwnerId = useId();
   const [mention, setMention] = useState<ReturnType<typeof mentionRange>>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const mentionListId = useId();
-  const canSend = Boolean(draft.trim()) && !sending && !disabled;
+  const canSend = Boolean(draft.trim() || attachments.length) && !sending && !disabled;
   const options = groupBots && mention ? mentionOptions(groupBots, mention.query) : [];
   const mentionOpen = Boolean(mention && options.length);
   const activeMentionIndex = options.length ? Math.min(mentionIndex, options.length - 1) : 0;
+
+  useEffect(() => {
+    // Keep the attachments occupied until the send IPC settles so cleanup
+    // cannot race the message reference being committed.
+    if (sending) return;
+    void window.rambo.setComposerDraftAttachments(
+      attachmentOwnerId,
+      attachments.map(attachment => attachment.path)
+    ).catch(error => {
+      console.error('[Rambo] unable to report composer draft attachments', error);
+    });
+  }, [attachmentOwnerId, attachments, sending]);
+
+  useEffect(() => () => {
+    void window.rambo.releaseComposerDraftAttachments(attachmentOwnerId).catch(error => {
+      console.error('[Rambo] unable to release composer draft attachments', error);
+    });
+  }, [attachmentOwnerId]);
 
   useLayoutEffect(() => {
     const caret = pendingCaretRef.current;
@@ -3737,22 +3933,99 @@ function Composer({
     setMentionIndex(0);
   };
 
+  const updateAttachments = (
+    update: (current: ComposerAttachment[]) => ComposerAttachment[]
+  ) => {
+    setAttachments(current => {
+      const next = dedupeComposerAttachments(update(current));
+      attachmentsRef.current = next;
+      return next;
+    });
+  };
+
+  const appendAttachments = (incoming: ComposerAttachment[]) => {
+    if (!incoming.length) return;
+    updateAttachments(current => [...current, ...incoming]);
+  };
+
+  const registerAttachmentPaths = async (paths: string[]) => {
+    if (!paths.length || disabled || sending) return;
+    const uniquePaths = [...new Set(paths.filter(Boolean))];
+    if (!uniquePaths.length) return;
+    setAttachmentError(null);
+    try {
+      appendAttachments(await window.rambo.registerLocalAttachments(uniquePaths));
+    } catch (error) {
+      setAttachmentError(toError(error));
+    }
+  };
+
+  const savePastedImage = async (dataUrl: string) => {
+    if (disabled || sending || !parseImageDataUrl(dataUrl)) return false;
+    setAttachmentError(null);
+    try {
+      appendAttachments([await window.rambo.savePastedImage(dataUrl)]);
+      return true;
+    } catch (error) {
+      setAttachmentError(toError(error));
+      return false;
+    }
+  };
+
+  const addClipboardFiles = async (files: File[]) => {
+    if (!files.length || disabled || sending) return false;
+    try {
+      const paths: string[] = [];
+      const imageDataUrls: string[] = [];
+      for (const file of files) {
+        const path = window.rambo.pathForFile(file);
+        if (path) paths.push(path);
+        else if (file.type.startsWith('image/')) {
+          imageDataUrls.push(await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result ?? ''));
+            reader.onerror = () => reject(reader.error ?? new Error('无法读取剪贴板图片'));
+            reader.readAsDataURL(file);
+          }));
+        }
+      }
+      if (paths.length) await registerAttachmentPaths(paths);
+      let addedImage = false;
+      for (const dataUrl of imageDataUrls) {
+        addedImage = await savePastedImage(dataUrl) || addedImage;
+      }
+      return paths.length > 0 || addedImage;
+    } catch (error) {
+      setAttachmentError(toError(error));
+      return false;
+    }
+  };
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    const text = (event ? draft : draftRef.current).trim();
-    if (!text || sending || disabled) return;
+    const draftValue = event ? draft : draftRef.current;
+    const text = draftValue.trim();
+    const selectedAttachments = attachmentsRef.current;
+    if ((!text && !selectedAttachments.length) || sending || disabled) return;
+    const message = composeComposerMessage(
+      text,
+      selectedAttachments.map(attachment => attachment.path)
+    );
     const textarea = textareaRef.current;
     setSending(true);
     setDraft('');
     draftRef.current = '';
+    updateAttachments(() => []);
+    setAttachmentError(null);
     setMention(null);
     if (textarea) textarea.style.height = 'auto';
     try {
-      await onSend(text);
+      await onSend(message);
     } catch {
       // The draft stays in the composer so the user can review or retry it.
-      setDraft(text);
-      draftRef.current = text;
+      setDraft(draftValue);
+      draftRef.current = draftValue;
+      updateAttachments(() => selectedAttachments);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
         textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 180) + 'px';
@@ -3790,32 +4063,13 @@ function Composer({
     }
   };
 
-  const insertDroppedPaths = (paths: string[]) => {
-    if (!paths.length || disabled) return;
-    const textarea = textareaRef.current;
-    const start = textarea?.selectionStart ?? draftRef.current.length;
-    const end = textarea?.selectionEnd ?? start;
-    const current = draftRef.current;
-    const before = current.slice(0, start);
-    const after = current.slice(end);
-    const prefix = before && !before.endsWith('\n') ? '\n' : '';
-    const suffix = after && !after.startsWith('\n') ? '\n' : '';
-    const inserted = `${prefix}${[...new Set(paths)].join('\n')}${suffix}`;
-    const next = before + inserted + after;
-    const caret = before.length + inserted.length;
-    pendingCaretRef.current = caret;
-    setDraft(next);
-    draftRef.current = next;
-    syncMention(next, caret);
-  };
-
   const selectLocalFiles = async () => {
     if (disabled || selectingFiles) return;
     setSelectingFiles(true);
     try {
-      insertDroppedPaths(await window.rambo.selectLocalFiles());
+      await registerAttachmentPaths(await window.rambo.selectLocalFiles());
     } catch (error) {
-      console.error('无法选择本机附件', error);
+      setAttachmentError(toError(error));
     } finally {
       setSelectingFiles(false);
       textareaRef.current?.focus();
@@ -3848,7 +4102,30 @@ function Composer({
     const paths = Array.from(event.dataTransfer.files as FileList)
       .map(file => window.rambo.pathForFile(file))
       .filter(Boolean);
-    insertDroppedPaths(paths);
+    void registerAttachmentPaths(paths);
+  };
+
+  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardData = event.clipboardData;
+    if (!clipboardData || disabled) return;
+    const itemFiles = Array.from(clipboardData.items)
+      .filter(item => item.kind === 'file')
+      .map(item => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    const files = itemFiles.length ? itemFiles : Array.from(clipboardData.files);
+    const hasPasteableFile = files.some(file =>
+      Boolean(window.rambo.pathForFile(file)) || file.type.startsWith('image/')
+    );
+    if (hasPasteableFile) {
+      event.preventDefault();
+      void addClipboardFiles(files);
+      return;
+    }
+    const imageDataUrl = clipboardData.getData('text/plain');
+    if (parseImageDataUrl(imageDataUrl)) {
+      event.preventDefault();
+      void savePastedImage(imageDataUrl);
+    }
   };
 
   return (
@@ -3863,9 +4140,54 @@ function Composer({
         onBlurCapture={event => {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
         }}>
+        {(attachments.length > 0 || attachmentError) && (
+          <div className="composer-attachment-region">
+            {attachments.length > 0 && (
+              <div className="composer-attachments" aria-label="附件区">
+                {attachments.map(attachment => (
+                  <div
+                    className="composer-attachment"
+                    data-composer-attachment
+                    data-attachment-path={attachment.path}
+                    key={attachment.path}
+                  >
+                    <span className="composer-attachment-visual" aria-hidden="true">
+                      {attachment.kind === 'image' && attachment.previewUrl
+                        ? <img src={attachment.previewUrl} alt="" loading="lazy" />
+                        : <span>{attachment.kind === 'image' ? 'IMG' : extensionLabel(attachment.name)}</span>}
+                    </span>
+                    <span className="composer-attachment-copy">
+                      <strong title={attachment.name}>{attachment.name}</strong>
+                      <small title={attachment.path}>{attachment.path}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className="composer-attachment-remove"
+                      aria-label={`移除附件 ${attachment.name}`}
+                      title="移除附件"
+                      disabled={disabled}
+                      onClick={() => {
+                        setAttachmentError(null);
+                        updateAttachments(current =>
+                          current.filter(item => item.path !== attachment.path)
+                        );
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      <Icon name="close" size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {attachmentError && (
+              <div className="composer-attachment-error" role="alert">{attachmentError}</div>
+            )}
+          </div>
+        )}
         <div className="composer-input-row">
-          <button type="button" className="composer-add" aria-label="选择本机附件"
-            title={disabled ? disabledReason ?? '当前配置尚未就绪' : '选择本机附件并插入路径'}
+          <button type="button" className="composer-add" aria-label="添加附件"
+            title={disabled ? disabledReason ?? '当前配置尚未就绪' : '添加本机附件'}
             disabled={disabled || selectingFiles}
             onClick={() => void selectLocalFiles()}>
             <Icon name="paperclip" size={18} />
@@ -3895,6 +4217,7 @@ function Composer({
               if (mentionOpen) return;
               syncMention(event.currentTarget.value, event.currentTarget.selectionStart);
             }}
+            onPaste={onPaste}
             onKeyDown={onKeyDown}
           />
           <div className="composer-actions">
@@ -4098,6 +4421,51 @@ function ConfirmationDialog({
   );
 }
 
+function McpElicitationDialog({
+  prompt,
+  busy,
+  onAction
+}: {
+  prompt: McpElicitationPrompt;
+  busy: boolean;
+  onAction: (action: McpElicitationAction) => Promise<void>;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  return (
+    <div className="modal-backdrop">
+      <section className="create-dialog mcp-elicitation-dialog" role="alertdialog" aria-modal="true"
+        aria-labelledby={titleId} aria-describedby={descriptionId}>
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow">MCP 权限请求</span>
+            <h2 id={titleId}>{prompt.message}</h2>
+            <p id={descriptionId}>
+              {prompt.serverName}{prompt.toolName ? ` · ${prompt.toolName}` : ''}
+            </p>
+          </div>
+        </header>
+        {prompt.detail && (
+          <p className="mcp-elicitation-detail">{prompt.detail}</p>
+        )}
+        <p className="mcp-elicitation-note">
+          只有在你明确同意后，插件才能继续访问该应用或执行本次工具调用。
+        </p>
+        <div className="dialog-actions mcp-elicitation-actions">
+          <button type="button" className="secondary-button" disabled={busy}
+            onClick={() => void onAction('cancel')}>取消</button>
+          <button type="button" className="secondary-button" disabled={busy}
+            onClick={() => void onAction('decline')}>拒绝</button>
+          <button type="button" className="primary-button" disabled={busy}
+            onClick={() => void onAction('accept')}>
+            {busy ? '正在处理…' : '允许本次'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AutoSaveIndicator({ state, error }: { state: AutoSaveState; error?: string | null }) {
   if (error) return <span className="autosave-indicator autosave-error" role="alert">{error}</span>;
   if (state === 'idle') return null;
@@ -4191,6 +4559,48 @@ const RESOURCE_KIND_LABELS: Record<BotResource['kind'], string> = {
   plugin: 'Plugin'
 };
 
+const RESOURCE_SECTIONS: Array<{ id: ResourceSection; label: string }> = [
+  { id: 'skills', label: '技能' },
+  { id: 'mcp', label: 'MCP 服务' },
+  { id: 'plugins', label: '插件' }
+];
+
+function resourceMatchesSection(resource: BotResource, section: ResourceSection): boolean {
+  if (section === 'skills') return resource.kind === 'skill';
+  if (section === 'mcp') return resource.kind === 'mcp';
+  // App is retained in the same packaged-capability area rather than being
+  // hidden; its type badge still distinguishes it from Plugin.
+  return resource.kind === 'plugin' || resource.kind === 'app';
+}
+
+function ResourceSectionTabs({
+  value,
+  resources,
+  onChange
+}: {
+  value: ResourceSection;
+  resources: BotResource[];
+  onChange: (section: ResourceSection) => void;
+}) {
+  return (
+    <div className="resource-subtabs" role="tablist" aria-label="资源分类">
+      {RESOURCE_SECTIONS.map(section => {
+        const count = resources.filter(resource =>
+          resourceMatchesSection(resource, section.id)).length;
+        return (
+          <button type="button" role="tab" key={section.id}
+            aria-selected={value === section.id}
+            className={'resource-subtab' + (value === section.id ? ' selected' : '')}
+            onClick={() => onChange(section.id)}>
+            <span>{section.label}</span>
+            <small>{count}</small>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ResourceRows({
   resources,
   enabledIds = [],
@@ -4221,7 +4631,8 @@ function ResourceRows({
         {resources.map(resource => {
           const enabled = enabledIds.includes(resource.id);
           return (
-            <li className="resource-row" data-resource-id={resource.id} key={resource.id}>
+            <li className="resource-row" data-resource-id={resource.id}
+              data-enabled={enabled ? 'true' : 'false'} key={resource.id}>
               <div className="resource-copy">
                 <div className="resource-title-line">
                   <strong>{resource.name}</strong>
@@ -4324,6 +4735,7 @@ function BotSettingsPage({
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'model' | 'resources' | 'memory' | 'routines' | 'manage'>('profile');
+  const [resourceSection, setResourceSection] = useState<ResourceSection>('skills');
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const saveVersionRef = useRef(0);
   const profileTimersRef = useRef<Partial<Record<'name' | 'role' | 'instructions', number>>>({});
@@ -4412,6 +4824,7 @@ function BotSettingsPage({
     setRole(bot.role);
     setInstructions(bot.instructions);
     setActiveTab('profile');
+    setResourceSection('skills');
     setSaveStatus('idle');
     setSaveScope(null);
   }, [bot.id]);
@@ -4438,7 +4851,7 @@ function BotSettingsPage({
         {([
           ['profile', '基础资料'],
           ['model', '模型与权限'],
-          ['resources', 'Skills 与 MCP'],
+          ['resources', '资源管理'],
           ['memory', '长期记忆'],
           ['routines', '定时任务'],
           ['manage', 'Bot 管理']
@@ -4563,8 +4976,12 @@ function BotSettingsPage({
       {activeTab === 'resources' && (
       <section className="settings-form settings-tab-panel" role="tabpanel"
         id="bot-panel-resources" aria-labelledby="bot-tab-resources">
-        <p className="field-hint">这里只显示系统全局可选目录中的 Skills、MCP、Apps 与 Plugins。每个开关只作用于当前 Bot，创建时的状态复制自全局初值。</p>
-        <BotResourceList resources={resources} enabledIds={bot.resourceIds}
+        <p className="field-hint">这里只显示系统全局可选目录中的资源。插件自带的 MCP 归在插件开关下，不再作为独立 MCP 出现。每个开关只作用于当前 Bot，创建时的状态复制自全局初值。</p>
+        <ResourceSectionTabs value={resourceSection} resources={resources}
+          onChange={setResourceSection} />
+        <BotResourceList
+          resources={resources.filter(resource => resourceMatchesSection(resource, resourceSection))}
+          enabledIds={bot.resourceIds}
           onToggle={onSetResource} />
         <div className="settings-autosave-row">
           <AutoSaveIndicator state={saveScope === 'session' ? saveStatus : 'idle'}
@@ -4867,6 +5284,7 @@ function AccountSettingsPage({
   runtime,
   codexHome,
   runtimeProxy,
+  modelSource,
   notificationUnavailable,
   launchAtLogin,
   globalModel,
@@ -4887,14 +5305,15 @@ function AccountSettingsPage({
   onSetGlobalPermission,
   onSetGlobalResource,
   onSetGlobalDefaultResource,
-  onImportLocalSkill,
-  onAddDirectMcp,
   onSetDirectMcpEnabled,
   onDeleteDirectMcp,
   onVerifyPlaywrightConnection,
   onCancelPlaywrightVerification,
   onSetLaunchAtLogin,
   onSetRuntimeProxy,
+  onSetModelSource,
+  onSaveManualModelSource,
+  onTestModelConnection,
   onSetRoutineStatus,
   onRunRoutineNow,
   onStopRoutineRun
@@ -4904,6 +5323,7 @@ function AccountSettingsPage({
   runtime: RuntimeState;
   codexHome: string;
   runtimeProxy: string;
+  modelSource: ModelSourceState;
   notificationUnavailable: string | null;
   launchAtLogin: boolean;
   globalModel: string;
@@ -4924,18 +5344,17 @@ function AccountSettingsPage({
   onSetGlobalPermission: (permission: PermissionMode) => Promise<void>;
   onSetGlobalResource: (resourceId: string, included: boolean) => Promise<void>;
   onSetGlobalDefaultResource: (resourceId: string, enabled: boolean) => Promise<void>;
-  onImportLocalSkill: () => Promise<{ resourceId: string; name: string }>;
-  onAddDirectMcp: (input: {
-    name: string; description?: string; transport: 'stdio' | 'http';
-    command?: string; args?: string[]; cwd?: string; url?: string;
-    headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean;
-  }) => Promise<{ resourceId: string; server: DirectMcpServer }>;
   onSetDirectMcpEnabled: (id: string, enabled: boolean) => Promise<DirectMcpServer>;
   onDeleteDirectMcp: (id: string) => Promise<void>;
   onVerifyPlaywrightConnection: () => Promise<PlaywrightVerificationResult>;
   onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
   onSetRuntimeProxy: (value: string) => Promise<void>;
+  onSetModelSource: (kind: ModelSourceKind) => Promise<ModelSourceState>;
+  onSaveManualModelSource: (input: {
+    serviceName: string; baseUrl: string; model: string; apiKey?: string;
+  }) => Promise<ModelSourceState>;
+  onTestModelConnection: (source?: ModelSourceKind) => Promise<ModelConnectionTestResult>;
   onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
   onRunRoutineNow: (id: string) => Promise<RoutineRun>;
   onStopRoutineRun: (id: string) => Promise<RoutineRun>;
@@ -4954,24 +5373,27 @@ function AccountSettingsPage({
   const [permissionSaveError, setPermissionSaveError] = useState<string | null>(null);
   const [resourceQuery, setResourceQuery] = useState('');
   const [discoverOpen, setDiscoverOpen] = useState(false);
-  const [resourceImportNotice, setResourceImportNotice] = useState<string | null>(null);
-  const [resourceImportError, setResourceImportError] = useState<string | null>(null);
-  const [importingSkill, setImportingSkill] = useState(false);
-  const [mcpFormOpen, setMcpFormOpen] = useState(false);
-  const [mcpName, setMcpName] = useState('');
-  const [mcpDescription, setMcpDescription] = useState('');
-  const [mcpTransport, setMcpTransport] = useState<'stdio' | 'http'>('stdio');
-  const [mcpCommand, setMcpCommand] = useState('');
-  const [mcpArgs, setMcpArgs] = useState('');
-  const [mcpCwd, setMcpCwd] = useState('');
-  const [mcpUrl, setMcpUrl] = useState('');
-  const [mcpHeaders, setMcpHeaders] = useState('');
-  const [mcpEnv, setMcpEnv] = useState('');
-  const [mcpSaving, setMcpSaving] = useState(false);
+  const [resourceSection, setResourceSection] = useState<ResourceSection>('skills');
+  const [directMcpNotice, setDirectMcpNotice] = useState<string | null>(null);
+  const [directMcpError, setDirectMcpError] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
   const [playwrightVerifying, setPlaywrightVerifying] = useState(false);
   const [playwrightProgress, setPlaywrightProgress] = useState('');
   const [playwrightVerificationError, setPlaywrightVerificationError] = useState<string | null>(null);
+  const [manualServiceName, setManualServiceName] = useState(modelSource.manual.serviceName);
+  const [manualBaseUrl, setManualBaseUrl] = useState(modelSource.manual.baseUrl);
+  const [manualModel, setManualModel] = useState(modelSource.manual.model);
+  const [manualApiKey, setManualApiKey] = useState('');
+  const [draftModelSource, setDraftModelSource] = useState<ModelSourceKind>(modelSource.kind);
+  const [manualEditorOpen, setManualEditorOpen] = useState(modelSource.kind === 'manualApi');
+  const [modelSourceBusy, setModelSourceBusy] = useState(false);
+  const [modelSourceNotice, setModelSourceNotice] = useState<string | null>(null);
+  const [modelSourceError, setModelSourceError] = useState<string | null>(null);
+  const [manualSaveState, setManualSaveState] = useState<AutoSaveState>('idle');
+  const [connectionTest, setConnectionTest] = useState<ModelConnectionTestResult | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [runtimeRestartNotice, setRuntimeRestartNotice] = useState<string | null>(null);
+  const [runtimeRestartError, setRuntimeRestartError] = useState<string | null>(null);
   const modelWriteSequenceRef = useRef(0);
   const modelWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const permissionWriteSequenceRef = useRef(0);
@@ -4993,6 +5415,17 @@ function AccountSettingsPage({
   useEffect(() => {
     if (permissionWriteSequenceRef.current === 0) setGlobalPermissionDraft(globalPermission);
   }, [globalPermission]);
+
+  useEffect(() => {
+    setManualServiceName(modelSource.manual.serviceName);
+    setManualBaseUrl(modelSource.manual.baseUrl);
+    setManualModel(modelSource.manual.model);
+  }, [modelSource.manual.serviceName, modelSource.manual.baseUrl, modelSource.manual.model]);
+
+  useEffect(() => {
+    setDraftModelSource(modelSource.kind);
+    if (modelSource.kind === 'manualApi') setManualEditorOpen(true);
+  }, [modelSource.kind]);
 
   useEffect(() => {
     if (modelSaveState !== 'saved') return;
@@ -5022,18 +5455,27 @@ function AccountSettingsPage({
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    window.rambo.account().then(result => {
-      if (active) {
-        setAccount(result);
-        setError(null);
-      }
-    }).catch(issue => {
-      if (active) setError(toError(issue));
-    }).finally(() => {
-      if (active) setLoading(false);
+    const readAccount = () => {
+      setLoading(true);
+      window.rambo.account().then(result => {
+        if (active) {
+          setAccount(result);
+          setError(null);
+        }
+      }).catch(issue => {
+        if (active) setError(toError(issue));
+      }).finally(() => {
+        if (active) setLoading(false);
+      });
+    };
+    readAccount();
+    const unsubscribe = window.rambo.onEvent(event => {
+      if (event.type === 'runtime') readAccount();
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   const updateGlobalModel = async (value: string) => {
@@ -5097,69 +5539,6 @@ function AccountSettingsPage({
     }
   };
 
-  const importSkill = async () => {
-    setImportingSkill(true);
-    setResourceImportError(null);
-    setResourceImportNotice(null);
-    try {
-      const imported = await onImportLocalSkill();
-      setResourceImportNotice(`已导入 ${imported.name} 到全局可选目录；已有 Bot 默认关闭。`);
-    } catch (issue) {
-      setResourceImportError(toError(issue));
-    } finally {
-      setImportingSkill(false);
-    }
-  };
-
-  const parseMcpKeyValues = (value: string, label: string): Record<string, string> | undefined => {
-    const text = value.trim();
-    if (!text) return undefined;
-    let parsed: unknown;
-    try { parsed = JSON.parse(text); }
-    catch { throw new Error(`${label}必须是 JSON 键值对象。`); }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(`${label}必须是 JSON 键值对象。`);
-    }
-    return parsed as Record<string, string>;
-  };
-
-  const addMcp = async () => {
-    setMcpSaving(true);
-    setResourceImportError(null);
-    setResourceImportNotice(null);
-    try {
-      const added = await onAddDirectMcp({
-        name: mcpName.trim(),
-        description: mcpDescription.trim() || undefined,
-        transport: mcpTransport,
-        ...(mcpTransport === 'stdio' ? {
-          command: mcpCommand.trim(),
-          args: mcpArgs.split('\n').map(value => value.trim()).filter(Boolean),
-          cwd: mcpCwd.trim() || undefined,
-          env: parseMcpKeyValues(mcpEnv, '环境变量')
-        } : {
-          url: mcpUrl.trim(),
-          headers: parseMcpKeyValues(mcpHeaders, 'HTTP headers')
-        }),
-        enabled: false
-      });
-      setResourceImportNotice(`已添加 ${added.server.name} 到全局可选目录；已有 Bot 默认关闭。`);
-      setMcpFormOpen(false);
-      setMcpName('');
-      setMcpDescription('');
-      setMcpCommand('');
-      setMcpArgs('');
-      setMcpCwd('');
-      setMcpUrl('');
-      setMcpHeaders('');
-      setMcpEnv('');
-    } catch (issue) {
-      setResourceImportError(toError(issue));
-    } finally {
-      setMcpSaving(false);
-    }
-  };
-
   const cancelPlaywrightConnectionVerification = async () => {
     setPlaywrightProgress('正在取消 Chrome 连接验证…');
     await onCancelPlaywrightVerification().catch(() => {});
@@ -5181,24 +5560,112 @@ function AccountSettingsPage({
 
   const restart = async () => {
     setBusy(true);
-    setError(null);
-    setNotice(null);
+    setRuntimeRestartError(null);
+    setRuntimeRestartNotice(null);
     try {
       await window.rambo.restartRuntime();
-      setNotice('已请求重启 Codex。');
+      setRuntimeRestartNotice('已请求重启 Codex。');
     } catch (issue) {
-      setError(toError(issue));
+      setRuntimeRestartError(toError(issue));
     } finally {
       setBusy(false);
     }
   };
 
+  const switchModelSource = async (kind: ModelSourceKind) => {
+    setDraftModelSource(kind);
+    if (kind === 'manualApi') setManualEditorOpen(true);
+    if (kind === modelSource.kind) return;
+    if (kind === 'manualApi' && !(modelSource.manual.baseUrl && modelSource.manual.model && modelSource.hasApiKey)) {
+      setModelSourceError(null);
+      setModelSourceNotice(null);
+      setConnectionTest(null);
+      return;
+    }
+    setModelSourceBusy(true);
+    setModelSourceError(null);
+    setModelSourceNotice(null);
+    setConnectionTest(null);
+    try {
+      await onSetModelSource(kind);
+      setModelSourceNotice('模型来源已切换，Codex 运行时已重启。');
+    } catch (issue) {
+      setDraftModelSource(modelSource.kind);
+      setModelSourceError(toError(issue));
+    } finally {
+      setModelSourceBusy(false);
+    }
+  };
+
+  const saveManualSource = async (withTest: boolean) => {
+    setManualSaveState('saving');
+    setModelSourceError(null);
+    setModelSourceNotice(null);
+    setConnectionTest(null);
+    try {
+      await onSaveManualModelSource({
+        serviceName: manualServiceName,
+        baseUrl: manualBaseUrl,
+        model: manualModel,
+        ...(manualApiKey.trim() ? { apiKey: manualApiKey.trim() } : {})
+      });
+      setManualApiKey('');
+      setManualSaveState('saved');
+      setDraftModelSource('manualApi');
+      setManualEditorOpen(true);
+      setModelSourceNotice(modelSource.kind === 'manualApi'
+        ? '手动 API 配置已加密保存。'
+        : '手动 API 配置已加密保存；请切换“手动配置 API”使其生效。');
+      if (withTest) {
+        setTestingConnection(true);
+        const result = await onTestModelConnection('manualApi');
+        setConnectionTest(result);
+      }
+    } catch (issue) {
+      setManualSaveState('error');
+      setModelSourceError(toError(issue));
+      if (withTest) {
+        const result = await onTestModelConnection('manualApi').catch(() => null);
+        if (result) setConnectionTest(result);
+      }
+    } finally {
+      setTestingConnection(false);
+      window.setTimeout(() => setManualSaveState('idle'), 2400);
+    }
+  };
+
+  const testConnection = async () => {
+    setTestingConnection(true);
+    setModelSourceError(null);
+    setModelSourceNotice(null);
+    setConnectionTest(null);
+    try {
+      const result = await onTestModelConnection();
+      setConnectionTest(result);
+    } catch (issue) {
+      setModelSourceError(toError(issue));
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
   const tabs: Array<[SystemSettingsTab, string]> = [
     ['general', '常规'],
+    ['account', '账号'],
     ['model', '新建 Bot 初值'],
-    ['resources', 'Skills 与 MCP'],
+    ['resources', '资源管理'],
     ['routines', '定时任务']
   ];
+  const sectionResources = resources.filter(resource =>
+    resourceMatchesSection(resource, resourceSection));
+  const globalSectionResources = sectionResources.filter(resource =>
+    globalResourceIds.includes(resource.id));
+  const discoveredSectionResources = sectionResources.filter(resource =>
+    !globalResourceIds.includes(resource.id) &&
+    (!resourceQuery.trim() || [
+      resource.name, resource.description, resource.source,
+      RESOURCE_KIND_LABELS[resource.kind]
+    ].some(value => value.toLocaleLowerCase().includes(resourceQuery.trim().toLocaleLowerCase()))));
 
   return (
     <section className="settings-page system-settings-page" aria-label="系统设置">
@@ -5206,7 +5673,7 @@ function AccountSettingsPage({
         <div>
           <div className="eyebrow">RAMBO</div>
           <h1>系统设置</h1>
-          <p>集中管理全局模型、权限和全部定时任务。</p>
+          <p>集中管理账号、模型与权限、全局资源和全部定时任务。</p>
         </div>
         <span className="app-version">Rambo {appVersion}</span>
       </div>
@@ -5222,21 +5689,6 @@ function AccountSettingsPage({
       {activeTab === 'general' && (
         <div className="system-settings-panel settings-tab-panel" role="tabpanel"
           id="system-panel-general" aria-labelledby="system-tab-general">
-          <div className="settings-section">
-            <div className="settings-section-title">
-              <div><h2>账号</h2><p>Rambo 使用本机 Codex 登录状态。</p></div>
-            </div>
-            <div className="account-card">
-              <div className="account-avatar">C</div>
-              <div className="account-copy">
-                <strong>{loading ? '正在读取账号状态…' : error ? '无法读取账号状态' : account?.requiresLogin ? '尚未登录' : account?.email || account?.type || '已连接账号'}</strong>
-                <span>{account?.type ? '登录方式：' + account.type : '账号状态来自本机 Codex'}</span>
-              </div>
-              {account?.requiresLogin && (
-                <button type="button" className="secondary-button" disabled={busy} onClick={() => void login()}>登录</button>
-              )}
-            </div>
-          </div>
           <div className="settings-section">
             <div className="settings-section-title">
               <div><h2>启动</h2><p>登录 macOS 后启动 Rambo，让本机任务继续运行。</p></div>
@@ -5286,6 +5738,11 @@ function AccountSettingsPage({
                 <div className="runtime-notification-status" role="status">{notificationUnavailable}</div>
               )}
               {runtime.error && <div className="runtime-error">{runtime.error}</div>}
+              {(runtimeRestartError || runtimeRestartNotice) && (
+                <div className={runtimeRestartError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+                  {runtimeRestartError ?? runtimeRestartNotice}
+                </div>
+              )}
             </div>
           </div>
           {(error || notice) && (
@@ -5293,6 +5750,145 @@ function AccountSettingsPage({
               {error ?? notice}
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'account' && (
+        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-account" aria-labelledby="system-tab-account">
+          <div className="settings-section account-status-section">
+            <div className="settings-section-title">
+              <div><h2>账号状态</h2><p>Rambo 不创建产品账号；登录与凭证只在本机使用。</p></div>
+            </div>
+            <div className="account-card">
+              <div className="account-avatar">C</div>
+              <div className="account-copy">
+                <strong>{loading ? '正在读取账号状态…' : error ? '无法读取账号状态' : account?.requiresLogin ? '尚未登录 ChatGPT' : account?.email || account?.type || (account?.localLoginDetected ? '检测到本机登录' : '已连接账号')}</strong>
+                <span>{account?.type ? '登录方式：' + account.type : account?.localLoginDetected ? '账号状态：本机认证存在，在线状态暂不可用' : '账号状态来自本机 Codex'}</span>
+                {account?.statusError && <small>在线账号状态读取失败：{account.statusError}</small>}
+              </div>
+              {account?.requiresLogin && (
+                <button type="button" className="secondary-button" disabled={busy}
+                  onClick={() => void login()}>登录 ChatGPT</button>
+              )}
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section-title">
+              <div>
+                <h2>模型来源</h2>
+                <p>应用级三选一，同一时间只有一个来源生效。切换不会改写已有 Bot 的模型和权限。</p>
+              </div>
+            </div>
+            <div className="model-source-options" role="radiogroup" aria-label="模型来源">
+              {([
+                ['local', '本机 Codex 配置', '沿用本机 config.toml 与认证，修改后由后续运行时启动生效。'],
+                ['chatgpt', 'ChatGPT 登录', '使用本机共享的 ChatGPT 登录状态。'],
+                ['manualApi', '手动配置 API', 'Rambo 启动的 Codex 使用独立 Responses API 配置。']
+              ] as Array<[ModelSourceKind, string, string]>).map(([kind, title, description]) => (
+                <label className={`model-source-option${draftModelSource === kind ? ' selected' : ''}`} key={kind}>
+                  <input type="radio" name="model-source" value={kind}
+                    checked={draftModelSource === kind}
+                    disabled={modelSourceBusy || runtime.status === 'starting'}
+                    onChange={() => void switchModelSource(kind)} />
+                  <span className="model-source-copy">
+                    <strong>{title}</strong>
+                    <small>{description}</small>
+                  </span>
+                  {modelSource.kind === kind && <span className="model-source-active">当前生效</span>}
+                </label>
+              ))}
+            </div>
+            <p className="field-hint model-source-compat-note">
+              手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
+            </p>
+          </div>
+
+          {manualEditorOpen && (
+            <div className="settings-section">
+              <div className="settings-section-title">
+                <div><h2>手动 API 配置</h2><p>API Key 使用 Rambo 本地加密凭证库保存，不写入设置快照或日志。</p></div>
+              </div>
+              <div className="manual-model-form">
+                <label className="settings-field">
+                  <span>服务名称</span>
+                  <input className="text-input" value={manualServiceName} maxLength={80}
+                    placeholder="例如：公司网关"
+                    disabled={modelSourceBusy || manualSaveState === 'saving'}
+                    onChange={event => setManualServiceName(event.target.value)} />
+                </label>
+                <label className="settings-field">
+                  <span>Base URL</span>
+                  <input className="text-input" type="url" value={manualBaseUrl} maxLength={2_000}
+                    placeholder="https://api.example.com/v1"
+                    disabled={modelSourceBusy || manualSaveState === 'saving'}
+                    onChange={event => setManualBaseUrl(event.target.value)} />
+                </label>
+                <label className="settings-field">
+                  <span>模型 ID</span>
+                  <input className="text-input" value={manualModel} maxLength={500}
+                    placeholder="由服务商提供，例如 gpt-5"
+                    disabled={modelSourceBusy || manualSaveState === 'saving'}
+                    onChange={event => setManualModel(event.target.value)} />
+                </label>
+                <label className="settings-field">
+                  <span>API Key</span>
+                  <input className="text-input" type="password" value={manualApiKey} maxLength={16_384}
+                    autoComplete="new-password" spellCheck={false}
+                    placeholder={modelSource.hasApiKey ? '已保存；留空表示不修改' : 'sk-...'}
+                    disabled={modelSourceBusy || manualSaveState === 'saving'}
+                    onChange={event => setManualApiKey(event.target.value)} />
+                </label>
+                <div className="manual-model-actions">
+                  <AutoSaveIndicator state={manualSaveState} error={modelSourceError} />
+                  <button type="button" className="secondary-button"
+                    disabled={modelSourceBusy || manualSaveState === 'saving' ||
+                      !manualBaseUrl.trim() || !manualModel.trim() || (!modelSource.hasApiKey && !manualApiKey.trim())}
+                    onClick={() => void saveManualSource(false)}>保存配置</button>
+                  <button type="button" className="primary-button"
+                    disabled={modelSourceBusy || manualSaveState === 'saving' || testingConnection ||
+                      !manualBaseUrl.trim() || !manualModel.trim() || (!modelSource.hasApiKey && !manualApiKey.trim())}
+                    onClick={() => void saveManualSource(true)}>
+                    {testingConnection ? '正在测试…' : '保存并测试'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="settings-section">
+            <div className="settings-section-title">
+              <div><h2>连接测试</h2><p>使用当前生效来源发送真实最小请求，并记录首响应延迟。</p></div>
+            </div>
+            <div className="model-connection-test">
+              <button type="button" className="secondary-button" disabled={testingConnection || modelSourceBusy}
+                onClick={() => void testConnection()}>{testingConnection ? '正在测试…' : '测试连接与延迟'}</button>
+              {connectionTest && (
+                <div className={connectionTest.ok ? 'model-test-result success' : 'model-test-result error'} role="status">
+                  <strong>{connectionTest.ok ? '连接可用' : '连接失败'} · 首响应 {connectionTest.latencyMs} ms</strong>
+                  <span>{connectionTest.message}</span>
+                  {connectionTest.ok && connectionTest.source === 'manualApi' &&
+                    connectionTest.sourcePending && (
+                    <button type="button" className="secondary-button"
+                      disabled={modelSourceBusy}
+                      onClick={() => void switchModelSource('manualApi')}>
+                      切换为当前来源
+                    </button>
+                  )}
+                  {connectionTest.configMayBeStale && connectionTest.source === 'local' && (
+                    <button type="button" className="secondary-button" disabled={busy}
+                      onClick={() => void restart()}>重启运行时后重试</button>
+                  )}
+                </div>
+              )}
+            </div>
+            {(modelSourceError || modelSourceNotice) && modelSource.kind !== 'manualApi' && (
+              <div className={modelSourceError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+                {modelSourceError ?? modelSourceNotice}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -5363,127 +5959,27 @@ function AccountSettingsPage({
       {activeTab === 'resources' && (
         <section className="system-settings-panel settings-tab-panel" role="tabpanel"
           id="system-panel-resources" aria-labelledby="system-tab-resources">
-          <div className="settings-section-title">
+          <div className="settings-section-title resource-section-title">
             <div>
               <h2>全局可选目录</h2>
-              <p>这里决定所有 Bot 能看见哪些资源。目录旁的开关只用于之后新建 Bot 的初始状态；已有 Bot 的开关保持独立。</p>
-              <p>首次使用 Playwright 时运行 Chrome 连接检查，并在扩展页确认一个标签。检查只读取一次页面快照，不保存标题、地址或正文；Bot 实际使用时若扩展再次请求授权或选择标签，需在 Chrome 完成确认。</p>
+              <p>这里集中查看所有 Bot 可见的资源，并设置新建 Bot 的默认开关。已有 Bot 仍保持独立，插件自带的 MCP 也继续随插件管理。</p>
+              <p>导入技能或添加直连 MCP 由 Bot 管理，在私聊中明确说明需求即可。首次使用 Playwright 时，Chrome 扩展会请求一次标签页授权。</p>
             </div>
           </div>
-          <div className="resource-import-actions">
-            <button type="button" className="secondary-button"
-              disabled={importingSkill}
-              onClick={() => void importSkill()}>
-              {importingSkill ? '正在导入…' : '导入本地 Skill'}
-            </button>
-            <button type="button" className="secondary-button"
-              aria-expanded={mcpFormOpen}
-              onClick={() => {
-                setResourceImportError(null);
-                setMcpFormOpen(value => !value);
-              }}>
-              {mcpFormOpen ? '收起直连 MCP' : '添加直连 MCP'}
-            </button>
-          </div>
-          {resourceImportNotice && (
-            <div className="form-saved settings-message" role="status">{resourceImportNotice}</div>
+          <ResourceSectionTabs value={resourceSection} resources={resources}
+            onChange={setResourceSection} />
+          {directMcpNotice && (
+            <div className="form-saved settings-message resource-operation-message" role="status">
+              {directMcpNotice}
+            </div>
           )}
-          {resourceImportError && (
-            <div className="form-error settings-message" role="alert">{resourceImportError}</div>
-          )}
-          {mcpFormOpen && (
-            <form className="direct-mcp-form" onSubmit={event => {
-              event.preventDefault();
-              void addMcp();
-            }}>
-              <div className="direct-mcp-form-heading">
-                <div>
-                  <h3>添加直连 MCP</h3>
-                  <p>只保存连接定义，不下载或安装服务器软件。headers 与环境变量值会使用应用本地密钥加密保存，保存后不再回显。</p>
-                </div>
-              </div>
-              <div className="direct-mcp-form-grid">
-                <label className="settings-field">
-                  <span>名称</span>
-                  <input className="text-input" required value={mcpName}
-                    placeholder="例如 local-files"
-                    onChange={event => setMcpName(event.target.value)} />
-                </label>
-                <label className="settings-field">
-                  <span>说明（可选）</span>
-                  <input className="text-input" value={mcpDescription}
-                    placeholder="显示在全局资源目录中"
-                    onChange={event => setMcpDescription(event.target.value)} />
-                </label>
-              </div>
-              <label className="settings-field">
-                <span>连接方式</span>
-                <span className="select-input-control">
-                  <select className="text-input select-input" value={mcpTransport}
-                    onChange={event => setMcpTransport(event.target.value as 'stdio' | 'http')}>
-                    <option value="stdio">stdio · 本机命令</option>
-                    <option value="http">HTTP · 远程地址</option>
-                  </select>
-                  <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
-                </span>
-              </label>
-              {mcpTransport === 'stdio' ? (
-                <>
-                  <label className="settings-field">
-                    <span>Command</span>
-                    <input className="text-input" required value={mcpCommand}
-                      placeholder="例如 /usr/local/bin/my-mcp-server"
-                      onChange={event => setMcpCommand(event.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>参数（每行一个）</span>
-                    <textarea className="text-input settings-textarea" rows={3} value={mcpArgs}
-                      placeholder={'--root\n/Users/me/Documents'}
-                      onChange={event => setMcpArgs(event.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>工作目录（可选）</span>
-                    <input className="text-input" value={mcpCwd}
-                      onChange={event => setMcpCwd(event.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>环境变量 JSON（可选）</span>
-                    <textarea className="text-input settings-textarea" rows={3} value={mcpEnv}
-                      placeholder={'{"API_KEY":"仅加密保存"}'}
-                      onChange={event => setMcpEnv(event.target.value)} />
-                    <small className="field-hint">值不会进入产品 Store、快照或普通日志。</small>
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="settings-field">
-                    <span>URL</span>
-                    <input className="text-input" required value={mcpUrl}
-                      placeholder="https://example.com/mcp"
-                      onChange={event => setMcpUrl(event.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>HTTP headers JSON（可选）</span>
-                    <textarea className="text-input settings-textarea" rows={3} value={mcpHeaders}
-                      placeholder={'{"Authorization":"仅加密保存"}'}
-                      onChange={event => setMcpHeaders(event.target.value)} />
-                    <small className="field-hint">不要在 URL 中嵌入账号或密码。</small>
-                  </label>
-                </>
-              )}
-              <div className="direct-mcp-form-actions">
-                <button type="button" className="secondary-button" disabled={mcpSaving}
-                  onClick={() => setMcpFormOpen(false)}>取消</button>
-                <button type="submit" className="primary-button"
-                  disabled={mcpSaving || !mcpName.trim() ||
-                    (mcpTransport === 'stdio' ? !mcpCommand.trim() : !mcpUrl.trim())}>
-                  {mcpSaving ? '正在保存…' : '保存到全局可选目录'}
-                </button>
-              </div>
-            </form>
+          {directMcpError && (
+            <div className="form-error settings-message resource-operation-message" role="alert">
+              {directMcpError}
+            </div>
           )}
           <ResourceRows
-            resources={resources.filter(resource => globalResourceIds.includes(resource.id))}
+            resources={globalSectionResources}
             enabledIds={globalDefaultResourceIds}
             onToggle={onSetGlobalDefaultResource}
             detail={resource => {
@@ -5505,11 +6001,11 @@ function AccountSettingsPage({
                 `mcp:${item.name.toLocaleLowerCase()}` === resource.id);
               if (!server) return;
               setMcpBusyId(resource.id);
-              setResourceImportError(null);
-              setResourceImportNotice(null);
+              setDirectMcpError(null);
+              setDirectMcpNotice(null);
               void onDeleteDirectMcp(server.id)
-                .then(() => setResourceImportNotice(`已删除直连 MCP ${server.name} 的定义。`))
-                .catch(issue => setResourceImportError(toError(issue)))
+                .then(() => setDirectMcpNotice(`已删除直连 MCP ${server.name} 的定义。`))
+                .catch(issue => setDirectMcpError(toError(issue)))
                 .finally(() => setMcpBusyId(null));
             }}
             canDelete={resource => directMcpServers.some(server =>
@@ -5553,12 +6049,12 @@ function AccountSettingsPage({
                           disabled={mcpBusyId === resource.id}
                           onClick={() => {
                             setMcpBusyId(resource.id);
-                            setResourceImportError(null);
-                            setResourceImportNotice(null);
+                            setDirectMcpError(null);
+                            setDirectMcpNotice(null);
                             void onSetDirectMcpEnabled(server.id, !server.enabled)
-                              .then(updated => setResourceImportNotice(
+                              .then(updated => setDirectMcpNotice(
                                 `已${updated.enabled ? '启用' : '停用'}直连 MCP ${updated.name} 的定义。`))
-                              .catch(issue => setResourceImportError(toError(issue)))
+                              .catch(issue => setDirectMcpError(toError(issue)))
                               .finally(() => setMcpBusyId(null));
                           }}>
                           {server.enabled ? '停用定义' : '启用定义'}
@@ -5574,7 +6070,7 @@ function AccountSettingsPage({
               aria-expanded={discoverOpen}
               onClick={() => setDiscoverOpen(value => !value)}>
               <span>发现目录</span>
-              <span>{resources.filter(resource => !globalResourceIds.includes(resource.id)).length} 项</span>
+              <span>{discoveredSectionResources.length} 项</span>
               <Icon name="chevron" size={14} />
             </button>
             {discoverOpen && (
@@ -5586,12 +6082,7 @@ function AccountSettingsPage({
                     onChange={event => setResourceQuery(event.target.value)} />
                 </label>
                 <ResourceRows
-                  resources={resources.filter(resource =>
-                    !globalResourceIds.includes(resource.id) &&
-                    (!resourceQuery.trim() || [
-                      resource.name, resource.description, resource.source,
-                      RESOURCE_KIND_LABELS[resource.kind]
-                    ].some(value => value.toLocaleLowerCase().includes(resourceQuery.trim().toLocaleLowerCase()))))}
+                  resources={discoveredSectionResources}
                   action={resource => (
                     <button type="button" className="secondary-button resource-action"
                       onClick={() => void onSetGlobalResource(resource.id, true)}>
