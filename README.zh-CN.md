@@ -37,15 +37,15 @@ Rambo 的界面与交互基于对 **Grok Bot** 桌面端的反编译和界面研
 
 ## 应用截图
 
-### 连接应用
+### 每日计划与独立任务
 
 <p align="center">
-  <a href="assets/screenshots/connected-apps.png">
-    <img src="assets/screenshots/connected-apps.png" alt="Rambo 连接应用页面，展示 Gmail、QQ 邮箱、微信、日历和 GitHub" width="100%" />
+  <a href="assets/screenshots/life-manager-routines.png">
+    <img src="assets/screenshots/life-manager-routines.png" alt="Rambo Bot 根据一句自然语言创建每日计划、应用巡检、午饭、健身和晚饭等多个独立任务" width="86%" />
   </a>
 </p>
 
-<p align="center"><sub>邮箱和本机服务只需连接一次，再按 Bot 独立分配访问权限。</sub></p>
+<p align="center"><sub>一句自然语言请求，就能生成当天安排、应用消息巡检，以及午饭、健身、晚饭和重要事项等多个独立任务。</sub></p>
 
 ### 本机微信读取
 
