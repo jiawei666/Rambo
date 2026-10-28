@@ -20,9 +20,11 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
     await page.getByRole('button', { name: /新建群聊/ }).click();
     await expect(page.getByRole('heading', { name: '创建群聊' })).toBeVisible();
     await page.getByLabel('群聊名称').fill('Group E2E');
+    await page.getByLabel('群聊职责').fill('共同整理群聊测试资料。');
     for (const name of ['Group Alpha', 'Group Beta']) {
       await page.getByRole('checkbox', { name: new RegExp(name) }).check();
     }
+    await expect(page.getByText('群主', { exact: true })).toBeVisible();
     await page.waitForTimeout(250);
     const memberCheckboxStyle = await page.getByRole('checkbox', { name: /Group Alpha/ })
       .evaluate(element => {
@@ -49,6 +51,22 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
     const afterCreate = await page.evaluate(() => window.rambo.snapshot());
     const createdGroup = afterCreate.groups.find(item => item.title === 'Group E2E');
     expect(createdGroup?.memberIds.sort()).toEqual(ids.slice().sort());
+    expect(createdGroup?.ownerBotId).toBe(
+      before.bots.find(bot => bot.name === 'Group Alpha')?.id
+    );
+    expect(createdGroup?.purpose).toBe('共同整理群聊测试资料。');
+    await expect(page.getByText('群主 Group Alpha')).toBeVisible();
+    await expect(page.getByText('共同整理群聊测试资料。')).toBeVisible();
+    await page.getByRole('button', { name: '群聊成员设置' }).click();
+    await expect(page.getByRole('heading', { name: '群主与职责' })).toBeVisible();
+    await expect(page.getByText('Group Alpha · 群主')).toBeVisible();
+    await page.getByLabel('群聊职责').fill('更新后的群聊协作职责。');
+    await page.getByRole('button', { name: '保存群聊职责' }).click();
+    await page.getByRole('button', { name: '返回群聊' }).first().click();
+    await expect(page.getByText('更新后的群聊协作职责。')).toBeVisible();
+    await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
+      .groups.find(item => item.id === createdGroup.id)?.purpose)
+      .toBe('更新后的群聊协作职责。');
     const createdMemberChats = await page.evaluate(
       groupId => window.rambo.groupMemberChats(groupId), createdGroup.id
     );
@@ -169,7 +187,11 @@ test('真实 Electron 群聊成员阶段覆盖同一气泡并在新用户消息�
   const bots = snapshot.bots.filter(bot => ['Stage Alpha', 'Stage Beta'].includes(bot.name));
   const alpha = bots.find(bot => bot.name === 'Stage Alpha');
   const group = await page.evaluate(ids =>
-    window.rambo.createGroup({ title: 'Group Stage E2E', botIds: ids }), bots.map(bot => bot.id));
+    window.rambo.createGroup({
+      title: 'Group Stage E2E',
+      purpose: 'Validate grouped member stage bubbles.',
+      botIds: ids
+    }), bots.map(bot => bot.id));
   await page.getByLabel('会话列表').getByRole('button', { name: /Group Stage E2E/ }).click();
 
   const memberChats = await page.evaluate(groupId =>
@@ -317,7 +339,11 @@ test('真实 Electron 群聊上翻后阶段迁移不强制拉回底部', async (
   const snapshot = await page.evaluate(() => window.rambo.snapshot());
   const bots = snapshot.bots.filter(bot => ['Scroll Alpha', 'Scroll Beta'].includes(bot.name));
   const group = await page.evaluate(ids =>
-    window.rambo.createGroup({ title: 'Group Scroll E2E', botIds: ids }), bots.map(bot => bot.id));
+    window.rambo.createGroup({
+      title: 'Group Scroll E2E',
+      purpose: 'Validate group scroll behavior.',
+      botIds: ids
+    }), bots.map(bot => bot.id));
   await page.getByLabel('会话列表').getByRole('button', { name: /Group Scroll E2E/ }).click();
   const groupComposer = page.getByRole('combobox', { name: '群聊消息输入框' });
   const memberChats = await page.evaluate(groupId =>
@@ -472,9 +498,18 @@ test('真实 Electron 群聊运行中在发送旁显示独立停止按钮', asyn
     .filter(bot => ['Stop Alpha', 'Stop Beta'].includes(bot.name))
     .map(bot => bot.id);
   const group = await page.evaluate(ids =>
-    window.rambo.createGroup({ title: 'Group Stop E2E', botIds: ids }), memberIds);
+    window.rambo.createGroup({
+      title: 'Group Stop E2E',
+      purpose: 'Validate grouped task stop behavior.',
+      botIds: ids
+    }), memberIds);
   await page.getByLabel('会话列表').getByRole('button', { name: /Group Stop E2E/ }).click();
 
+  await expect.poll(async () => Boolean((await page.evaluate(() => window.rambo.snapshot()))
+    .groupRuntimes[group.id]), { timeout: 10_000 }).toBe(true);
+  await page.evaluate(groupId => window.rambo.interruptGroup(groupId), group.id);
+  await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
+    .groupRuntimes[group.id] ?? null, { timeout: 20_000 }).toBeNull();
   await expect(page.getByRole('button', { name: '停止任务' })).toHaveCount(0);
   const memberChats = await page.evaluate(groupId =>
     window.rambo.groupMemberChats(groupId), group.id);
@@ -522,7 +557,7 @@ test('真实 Electron 群聊重启后保留成员、历史并允许添加成员'
       .getByRole('button', { name: '创建', exact: true }).click();
     await groupEntry.click();
     await reopenedPage.getByRole('button', { name: '群聊成员设置' }).click();
-    await expect(reopenedPage.getByRole('heading', { name: '群聊成员' })).toBeVisible();
+    await expect(reopenedPage.getByRole('heading', { name: '群主与职责' })).toBeVisible();
     const gamma = reopenedPage.getByRole('checkbox', { name: /Group Gamma/ });
     await gamma.check();
     await reopenedPage.getByRole('button', { name: '添加到群聊' }).click();
@@ -578,7 +613,11 @@ test('真实 Electron Bot 通过 Tool 创建群聊后自动打开', async ({ ele
           callId: 'bot-group-tool-call',
           namespace: 'rambo_groups',
           tool: 'create_group',
-          arguments: { title: 'Tool Created Room', botIds }
+          arguments: {
+            title: 'Tool Created Room',
+            purpose: '由 Tool 创建群聊并验证群主公告。',
+            botIds
+          }
         }
       }), { threadId, botIds: [beta.id] });
     expect(result.result.success, result.result.contentItems?.[0]?.text).toBe(true);
@@ -588,6 +627,8 @@ test('真实 Electron Bot 通过 Tool 创建群聊后自动打开', async ({ ele
     }).toBe(true);
     const group = snapshot.groups.find(item => item.title === 'Tool Created Room');
     expect(group.memberIds).toEqual([alpha.id, beta.id]);
+    expect(group.ownerBotId).toBe(alpha.id);
+    expect(group.purpose).toBe('由 Tool 创建群聊并验证群主公告。');
     const groupEntry = page.getByLabel('会话列表').getByRole('button', {
       name: /群聊成员头像：Tool Alpha、Tool Beta/
     });

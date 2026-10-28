@@ -812,6 +812,78 @@ input[type="checkbox"]:disabled {
 .group-member-button { margin-left: 3px; padding: 3px 7px; border: 0; border-left: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary); font: inherit; font-size: 11px; cursor: pointer; }
 .group-member-button:hover { color: var(--text-primary); }
 .group-members-page .settings-form { gap: 28px; }
+.group-purpose-banner {
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px auto 0;
+  width: min(720px, calc(100% - 36px));
+  padding: 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 72%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, var(--border-focus) 10%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 35%, transparent);
+}
+.group-purpose-banner p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+}
+.group-purpose-owner {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-focus) 14%, transparent);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 650;
+}
+.group-workspace > .transcript-scroll {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-height: 0;
+}
+.group-owner-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #d7942c 16%, transparent);
+  color: color-mix(in srgb, #9a5b00 75%, var(--text-primary));
+  font-size: 10px;
+  font-weight: 700;
+}
+.group-member-order {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+}
+.group-purpose-input { min-height: 112px; resize: vertical; line-height: 1.55; }
+.group-owner-summary,
+.group-current-member,
+.group-owner-identity {
+  display: flex;
+  align-items: center;
+}
+.group-owner-summary { gap: 12px; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 11px; background: var(--bg-pane); }
+.group-owner-identity { min-width: 0; gap: 9px; }
+.group-owner-identity small { color: var(--text-tertiary); font-size: 11px; }
+.group-member-section { display: grid; gap: 14px; }
+.group-member-section h2 { margin: 2px 0 0; color: var(--text-primary); font-size: 18px; }
+.group-member-section p { margin: 4px 0 0; color: var(--text-tertiary); font-size: 12px; }
+.group-current-members { display: grid; gap: 8px; }
+.group-current-member { gap: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-elevated); }
+.group-current-member .group-member-copy { flex: 1; }
+.compact-button { padding: 5px 9px; font-size: 11px; }
 .back-button { position: absolute; left: 16px; display: inline-flex; align-items: center; gap: 7px; padding: 5px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
 .back-button:hover { background: var(--bg-hover); color: var(--text-primary); }
 .inline-error { z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px auto 0; width: min(720px, calc(100% - 36px)); padding: 8px 11px; border: 1px solid var(--border-error); border-radius: 8px; background: var(--surface-error); color: var(--text-error); font-size: 12px; }
@@ -2201,6 +2273,22 @@ input[type="checkbox"]:disabled {
 }
 .mcp-elicitation-note { margin: 12px 0 0; color: var(--text-tertiary); font-size: 11px; line-height: 17px; }
 .mcp-elicitation-actions { flex-wrap: wrap; }
+.secret-capture-dialog { width: min(480px, 100%); }
+.secret-capture-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: -4px 0 16px;
+  padding: 12px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+.secret-capture-summary strong { font-size: 13px; font-weight: 600; }
+.secret-capture-summary span { color: var(--text-secondary); font-size: 11px; line-height: 17px; }
+.secret-capture-field { display: flex; flex-direction: column; gap: 7px; color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.secret-capture-field .text-input { min-height: 40px; }
+.secret-capture-note { margin: 0; color: var(--text-tertiary); font-size: 11px; line-height: 17px; }
 @media (max-width: 680px) {
   .resource-section-title { align-items: flex-start; flex-direction: column; gap: 10px; }
   .resource-row { align-items: flex-start; flex-direction: column; }

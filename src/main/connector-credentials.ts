@@ -38,6 +38,11 @@ export type ConnectorCredentialPayload =
       kind: 'model-api-key';
       providerId: string;
       apiKey: string;
+    }
+  | {
+      kind: 'generic-secret';
+      name: string;
+      secret: string;
     };
 
 type StoredCredential = {
@@ -355,6 +360,15 @@ function validatePayload(payload: ConnectorCredentialPayload): void {
         typeof payload.apiKey !== 'string' || !payload.apiKey.trim() ||
         payload.apiKey.length > 16_384 || payload.apiKey.includes('\0')) {
       throw new ConnectorCredentialsError('模型 API 凭证格式无效');
+    }
+    return;
+  }
+  if (payload.kind === 'generic-secret') {
+    if (typeof payload.name !== 'string' || !payload.name.trim() ||
+        payload.name.length > 120 ||
+        typeof payload.secret !== 'string' || !payload.secret ||
+        payload.secret.length > 65_536 || payload.secret.includes('\0')) {
+      throw new ConnectorCredentialsError('通用密钥格式无效');
     }
     return;
   }

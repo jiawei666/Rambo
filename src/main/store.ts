@@ -8,7 +8,8 @@ import type {
   ConnectionStatus, ConnectorAuthKind, ConnectorConnection, ConnectorGrant, MessageStatus, PermissionMode, QuestionMessageContent,
   ResultCardMessageContent, RoutineListItem,
   RoutineDefinition, RoutineExecutionMode, RoutineRun, RoutineRunStatus, ThreadModelSource, TurnModelSource,
-  TurnActivity, TurnDispatchStatus, TurnPermissionSnapshot, TurnRecord, TurnReroute, TurnStatus
+  TurnActivity, TurnDispatchStatus, TurnPermissionSnapshot, TurnRecord, TurnReroute, TurnStatus,
+  BotSecret, SecretScope
 } from '../shared/contracts';
 import { encodeRobotAvatar, isCurrentRobotAvatar, parseRobotAvatar, ROBOT_EYE_STYLES } from '../shared/robot-avatar';
 import { followingRun, isUnsupportedIntervalSchedule, parseRoutineSchedule } from './routine-schedule';
@@ -131,6 +132,22 @@ export interface ThreadModelObservation {
   source: ThreadModelSource;
   observedAt: string;
 }
+export interface StoredBotSecret extends BotSecret {
+  credentialRef: string;
+}
+export interface CreateBotSecretInput {
+  id: string;
+  name: string;
+  description: string;
+  scope: SecretScope;
+  botId: string | null;
+  credentialRef: string;
+}
+export interface CopyBotSecretInput {
+  sourceSecretId: string;
+  id: string;
+  credentialRef: string;
+}
 const botFrom = (r: Row): Bot => ({
   ...r,
   archived: !!r.archived,
@@ -139,6 +156,16 @@ const botFrom = (r: Row): Bot => ({
   resourceIds: resourceIdsFrom(r.resourceIdsJson),
   notificationsEnabled: r.notificationsEnabled !== 0
 }) as unknown as Bot;
+const botSecretFrom = (r: Row): StoredBotSecret => ({
+  id: String(r.id),
+  name: String(r.name),
+  description: typeof r.description === 'string' ? r.description : '',
+  scope: r.scope === 'global' ? 'global' : 'bot',
+  botId: typeof r.botId === 'string' ? r.botId : null,
+  credentialRef: String(r.credentialRef),
+  createdAt: String(r.createdAt),
+  updatedAt: String(r.updatedAt)
+});
 const chatFrom = (r: Row): Chat => ({
   ...r,
   archived: !!r.archived,
@@ -291,12 +318,14 @@ export class Store {
         id TEXT PRIMARY KEY, botId TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
         title TEXT NOT NULL, threadId TEXT, groupChatId TEXT REFERENCES group_chats(id) ON DELETE CASCADE,
         archived INTEGER NOT NULL DEFAULT 0, routineToolsEnabled INTEGER NOT NULL DEFAULT 0,
-        memoryToolsEnabled INTEGER NOT NULL DEFAULT 0,
+        memoryToolsEnabled INTEGER NOT NULL DEFAULT 0, secretToolsEnabled INTEGER NOT NULL DEFAULT 0,
         routineRunId TEXT,
         lastReadAt TEXT, lastReadRowId INTEGER,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS group_chats (
         id TEXT PRIMARY KEY, title TEXT NOT NULL,
+        ownerBotId TEXT REFERENCES bots(id) ON DELETE SET NULL,
+        purpose TEXT NOT NULL DEFAULT '',
         defaultBotId TEXT REFERENCES bots(id) ON DELETE RESTRICT,
         archived INTEGER NOT NULL DEFAULT 0,
         pinnedAt TEXT,
@@ -319,6 +348,14 @@ export class Store {
         senderName TEXT, text TEXT NOT NULL, status TEXT NOT NULL, itemId TEXT, createdAt TEXT NOT NULL,
         turnId TEXT, phase TEXT, contentJson TEXT);
       CREATE INDEX IF NOT EXISTS group_messages_timeline ON group_messages(groupId, createdAt, id);
+      CREATE TABLE IF NOT EXISTS group_message_deliveries (
+        messageId TEXT NOT NULL REFERENCES group_messages(id) ON DELETE CASCADE,
+        targetBotId TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+        rootMessageId TEXT NOT NULL,
+        ancestorBotIdsJson TEXT NOT NULL DEFAULT '[]',
+        depth INTEGER NOT NULL,
+        createdAt TEXT NOT NULL,
+        PRIMARY KEY(messageId, targetBotId));
       CREATE TABLE IF NOT EXISTS routines (
         id TEXT PRIMARY KEY, title TEXT NOT NULL,
         botId TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -408,6 +445,18 @@ export class Store {
         resourceId TEXT NOT NULL,
         enabled INTEGER NOT NULL,
         PRIMARY KEY(botId, resourceId));
+      CREATE TABLE IF NOT EXISTS bot_secrets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL CHECK(scope IN ('global','bot')),
+        botId TEXT REFERENCES bots(id) ON DELETE CASCADE,
+        credentialRef TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        CHECK((scope='global' AND botId IS NULL) OR (scope='bot' AND botId IS NOT NULL)));
+      CREATE UNIQUE INDEX IF NOT EXISTS bot_secrets_scope_name
+        ON bot_secrets(scope, COALESCE(botId, ''), name COLLATE NOCASE);
       CREATE TABLE IF NOT EXISTS direct_mcp_servers (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -455,7 +504,7 @@ export class Store {
         threadId TEXT PRIMARY KEY, chatId TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
         model TEXT, provider TEXT, source TEXT NOT NULL, observedAt TEXT NOT NULL);`);
     const schemaVersion = Number((this.db.prepare('PRAGMA user_version').get() as Row | undefined)?.user_version ?? 0);
-    if (schemaVersion > 25) throw new Error('本机数据库版本高于当前应用支持版本');
+    if (schemaVersion > 27) throw new Error('本机数据库版本高于当前应用支持版本');
     let groupColumns = this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[];
     const defaultBotColumn = groupColumns.find(column => column.name === 'defaultBotId');
     if (defaultBotColumn?.notnull) {
@@ -489,6 +538,17 @@ export class Store {
     if (!(this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[]).some(column => column.name === 'archived')) {
       this.db.exec('ALTER TABLE group_chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
     }
+    const currentGroupColumns = this.db.prepare('PRAGMA table_info(group_chats)').all() as Row[];
+    if (!currentGroupColumns.some(column => column.name === 'ownerBotId')) {
+      this.db.exec('ALTER TABLE group_chats ADD COLUMN ownerBotId TEXT REFERENCES bots(id) ON DELETE SET NULL');
+    }
+    if (!currentGroupColumns.some(column => column.name === 'purpose')) {
+      this.db.exec("ALTER TABLE group_chats ADD COLUMN purpose TEXT NOT NULL DEFAULT ''");
+    }
+    this.db.exec(`UPDATE group_chats
+      SET ownerBotId=(SELECT botId FROM group_chat_members
+        WHERE groupChatId=group_chats.id ORDER BY position LIMIT 1)
+      WHERE ownerBotId IS NULL`);
     const routineColumns = this.db.prepare('PRAGMA table_info(routines)').all() as Row[];
     if (!routineColumns.some(column => column.name === 'sourceCallId')) this.db.exec('ALTER TABLE routines ADD COLUMN sourceCallId TEXT');
     if (!routineColumns.some(column => column.name === 'sourceChatId')) this.db.exec('ALTER TABLE routines ADD COLUMN sourceChatId TEXT');
@@ -536,6 +596,7 @@ export class Store {
     if (!chatColumns.some(column => column.name === 'lastReadRowId')) this.db.exec('ALTER TABLE chats ADD COLUMN lastReadRowId INTEGER');
     if (!chatColumns.some(column => column.name === 'routineToolsEnabled')) this.db.exec('ALTER TABLE chats ADD COLUMN routineToolsEnabled INTEGER NOT NULL DEFAULT 0');
     if (!chatColumns.some(column => column.name === 'memoryToolsEnabled')) this.db.exec('ALTER TABLE chats ADD COLUMN memoryToolsEnabled INTEGER NOT NULL DEFAULT 0');
+    if (!chatColumns.some(column => column.name === 'secretToolsEnabled')) this.db.exec('ALTER TABLE chats ADD COLUMN secretToolsEnabled INTEGER NOT NULL DEFAULT 0');
     if (!chatColumns.some(column => column.name === 'routineRunId')) this.db.exec('ALTER TABLE chats ADD COLUMN routineRunId TEXT');
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chats_one_routine_run_chat ON chats(routineRunId) WHERE routineRunId IS NOT NULL');
     const memoryColumns = this.db.prepare('PRAGMA table_info(memories)').all() as Row[];
@@ -733,6 +794,26 @@ export class Store {
         throw error;
       }
     }
+    if (schemaVersion < 26) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec('PRAGMA user_version=26');
+        this.db.exec('COMMIT');
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch { /* migration may already have closed */ }
+        throw error;
+      }
+    }
+    if (schemaVersion < 27) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec('PRAGMA user_version=27');
+        this.db.exec('COMMIT');
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch { /* migration may already have closed */ }
+        throw error;
+      }
+    }
   }
   bots(): Bot[] {
     return (this.db.prepare(`SELECT * FROM bots
@@ -844,6 +925,64 @@ export class Store {
     const r = this.db.prepare('SELECT * FROM bots WHERE id=?').get(id) as Row | undefined;
     if (!r) throw new Error('机器人不存在');
     return botFrom(r);
+  }
+  createBotSecret(input: CreateBotSecretInput): StoredBotSecret {
+    if (!/^[a-f0-9-]{36}$/u.test(input.id)) throw new Error('密钥 ID 无效');
+    const name = input.name.trim();
+    const description = input.description.trim();
+    if (!name || name.length > 120) throw new Error('密钥名称须为 1–120 个字符');
+    if (description.length > 1_000) throw new Error('密钥用途说明不能超过 1000 个字符');
+    if (!/^db:[a-f0-9-]{36}$/u.test(input.credentialRef)) throw new Error('密钥加密引用无效');
+    if (input.scope === 'global' && input.botId !== null) throw new Error('全局密钥不能指定所属 Bot');
+    if (input.scope === 'bot') {
+      if (!input.botId) throw new Error('Bot 私有密钥必须指定所属 Bot');
+      this.bot(input.botId);
+    }
+    const existing = this.db.prepare(`SELECT 1 AS present FROM bot_secrets
+      WHERE scope=? AND COALESCE(botId,'')=COALESCE(?,'') AND name=? COLLATE NOCASE`)
+      .get(input.scope, input.botId, name);
+    if (existing) throw new Error(input.scope === 'global' ? '已存在同名全局密钥' : '当前 Bot 已存在同名私有密钥');
+    const date = now();
+    this.db.prepare(`INSERT INTO bot_secrets(
+      id,name,description,scope,botId,credentialRef,createdAt,updatedAt)
+      VALUES(?,?,?,?,?,?,?,?)`).run(
+      input.id, name, description, input.scope, input.botId, input.credentialRef, date, date
+    );
+    return this.botSecret(input.id);
+  }
+  botSecret(id: string): StoredBotSecret {
+    const row = this.db.prepare('SELECT * FROM bot_secrets WHERE id=?').get(id) as Row | undefined;
+    if (!row) throw new Error('密钥不存在');
+    return botSecretFrom(row);
+  }
+  botSecretForBot(id: string, botId: string): StoredBotSecret {
+    this.bot(botId);
+    const secret = this.botSecret(id);
+    if (secret.scope === 'bot' && secret.botId !== botId) throw new Error('当前 Bot 无权访问该私有密钥');
+    return secret;
+  }
+  botSecrets(botId: string): StoredBotSecret[] {
+    this.bot(botId);
+    return (this.db.prepare(`SELECT * FROM bot_secrets
+      WHERE scope='global' OR (scope='bot' AND botId=?)
+      ORDER BY CASE scope WHEN 'global' THEN 0 ELSE 1 END, name COLLATE NOCASE, createdAt`)
+      .all(botId) as Row[]).map(botSecretFrom);
+  }
+  ownedBotSecrets(botId: string): StoredBotSecret[] {
+    this.bot(botId);
+    return (this.db.prepare(`SELECT * FROM bot_secrets
+      WHERE scope='bot' AND botId=? ORDER BY name COLLATE NOCASE, createdAt`)
+      .all(botId) as Row[]).map(botSecretFrom);
+  }
+  touchBotSecret(id: string): StoredBotSecret {
+    this.botSecret(id);
+    this.db.prepare('UPDATE bot_secrets SET updatedAt=? WHERE id=?').run(now(), id);
+    return this.botSecret(id);
+  }
+  deleteBotSecret(id: string): StoredBotSecret {
+    const secret = this.botSecret(id);
+    this.db.prepare('DELETE FROM bot_secrets WHERE id=?').run(id);
+    return secret;
   }
   chats(): Chat[] { return (this.db.prepare('SELECT * FROM chats WHERE groupChatId IS NULL AND archived=0 AND routineRunId IS NULL ORDER BY updatedAt DESC').all() as Row[]).map(chatFrom); }
   ownedCodexThreadIds(): string[] {
@@ -1297,6 +1436,8 @@ export class Store {
       id: String(row.id), title: String(row.title),
       archived: Boolean(row.archived),
       pinnedAt: typeof row.pinnedAt === 'string' ? row.pinnedAt : null,
+      ownerBotId: typeof row.ownerBotId === 'string' ? row.ownerBotId : null,
+      purpose: typeof row.purpose === 'string' ? row.purpose : '',
       defaultBotId: typeof row.defaultBotId === 'string' ? row.defaultBotId : null,
       memberIds: members.map(member => String(member.botId)),
       createdAt: String(row.createdAt), updatedAt: String(row.updatedAt)
@@ -1335,6 +1476,103 @@ export class Store {
       this.db.exec('COMMIT');
       return { bot: this.bot(id), chat };
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+  }
+  copyNameFor(sourceBotId: string): string {
+    const source = this.bot(sourceBotId);
+    const existing = new Set(this.bots().map(bot => bot.name.toLocaleLowerCase()));
+    for (let index = 1; index < 10_000; index += 1) {
+      const suffix = index === 1 ? ' 副本' : ` 副本 ${index}`;
+      const candidate = `${source.name.trim().slice(0, 255 - suffix.length).trimEnd()}${suffix}`;
+      if (!existing.has(candidate.toLocaleLowerCase())) return candidate;
+    }
+    throw new Error('无法生成不重复的 Bot 副本名称');
+  }
+  copyBot(
+    sourceBotId: string,
+    targetBotId: string,
+    secretCopies: CopyBotSecretInput[]
+  ): { bot: Bot; chat: Chat } {
+    const source = this.bot(sourceBotId);
+    if (source.archived) throw new Error('已归档的 Bot 不能复制');
+    if (!/^[a-f0-9-]{36}$/u.test(targetBotId) || targetBotId === sourceBotId) {
+      throw new Error('复制 Bot 的目标标识无效');
+    }
+    if (this.db.prepare('SELECT 1 AS present FROM bots WHERE id=?').get(targetBotId)) {
+      throw new Error('目标 Bot 已存在');
+    }
+
+    const sourceResources = this.botResourceRecords(sourceBotId);
+    const sourceGrants = this.connectorGrants().filter(grant => grant.botId === sourceBotId);
+    const sourceMemories = this.db.prepare(
+      'SELECT text,createdAt FROM memories WHERE botId=? ORDER BY createdAt,rowid'
+    ).all(sourceBotId) as Row[];
+    const sourceSecrets = this.ownedBotSecrets(sourceBotId);
+    const copiesBySource = new Map(secretCopies.map(copy => [copy.sourceSecretId, copy]));
+    if (copiesBySource.size !== secretCopies.length ||
+        sourceSecrets.some(secret => !copiesBySource.has(secret.id)) ||
+        secretCopies.some(copy => !sourceSecrets.some(secret => secret.id === copy.sourceSecretId))) {
+      throw new Error('复制 Bot 的私有密钥映射不完整');
+    }
+    for (const copy of secretCopies) {
+      if (!/^[a-f0-9-]{36}$/u.test(copy.id) ||
+          !/^db:[a-f0-9-]{36}$/u.test(copy.credentialRef)) {
+        throw new Error('复制 Bot 的私有密钥引用无效');
+      }
+    }
+
+    const name = this.copyNameFor(sourceBotId);
+    const createdAt = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`INSERT INTO bots(
+        id,name,avatar,role,instructions,model,permission,archived,
+        notificationsEnabled,pinnedAt,resourceIdsJson,createdAt
+      ) VALUES(?,?,?,?,?,?,?,0,?,NULL,?,?)`)
+        .run(
+          targetBotId, name, source.avatar, source.role, source.instructions,
+          source.model, source.permission, Number(source.notificationsEnabled),
+          JSON.stringify(source.resourceIds), createdAt
+        );
+
+      const insertResource = this.db.prepare(
+        'INSERT INTO bot_resources(botId,resourceId,enabled) VALUES(?,?,?)'
+      );
+      for (const resource of sourceResources) {
+        insertResource.run(targetBotId, resource.resourceId, Number(resource.enabled));
+      }
+
+      const insertGrant = this.db.prepare(
+        'INSERT INTO connector_grants(id,botId,connectionId,createdAt) VALUES(?,?,?,?)'
+      );
+      for (const grant of sourceGrants) {
+        insertGrant.run(randomUUID(), targetBotId, grant.connectionId, createdAt);
+      }
+
+      const insertMemory = this.db.prepare(
+        'INSERT INTO memories(id,botId,text,approved,createdAt) VALUES(?,?,?,1,?)'
+      );
+      for (const memory of sourceMemories) {
+        insertMemory.run(randomUUID(), targetBotId, String(memory.text), String(memory.createdAt));
+      }
+
+      const insertSecret = this.db.prepare(`INSERT INTO bot_secrets(
+        id,name,description,scope,botId,credentialRef,createdAt,updatedAt
+      ) VALUES(?,?,?,'bot',?,?,?,?)`);
+      for (const sourceSecret of sourceSecrets) {
+        const copy = copiesBySource.get(sourceSecret.id)!;
+        insertSecret.run(
+          copy.id, sourceSecret.name, sourceSecret.description, targetBotId,
+          copy.credentialRef, createdAt, createdAt
+        );
+      }
+
+      const chat = this.ensureBotChat(targetBotId);
+      this.db.exec('COMMIT');
+      return { bot: this.bot(targetBotId), chat };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   materializeBotExecutionDefaults(
     model: string,
@@ -1697,20 +1935,30 @@ export class Store {
     this.db.prepare('INSERT INTO chats(id,botId,title,createdAt,updatedAt) VALUES(?,?,?,?,?)').run(id, botId, '新对话', date, date);
     return this.chat(id);
   }
-  createGroup(title: string, botIds: string[]): GroupChat {
+  createGroup(
+    title: string,
+    botIds: string[],
+    purpose = '',
+    ownerBotId = botIds[0]
+  ): GroupChat {
     const normalizedTitle = title.trim();
     if (!normalizedTitle || normalizedTitle.length > 120) throw new Error('群聊名称须为 1–120 个字符');
+    const normalizedPurpose = purpose.trim();
+    if (normalizedPurpose.length > 4_000) throw new Error('群聊职责不能超过 4000 个字符');
     if (!Array.isArray(botIds) || botIds.length < 2) throw new Error('群聊至少需要选择两个 Bot');
     if (botIds.some(botId => typeof botId !== 'string' || !botId.trim())) throw new Error('无效的群聊成员');
     if (new Set(botIds).size !== botIds.length) throw new Error('群聊成员不能重复');
     const members = botIds.map(botId => this.bot(botId));
     if (members.some(bot => bot.archived)) throw new Error('已归档的 Bot 不能加入新群聊');
+    if (!ownerBotId || !botIds.includes(ownerBotId)) throw new Error('群主必须是新群聊的成员');
 
     const id = randomUUID(), createdAt = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO group_chats(id,title,defaultBotId,createdAt,updatedAt) VALUES(?,?,?,?,?)')
-        .run(id, normalizedTitle, null, createdAt, createdAt);
+      this.db.prepare(`INSERT INTO group_chats(
+        id,title,ownerBotId,purpose,defaultBotId,createdAt,updatedAt
+      ) VALUES(?,?,?,?,?,?,?)`)
+        .run(id, normalizedTitle, ownerBotId, normalizedPurpose, null, createdAt, createdAt);
       const insertMember = this.db.prepare('INSERT INTO group_chat_members(groupChatId,botId,position,joinedAt) VALUES(?,?,?,?)');
       botIds.forEach((botId, position) => insertMember.run(id, botId, position, createdAt));
       this.db.exec('COMMIT');
@@ -1736,6 +1984,15 @@ export class Store {
     this.group(id);
     this.db.prepare('DELETE FROM group_chats WHERE id=?').run(id);
   }
+  updateGroupPurpose(groupId: string, purpose: string): GroupChat {
+    this.group(groupId);
+    if (typeof purpose !== 'string') throw new Error('群聊职责格式无效');
+    const normalized = purpose.trim();
+    if (!normalized || normalized.length > 4_000) throw new Error('群聊职责须为 1–4000 个字符');
+    this.db.prepare('UPDATE group_chats SET purpose=?,updatedAt=? WHERE id=?')
+      .run(normalized, now(), groupId);
+    return this.group(groupId);
+  }
   addGroupMembers(groupId: string, botIds: string[]): GroupChat {
     const group = this.group(groupId);
     if (!Array.isArray(botIds) || botIds.length === 0) throw new Error('请选择要加入的 Bot');
@@ -1755,6 +2012,39 @@ export class Store {
         insertMember.run(groupId, botId, group.memberIds.length + offset, joinedAt);
       });
       this.db.prepare('UPDATE group_chats SET updatedAt=? WHERE id=?').run(joinedAt, groupId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return this.group(groupId);
+  }
+  removeGroupMembers(groupId: string, botIds: string[]): GroupChat {
+    const group = this.group(groupId);
+    if (!Array.isArray(botIds) || botIds.length === 0) throw new Error('请选择要移除的 Bot');
+    if (botIds.some(botId => typeof botId !== 'string' || !botId.trim())) throw new Error('无效的群聊成员');
+    if (new Set(botIds).size !== botIds.length) throw new Error('群聊成员不能重复');
+    if (botIds.includes(group.ownerBotId ?? '')) throw new Error('不能直接移除群主；群主转移尚未支持');
+    if (botIds.some(botId => !group.memberIds.includes(botId))) throw new Error('所选 Bot 不是当前群成员');
+    const removedSessions = this.db.prepare(`SELECT chatId FROM group_chat_sessions
+      WHERE groupChatId=? AND botId IN (${botIds.map(() => '?').join(',')})`)
+      .all(groupId, ...botIds) as Row[];
+    const updatedAt = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const deleteMember = this.db.prepare('DELETE FROM group_chat_members WHERE groupChatId=? AND botId=?');
+      for (const botId of botIds) deleteMember.run(groupId, botId);
+      const remaining = this.db.prepare(
+        'SELECT botId FROM group_chat_members WHERE groupChatId=? ORDER BY position'
+      ).all(groupId) as Row[];
+      const updatePosition = this.db.prepare(
+        'UPDATE group_chat_members SET position=? WHERE groupChatId=? AND botId=?'
+      );
+      remaining.forEach((row, position) => updatePosition.run(position, groupId, String(row.botId)));
+      for (const session of removedSessions) {
+        if (typeof session.chatId === 'string') this.db.prepare('DELETE FROM chats WHERE id=?').run(session.chatId);
+      }
+      this.db.prepare('UPDATE group_chats SET updatedAt=? WHERE id=?').run(updatedAt, groupId);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -1788,7 +2078,7 @@ export class Store {
   }
   resetGroupSessionThread(groupId: string, botId: string): void {
     const session = this.groupSession(groupId, botId);
-    this.db.prepare('UPDATE chats SET threadId=NULL,routineToolsEnabled=0,memoryToolsEnabled=0 WHERE id=?')
+    this.db.prepare('UPDATE chats SET threadId=NULL,routineToolsEnabled=0,memoryToolsEnabled=0,secretToolsEnabled=0 WHERE id=?')
       .run(session.id);
   }
   groupMemberChats(groupId: string): Chat[] {
@@ -1852,6 +2142,29 @@ export class Store {
       throw error;
     }
     return message;
+  }
+  groupMessageByItemId(groupId: string, itemId: string): GroupMessage | null {
+    const row = this.db.prepare(
+      'SELECT * FROM group_messages WHERE groupId=? AND itemId=? ORDER BY rowid LIMIT 1'
+    ).get(groupId, itemId) as Row | undefined;
+    return row ? groupMessageFrom(row) : null;
+  }
+  recordGroupMessageDelivery(
+    messageId: string,
+    targetBotId: string,
+    chain: { rootMessageId: string; ancestorBotIds: string[]; depth: number }
+  ): boolean {
+    const result = this.db.prepare(`INSERT OR IGNORE INTO group_message_deliveries(
+      messageId,targetBotId,rootMessageId,ancestorBotIdsJson,depth,createdAt
+    ) VALUES(?,?,?,?,?,?)`).run(
+      messageId,
+      targetBotId,
+      chain.rootMessageId,
+      JSON.stringify([...new Set(chain.ancestorBotIds)]),
+      chain.depth,
+      now()
+    );
+    return Number(result.changes) > 0;
   }
   groupAssistantItem(
     groupId: string,
@@ -1951,10 +2264,12 @@ export class Store {
     id: string,
     threadId: string,
     routineToolsEnabled = false,
-    memoryToolsEnabled = false
+    memoryToolsEnabled = false,
+    secretToolsEnabled = false
   ): void {
-    this.db.prepare('UPDATE chats SET threadId=?,routineToolsEnabled=?,memoryToolsEnabled=? WHERE id=?')
-      .run(threadId, Number(routineToolsEnabled), Number(memoryToolsEnabled), id);
+    this.db.prepare(`UPDATE chats
+      SET threadId=?,routineToolsEnabled=?,memoryToolsEnabled=?,secretToolsEnabled=? WHERE id=?`)
+      .run(threadId, Number(routineToolsEnabled), Number(memoryToolsEnabled), Number(secretToolsEnabled), id);
   }
   chatRoutineToolsEnabled(id: string): boolean {
     const row = this.db.prepare('SELECT routineToolsEnabled FROM chats WHERE id=?').get(id) as Row | undefined;
@@ -1965,6 +2280,10 @@ export class Store {
     const row = this.db.prepare('SELECT memoryToolsEnabled FROM chats WHERE id=?').get(id) as Row | undefined;
     if (!row) throw new Error('聊天不存在');
     return !!row.memoryToolsEnabled;
+  }
+  secretToolThreadIds(): string[] {
+    return (this.db.prepare('SELECT threadId FROM chats WHERE threadId IS NOT NULL AND secretToolsEnabled=1')
+      .all() as Row[]).map(row => String(row.threadId));
   }
   messages(chatId: string): Message[] {
     this.chat(chatId);

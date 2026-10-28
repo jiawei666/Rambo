@@ -70,7 +70,7 @@ test('randomizes legacy Bot eye poses once while preserving robot appearance set
       assert.match(savedLegacyAvatar, /^agent-robot:v2:100:violet:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.match(migrated.bot(robot.id).avatar, /^agent-robot:v2:100:orange:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.equal(migrated.bot(alreadyCurrent.id).avatar, 'agent-robot:v2:100:red:angry');
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 27);
     } finally { migrated.close(); }
 
     const reopened = new Store(directory);
@@ -106,7 +106,7 @@ test('replaces a persisted input eye once now that input is not selectable', asy
       savedInputAvatar = migrated.bot(inputBot.id).avatar;
       assert.match(savedInputAvatar, /^agent-robot:v2:100:blue:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
       assert.equal(migrated.bot(happyBot.id).avatar, 'agent-robot:v2:100:green:happy');
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 27);
     } finally { migrated.close(); }
 
     const reopened = new Store(directory);
@@ -137,7 +137,7 @@ test('persists queued chat messages and Routine recovery decisions across store 
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 27);
       assert.deepEqual(reopened.queuedChatMessages(chat.id).map(message => message.id), [queued.id]);
       assert.equal(reopened.messages(chat.id).find(message => message.id === uncertain.id)?.dispatchStatus, 'needs_user');
       const persistedRun = reopened.routineRun(run.id);
@@ -212,7 +212,7 @@ test('migrates saved groups to allow a retained group with no default Bot', asyn
       assert.deepEqual(store.group('group-old').memberIds, ['bot-old']);
       assert.equal(store.group('group-old').defaultBotId, 'bot-old');
       assert.equal(store.db.prepare('PRAGMA table_info(group_chats)').all().find(row => row.name === 'defaultBotId').notnull, 0);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 27);
       assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { store.close(); }
   });
@@ -267,7 +267,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const migrated = new Store(directory);
     try {
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 27);
       assert.equal(migrated.chat(currentChatId).threadId, 'thread-current-v12');
       assert.equal(migrated.chat(currentChatId).archived, false);
       assert.equal(migrated.chat('chat-newer-empty').archived, true);
@@ -287,7 +287,7 @@ test('migrates version 12 duplicate private chats once and hides the non-current
 
     const reopened = new Store(directory);
     try {
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 27);
       assert.equal(reopened.chat('chat-newer-empty').archived, true);
       assert.deepEqual(reopened.chats().map(chat => chat.id), [currentChatId]);
       assert.deepEqual(reopened.allChats().map(chat => chat.id), [currentChatId]);
@@ -472,6 +472,124 @@ test('new Bots copy explicit execution defaults and independent resource switche
   });
 });
 
+test('copying a Bot preserves profile, execution config, grants, resources, memories, and private secret metadata', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.syncBotResources(
+        ['skill:documents', 'skill:pdf', 'mcp:playwright'],
+        ['skill:documents', 'mcp:playwright']
+      );
+      const source = store.createBot('Researcher', 'agent-robot:v2:100:orange:idle').bot;
+      store.updateBot(source.id, {
+        role: '负责研究和整理资料',
+        instructions: '先核对来源，再给出结论。',
+        notificationsEnabled: false
+      });
+      store.updateBotExecutionConfig(source.id, {
+        model: 'copy-model',
+        permission: 'workspaceWrite'
+      });
+      store.setBotResource(source.id, 'skill:documents', false);
+      store.setBotResource(source.id, 'mcp:playwright', true);
+      const connection = store.createConnectorConnection({
+        id: 'connection-copy',
+        providerId: 'qqmail',
+        displayName: 'Research mail',
+        accountLabel: 'research@example.com',
+        authKind: 'credentials',
+        credentialRef: 'pending-keychain:connection-copy'
+      });
+      store.setConnectorGrant(source.id, connection.id, true);
+      store.saveMemory({ botId: source.id, text: '私有记忆 A' });
+      store.saveMemory({ botId: source.id, text: '私有记忆 B' });
+      store.saveMemory({ botId: null, text: '共享记忆' });
+      const sourceSecretId = '11111111-1111-4111-8111-111111111111';
+      const copiedSecretId = '22222222-2222-4222-8222-222222222222';
+      store.createBotSecret({
+        id: sourceSecretId,
+        name: 'Research token',
+        description: 'Only for research',
+        scope: 'bot',
+        botId: source.id,
+        credentialRef: 'db:11111111-1111-4111-8111-111111111112'
+      });
+
+      const targetBotId = '33333333-3333-4333-8333-333333333333';
+      const copied = store.copyBot(source.id, targetBotId, [{
+        sourceSecretId,
+        id: copiedSecretId,
+        credentialRef: 'db:22222222-2222-4222-8222-222222222223'
+      }]);
+
+      assert.equal(copied.bot.id, targetBotId);
+      assert.equal(copied.bot.name, 'Researcher 副本');
+      assert.notEqual(copied.chat.id, store.ensureBotChat(source.id).id);
+      assert.equal(copied.chat.threadId, null);
+      assert.equal(copied.bot.avatar, store.bot(source.id).avatar);
+      assert.equal(copied.bot.role, '负责研究和整理资料');
+      assert.equal(copied.bot.instructions, '先核对来源，再给出结论。');
+      assert.equal(copied.bot.model, 'copy-model');
+      assert.equal(copied.bot.permission, 'workspaceWrite');
+      assert.equal(copied.bot.notificationsEnabled, false);
+      assert.equal(copied.bot.archived, false);
+      assert.equal(copied.bot.pinnedAt, null);
+      assert.deepEqual(
+        store.botResourceRecords(copied.bot.id),
+        store.botResourceRecords(source.id)
+      );
+      assert.deepEqual(
+        store.connectorGrants().filter(grant => grant.botId === copied.bot.id)
+          .map(grant => grant.connectionId),
+        [connection.id]
+      );
+      assert.deepEqual(
+        store.memories(copied.bot.id).map(memory => memory.text),
+        ['私有记忆 A', '私有记忆 B']
+      );
+      assert.deepEqual(
+        store.memories(null).map(memory => memory.text),
+        ['共享记忆']
+      );
+      assert.deepEqual(
+        store.ownedBotSecrets(copied.bot.id).map(secret => ({
+          id: secret.id,
+          name: secret.name,
+          description: secret.description,
+          credentialRef: secret.credentialRef
+        })),
+        [{
+          id: copiedSecretId,
+          name: 'Research token',
+          description: 'Only for research',
+          credentialRef: 'db:22222222-2222-4222-8222-222222222223'
+        }]
+      );
+      assert.throws(
+        () => store.botSecretForBot(copiedSecretId, source.id),
+        /无权访问/
+      );
+      assert.equal(store.copyNameFor(source.id), 'Researcher 副本 2');
+      assert.equal(store.bot(source.id).name, 'Researcher');
+    } finally {
+      store.close();
+    }
+
+    const reopened = new Store(directory);
+    try {
+      const copied = reopened.bots().find(bot => bot.name === 'Researcher 副本');
+      assert.ok(copied);
+      assert.equal(reopened.botResourceEnabled(copied.id, 'skill:documents'), false);
+      assert.equal(reopened.botResourceEnabled(copied.id, 'mcp:playwright'), true);
+      assert.equal(reopened.ownedBotSecrets(copied.id).length, 1);
+      assert.deepEqual(
+        reopened.memories(copied.id).map(memory => memory.text),
+        ['私有记忆 A', '私有记忆 B']
+      );
+    } finally { reopened.close(); }
+  });
+});
+
 test('invalid or empty global permission never silently becomes Full Access', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
@@ -529,6 +647,7 @@ test('group creation can be cancelled without persistence and submitted membersh
     const store = new Store(directory);
     let created;
     let expectedMemberIds;
+    let expectedOwnerId;
     let firstChatId;
     try {
       const first = store.createBot('First', 'brand-a');
@@ -541,7 +660,7 @@ test('group creation can be cancelled without persistence and submitted membersh
       let cancelled = false;
       const callbacks = {
         cancel: () => { cancelled = true; },
-        create: async (title, botIds) => store.createGroup(title, botIds)
+        create: async (title, purpose, botIds) => store.createGroup(title, botIds, purpose)
       };
       await runGroupCreateAction({ type: 'cancel' }, callbacks);
       assert.equal(cancelled, true);
@@ -554,9 +673,17 @@ test('group creation can be cancelled without persistence and submitted membersh
       assert.deepEqual(store.groups(), []);
 
       expectedMemberIds = [second.bot.id, first.bot.id];
-      created = await runGroupCreateAction({ type: 'create', title: '  Research  ', botIds: expectedMemberIds }, callbacks);
+      expectedOwnerId = second.bot.id;
+      created = await runGroupCreateAction({
+        type: 'create',
+        title: '  Research  ',
+        purpose: '  Research shared projects  ',
+        botIds: expectedMemberIds
+      }, callbacks);
       assert.equal(created.title, 'Research');
       assert.deepEqual(created.memberIds, expectedMemberIds);
+      assert.equal(created.ownerBotId, expectedOwnerId);
+      assert.equal(created.purpose, 'Research shared projects');
       assert.equal(created.defaultBotId, null);
       assert.equal(store.chats().length, 3);
       assert.deepEqual(store.messages(first.chat.id), []);
@@ -566,6 +693,8 @@ test('group creation can be cancelled without persistence and submitted membersh
     try {
       assert.deepEqual(reopened.groups(), [created]);
       assert.deepEqual(reopened.group(created.id).memberIds, expectedMemberIds);
+      assert.equal(reopened.group(created.id).ownerBotId, expectedOwnerId);
+      assert.equal(reopened.group(created.id).purpose, 'Research shared projects');
       assert.equal(reopened.group(created.id).defaultBotId, null);
       assert.equal(reopened.chats().length, 3);
       assert.deepEqual(reopened.messages(firstChatId), []);
@@ -612,6 +741,59 @@ test('adding members to an existing group appends membership, rejects invalid me
       assert.deepEqual(reopened.group(groupId).memberIds, updated.memberIds);
       assert.deepEqual(reopened.groupMessages(groupId).map(message => message.id), [beforeMessages.id]);
       assert.deepEqual(reopened.groupSessions().map(session => session.purpose), ['member']);
+    } finally { reopened.close(); }
+  });
+});
+
+test('a group owner can update purpose and remove non-owner members while rejecting owner removal', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    let group, removedChatId, ownerBotId, retainedBotId;
+    try {
+      const owner = store.createBot('Owner', 'a');
+      const peer = store.createBot('Peer', 'b');
+      const retained = store.createBot('Retained', 'c');
+      ownerBotId = owner.bot.id;
+      retainedBotId = retained.bot.id;
+      group = store.createGroup(
+        'Owned room',
+        [owner.bot.id, peer.bot.id, retained.bot.id],
+        'Initial shared purpose',
+        owner.bot.id
+      );
+      removedChatId = store.groupSession(group.id, peer.bot.id).id;
+
+      const updated = store.updateGroupPurpose(group.id, '  Updated shared purpose  ');
+      assert.equal(updated.purpose, 'Updated shared purpose');
+      assert.throws(() => store.updateGroupPurpose(group.id, '   '), /1–4000/u);
+      assert.throws(() => store.removeGroupMembers(group.id, [owner.bot.id]), /不能直接移除群主/u);
+      assert.throws(() => store.removeGroupMembers(group.id, [retained.bot.id, 'not-a-member']), /不是当前群成员/u);
+
+      const afterRemoval = store.removeGroupMembers(group.id, [peer.bot.id]);
+      assert.deepEqual(afterRemoval.memberIds, [owner.bot.id, retained.bot.id]);
+      assert.equal(afterRemoval.ownerBotId, owner.bot.id);
+      assert.equal(afterRemoval.purpose, 'Updated shared purpose');
+      assert.equal(store.groupSessions().some(session => session.chatId === removedChatId), false);
+      assert.throws(() => store.chat(removedChatId), /聊天不存在/u);
+      assert.equal(store.groupSession(group.id, retained.bot.id).groupChatId, group.id);
+    } finally { store.close(); }
+
+    const reopened = new Store(directory);
+    try {
+      const persisted = reopened.group(group.id);
+      assert.equal(persisted.purpose, 'Updated shared purpose');
+      assert.deepEqual(persisted.memberIds, [ownerBotId, retainedBotId]);
+      assert.equal(persisted.memberIds.includes(persisted.ownerBotId), true);
+      assert.equal(reopened.groupSessions().some(session => session.chatId === removedChatId), false);
+      assert.equal(reopened.db.prepare(
+        'SELECT COUNT(*) AS count FROM group_chat_members WHERE groupChatId=?'
+      ).get(group.id)?.count, 2);
+      assert.deepEqual(
+        reopened.db.prepare(
+          'SELECT position FROM group_chat_members WHERE groupChatId=? ORDER BY position'
+        ).all(group.id).map(row => row.position),
+        [0, 1]
+      );
     } finally { reopened.close(); }
   });
 });
@@ -741,7 +923,9 @@ test('legacy group schemas retain newly pinned state during the no-default-Bot r
       const botColumns = migrated.db.prepare('PRAGMA table_info(bots)').all().map(row => row.name);
       assert.equal(groupColumns.includes('pinnedAt'), true);
       assert.equal(botColumns.includes('pinnedAt'), true);
-      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(migrated.group('group-pinned').ownerBotId, 'bot-a');
+      assert.equal(migrated.group('group-pinned').purpose, '');
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get()?.user_version, 27);
     } finally { migrated.close(); }
   });
 });
@@ -761,7 +945,7 @@ test('routine list is backed by SQLite and remains empty after reopening without
       assert.deepEqual(reopened.routines(), []);
       const table = reopened.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='routines'").get();
       assert.equal(table?.name, 'routines');
-      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(reopened.db.prepare('PRAGMA user_version').get()?.user_version, 27);
     } finally { reopened.close(); }
   });
 });
@@ -787,7 +971,7 @@ test('migrates a version 13 routines table that predates scheduling columns', as
       const columns = store.db.prepare('PRAGMA table_info(routines)').all().map(row => row.name);
       assert.equal(columns.includes('nextRunAt'), true);
       assert.equal(columns.includes('lastScheduledFor'), true);
-      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 25);
+      assert.equal(store.db.prepare('PRAGMA user_version').get()?.user_version, 27);
     } finally { store.close(); }
   });
 });
@@ -1573,6 +1757,78 @@ test('removing a connector connection cascades its Bot grants', async () => {
       assert.deepEqual(store.connectorGrants(), []);
       assert.deepEqual(store.connectorConnections(), []);
     } finally { store.close(); }
+  });
+});
+
+test('global and Bot-private secret metadata persists with scope isolation and Bot cascade cleanup', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    const { bot: first, chat: firstChat } = store.createBot('Secret owner', 'a');
+    const { bot: second, chat: secondChat } = store.createBot('Secret peer', 'b');
+    const globalId = '11111111-1111-4111-8111-111111111111';
+    const firstId = '22222222-2222-4222-8222-222222222222';
+    const secondId = '33333333-3333-4333-8333-333333333333';
+    try {
+      store.createBotSecret({
+        id: globalId,
+        name: 'Shared token',
+        description: 'All Bots',
+        scope: 'global',
+        botId: null,
+        credentialRef: 'db:11111111-1111-4111-8111-111111111112'
+      });
+      store.createBotSecret({
+        id: firstId,
+        name: 'Private token',
+        description: 'Owner only',
+        scope: 'bot',
+        botId: first.id,
+        credentialRef: 'db:22222222-2222-4222-8222-222222222223'
+      });
+      store.createBotSecret({
+        id: secondId,
+        name: 'Private token',
+        description: 'Peer only',
+        scope: 'bot',
+        botId: second.id,
+        credentialRef: 'db:33333333-3333-4333-8333-333333333334'
+      });
+      store.bindThread(firstChat.id, 'secret-enabled-thread', true, true, true);
+      store.bindThread(secondChat.id, 'secret-legacy-thread', true, true);
+
+      assert.deepEqual(store.botSecrets(first.id).map(secret => [secret.name, secret.scope]), [
+        ['Shared token', 'global'],
+        ['Private token', 'bot']
+      ]);
+      assert.deepEqual(store.botSecrets(second.id).map(secret => secret.id), [globalId, secondId]);
+      assert.equal(store.botSecretForBot(globalId, first.id).scope, 'global');
+      assert.equal(store.botSecretForBot(firstId, first.id).botId, first.id);
+      assert.throws(() => store.botSecretForBot(firstId, second.id), /无权访问/u);
+      assert.throws(() => store.createBotSecret({
+        id: '44444444-4444-4444-8444-444444444444',
+        name: 'private token',
+        description: '',
+        scope: 'bot',
+        botId: first.id,
+        credentialRef: 'db:44444444-4444-4444-8444-444444444445'
+      }), /同名私有密钥/u);
+    } finally { store.close(); }
+
+    const reopened = new Store(directory);
+    try {
+      assert.equal(reopened.botSecrets(first.id).length, 2);
+      assert.equal(reopened.botSecrets(second.id).length, 2);
+      assert.deepEqual(reopened.secretToolThreadIds(), ['secret-enabled-thread']);
+      reopened.deleteBot(first.id);
+      assert.throws(() => reopened.ownedBotSecrets(first.id), /机器人不存在/u);
+      assert.deepEqual(reopened.secretToolThreadIds(), []);
+      assert.deepEqual(
+        reopened.db.prepare('SELECT id FROM bot_secrets WHERE botId=?').all(first.id),
+        []
+      );
+      assert.deepEqual(reopened.botSecrets(second.id).map(secret => secret.id), [globalId, secondId]);
+      assert.equal(reopened.botSecret(globalId).scope, 'global');
+    } finally { reopened.close(); }
   });
 });
 

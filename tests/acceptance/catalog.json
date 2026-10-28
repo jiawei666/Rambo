@@ -11,6 +11,7 @@
         "B02",
         "B04",
         "B14",
+        "B16",
         "A01",
         "A02",
         "A03",
@@ -35,8 +36,11 @@
         "B03",
         "B05",
         "B06",
+        "B07",
         "B12",
         "B13",
+        "B15",
+        "B17",
         "M01",
         "M02",
         "M03",
@@ -77,6 +81,9 @@
         "G10",
         "G11",
         "G12",
+        "G14",
+        "G15",
+        "G16",
         "C01",
         "C02",
         "C03",
@@ -158,6 +165,7 @@
         "T33",
         "T34",
         "T35",
+        "T40",
         "S02"
       ]
     },
@@ -216,6 +224,7 @@
         "P08",
         "B07",
         "B08",
+        "B17",
         "G13",
         "B09",
         "B10",
@@ -693,8 +702,8 @@
       "rule": "B04",
       "title": "新建流程",
       "matrix": {
-        "steps": "使用名称和预置头像创建 Bot",
-        "expected": "创建后直接进入空白聊天；没有强制欢迎卡、示例任务或设置向导。"
+        "steps": "使用名称和预置头像创建 Bot，观察成功后界面与首条消息",
+        "expected": "创建后自然进入该 Bot 的唯一私聊，由 Bot 发起一次真实简短问候；没有独立欢迎卡、示例任务、高级配置或设置向导。问候失败不撤销 Bot，也不伪造成功发言。"
       },
       "layer": "electron-e2e",
       "scenarios": [
@@ -863,6 +872,7 @@
       ],
       "remaining": "纯函数与 Store 已覆盖创建时间混排、置顶/取消和旧 schema 升级；Electron 已覆盖右键置顶、最近置顶优先、取消及重启持久化，以及 Bot/群聊行系统剪贴板 ID、归档恢复和删除确认；仍缺真实安装版的完整侧栏视觉、最后消息预览、设置改名、搜索定位和迁移回读组合。",
       "journeyIds": [
+        "J2",
         "interface"
       ]
     },
@@ -1528,8 +1538,8 @@
       "rule": "G03",
       "title": "显式提及与成员补全",
       "matrix": {
-        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；另发送普通消息",
-        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由，@everyone 活跃 Bot 各自响应，普通消息由各 Bot 自行判断，来源身份正确。"
+        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；分别构造会回复和只会内部不回复的成员；另发送普通消息",
+        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由。`@everyone` 让发送者之外的全部活跃 Bot 获得消息并进入判断回合，但成员可回复也可内部不回复，不把不回复记为失败；普通消息同样由各 Bot 自行判断，来源身份正确。"
       },
       "layer": "integration",
       "scenarios": [
@@ -6347,6 +6357,330 @@
       "journeyIds": [
         "J1"
       ]
+    },
+    {
+      "rule": "B15",
+      "title": "Bot 默认强自主规划",
+      "matrix": {
+        "steps": "在私聊、Live、Routine 和群成员执行中分别提出需要多步工具判断的任务、低风险可逆任务、关键信息缺失但会形成实质歧义的任务、未获授权的不可逆外部操作，以及 Bot 主动建议修改全局资源/密钥的场景；检查系统提示、真实工具选择、是否无必要地逐步询问、执行后的结果说明和失败后的调整",
+        "expected": "每个 Bot 默认先洞察真实目标并结合当前 Tools、任务性质和 Routine 体系自主规划、选择执行方式并推进；可可靠推断的低风险可逆步骤直接做，不要求用户逐项确认。只有关键信息缺失导致实质歧义、即将发生未授权不可逆副作用、需要系统/账号授权，或主动修改全局资源/密钥时才提出最短必要问题。自主规划不输出冗长计划，依真实工具结果调整并简短说明实际结果与限制；不改变既有权限、授权和不可逆操作规则。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "B15-01",
+          "steps": [
+            "分别新建私聊、Live、Routine 和群成员执行会话，检查每次实际收到的 developer instructions 所列自主规划规则与可用 Tools",
+            "在私聊提出一个需要组合多个真实 Tools 和目标可推断的任务，再提出低风险、可逆的任务，检查 Bot 是否直接规划、选择工具和执行而不是逐步索取确认",
+            "构造关键参数缺失且会产生实质歧义、未获授权的不可逆外部操作、需要系统/账号授权以及 Bot 主动建议修改全局资源或密钥的场景，确认只问最短必要问题或先请求同意",
+            "让中途一个工具失败或返回部分结果，检查 Bot 是否根据真实结果调整，并在最终回复中简要说明实际完成、结果和限制"
+          ],
+          "expected": [
+            "每个 Bot 的默认角色是强自主、强规划，先洞察真实目标，再结合当前真正可用的 Tools、任务性质与 Routine 体系自主拆解、选择执行方式并推进",
+            "能可靠推断、低风险且可逆的工作直接做，不把所有步骤交回用户；自主规划不要求输出冗长计划",
+            "只有关键信息实际缺失并导致实质歧义、未授权的不可逆外部副作用、系统/账号授权或主动全局资源/密钥变更才询问，且问题保持最短必要",
+            "工具失败后不伪造成功，依据真实结果调整并简短报告完成内容、结果和仍有限制；既有权限、连接授权和不可逆操作规则保持不变"
+          ],
+          "evidence": [
+            "四类执行上下文的 developer instructions",
+            "真实模型回复",
+            "tool call/result 序列",
+            "必要追问记录",
+            "失败后调整与最终说明"
+          ]
+        }
+      ],
+      "evidence": [
+        "四类执行上下文的 developer instructions",
+        "真实模型回复",
+        "tool call/result 序列",
+        "必要追问记录",
+        "失败后调整与最终说明"
+      ],
+      "remaining": "Host/Store 定向测试已证明新私聊、Live、Routine 与群成员 thread 获得自主规划 developer instructions 和对应动态 Tools；尚未执行真实模型在四类上下文中的自主规划、工具选择、最少追问与失败恢复，不能声明 B15 整体通过。",
+      "journeyIds": [
+        "J2"
+      ]
+    },
+    {
+      "rule": "T40",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "T40-01",
+          "steps": [
+            "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥，核对 save_secret 参数只有名称、说明和范围，宿主弹出本机密码框并由用户直接输入正文；保存后重启，让 B 列出并尝试使用 A 的私有密钥，同时列出并使用全局密钥",
+            "在 A 的 Routine 和群成员执行会话中分别列出和使用两条可见密钥，再尝试保存、轮换和删除；制造同名密钥、跨 Bot ID、已归档 Bot、缺失会话绑定和取消本机密码输入",
+            "通过 run_with_secret 执行业务脚本，检查密钥只注入选定子进程环境、cwd 位于 Bot 工作区且不经过 shell；分别制造 workspaceWrite/readOnly、越界 cwd、参数数组错误和超时",
+            "让脚本输出原始、JSON、URL、Base64、Base64URL 和 hex 形式的已知密钥，检查 stdout/stderr、活动记录、聊天、系统提醒和工具结果均脱敏",
+            "扫描独立凭证 SQLite、产品 Store、日志、快照、搜索、导出和重启回读；永久删除私有密钥所属 Bot，检查私有密文清理且全局密钥保留"
+          ],
+          "expected": [
+            "密钥范围严格分为全局和 Bot 私有：全局对全部 Bot 与其 Routine/群成员执行可见，私有只对所属 Bot 的同一执行范围可见；身份只由 thread 解析，不接受模型指定其他 Bot ID",
+            "私聊当前 Bot 可 save/list/rotate/delete/run；Routine 与群成员只能 list/run，直接调用管理操作由宿主拒绝。用户明确要求可直接管理通用密钥，Bot 主动建议必须先征同意",
+            "save_secret/rotate_secret 的 Tool 参数不含密钥正文；正文仅经本机密码框直接进入主进程并写入 AES-256-GCM 加密凭证库，产品 Store 仅有名称、说明、范围和不透明引用；模型上下文、工具结果、聊天、系统提醒、活动、日志、快照、搜索和导出不持久化正文",
+            "run_with_secret 仅允许 Full Access，cwd 必须位于当前 Bot 工作区，密钥仅进入环境且无 shell；输出和错误对本次已知精确值及其常见编码变体脱敏，超时与不安全参数明确失败",
+            "删除 Bot 清理其私有密钥密文并保留全局；该工具不承诺阻止恶意脚本变换/外传，也不宣称操作系统级秘密隔离"
+          ],
+          "evidence": [
+            "Bot/Private/Global 密钥 SQLite 行与加密载荷",
+            "save_secret/rotate_secret 参数与本机密码框交互",
+            "凭证 SQLite 明文扫描",
+            "A/B 与 Routine/群成员 Tool 目录及调用结果",
+            "跨 Bot/权限/cwd/shell/超时拒绝",
+            "明文与编码变体脱敏输出",
+            "重启回读与 Bot 删除级联"
+          ]
+        }
+      ],
+      "evidence": [
+        "Bot/Private/Global 密钥 SQLite 行与加密载荷",
+        "save_secret/rotate_secret 参数与本机密码框交互",
+        "凭证 SQLite 明文扫描",
+        "A/B 与 Routine/群成员 Tool 目录及调用结果",
+        "跨 Bot/权限/cwd/shell/超时拒绝",
+        "明文与编码变体脱敏输出",
+        "重启回读与 Bot 删除级联"
+      ],
+      "remaining": "定向 Host/Store/凭证测试已覆盖 A/B 私有隔离、全局共享、AES-GCM 加密引用、重启回读、同名唯一、私聊管理版与 Routine/群成员运行时版 Tools、管理拒绝、Full Access/工作区限制、无 shell、环境注入、超时、精确值及编码变体脱敏、活动记录不保存正文和 Bot 删除清理；开发模式 Electron 已覆盖密码框输入、页面不回显和完成关闭。当前动态工具只在 thread/start 注册，旧 thread 不会自动获得 rambo_secrets；真实模型工具选择、真实业务脚本、完整日志/快照/搜索/导出扫描和安装版 UI 尚未验收。",
+      "journeyIds": [
+        "connections"
+      ]
+    },
+    {
+      "rule": "B16",
+      "title": "新 Bot 创建后的首个问候回合",
+      "matrix": {
+        "steps": "新建 Bot 后观察自动打开的私聊和首条 Assistant 消息；分别在模型未配置、App Server 不可用、问候请求失败和正常配置下复验；问候完成后重启并继续对话；另让新 Bot 声明连接、密钥或工具能力",
+        "expected": "创建成功后自动打开该 Bot 唯一私聊，并在后台完成准备后启动真实问候 turn；隐藏 seed 不作为用户消息显示。问候结合当前名称、短职责、长期指令和真实能力，不编造未接通的连接、Tools 或权限；失败不回滚 Bot、不生成伪 Assistant 消息，空聊天仍可正常接收用户第一条消息；重启后问候历史和对话连续性保留。具体首句文案与可配置性不冒充已实现。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "B16-01",
+          "steps": [
+            "从空 profile 新建一个填写名称、头像、短职责和长期指令的 Bot，创建成功后观察自然打开的私聊、首条 Assistant 消息以及隐藏 seed 是否作为用户消息出现",
+            "在正常配置下等待问候完成，检查内容是否只基于当前真实资料、Tools、连接和权限；随后发送用户第一条消息并重启，核对同一私聊与历史连续性",
+            "分别制造模型未配置、App Server 不可用、问候 turn 启动失败和模型回复失败，核对 Bot 保留、错误可见、无伪 Assistant 消息且用户仍能继续发消息",
+            "让新 Bot 声明一个未接通连接、未保存密钥或未授予 Tool，检查问候和后续回复不把不可用能力说成已经可用"
+          ],
+          "expected": [
+            "创建成功后打开该 Bot 的唯一私聊，后台启动一次真实问候 turn；隐藏 seed 只作为执行提示，不显示也不持久化为用户消息",
+            "问候结合当前名称、职责、长期指令和真实能力；失败不撤销 Bot、不伪造回复，空聊天仍可正常接收第一条用户消息",
+            "重启后问候历史、同一 thread 和后续对话连续性保留，不产生第二条私聊或重复问候"
+          ],
+          "evidence": [
+            "创建和自动打开私聊截图",
+            "隐藏 turn 与用户消息表",
+            "thread/start 与 turn/start 请求",
+            "问候工具和连接目录",
+            "失败状态与回退截图",
+            "重启后同一 chat/thread 回读"
+          ]
+        }
+      ],
+      "evidence": [
+        "创建和自动打开私聊截图",
+        "隐藏 turn 与用户消息表",
+        "thread/start 与 turn/start 请求",
+        "问候工具和连接目录",
+        "失败状态与回退截图",
+        "重启后同一 chat/thread 回读"
+      ],
+      "remaining": "Host 已证明问候使用 promptVisible=false 的真实隐藏 turn，不插入用户消息，并在新私聊 thread 注册自主规划与 rambo_secrets Tools；Store 已覆盖隐藏 turn 元数据。尚未在真实 App Server/Electron 中验证模型问候内容、四类失败分支、重启连续性和能力真实性，不能据此声明 B16 整体通过。",
+      "journeyIds": [
+        "J1"
+      ]
+    },
+    {
+      "rule": "G14",
+      "title": "群主职责与成员管理",
+      "matrix": {
+        "steps": "用户手动建群时选择多个成员并核对第一位为群主；由不同 Bot 分别创建群并核对创建者为群主；群主通过 Tool 更新群职责、添加未归档 Bot、移除成员并重启核持久化；非群主尝试同样操作；另发送普通消息、`@成员` 和全员不回复场景，核对群主未被当作默认回复者或兜底",
+        "expected": "每个群有唯一群主；手动创建取成员列表首位，Bot 创建取创建者；群主可维护群职责和增删成员，非群主只读且跨群操作被拒绝；群职责、群主和成员目录进入成员上下文但文本不能提升权限；重启后身份与内容保持；群主不改变 G02–G04 的消息判断和无隐式兜底规则。群主转移、归档、删除和自行退出后的行为在另行确认前不得用隐式新群主冒充已实现。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "G14-01",
+          "steps": [
+            "手动创建群聊并按不同顺序选择多个成员，核对所选列表首位成为唯一群主；再由不同 Bot 分别通过 create_group 创建群聊，核对创建者为群主",
+            "以群主身份在独立群成员 thread 中调用 update_purpose、add_members、remove_members，分别添加未归档 Bot、移除普通成员并尝试移除群主，关闭重开后核对持久化",
+            "以普通成员身份尝试同名管理 Tool，并尝试跨群、已归档 Bot、非成员和仍在执行的目标；再用普通消息、@单成员、@everyone 和全员不回复场景核对群主不被当成默认回复者或失败兜底",
+            "检查群成员上下文中的群主、群职责、完整成员目录和 isOwner 标记，确认职责文本不能提升 Tool、连接、密钥或文件权限"
+          ],
+          "expected": [
+            "每个群有且仅有一个群主；手动创建取成员列表首位，Bot 创建取创建者，重启后身份和职责保持",
+            "只有群主能维护当前群职责和成员；普通成员只读，跨群与非法目标由宿主拒绝，群主不能被直接移除，群主转移尚未支持",
+            "群主身份不改变 G02–G04 的消息判断与路由，不作为固定主持、默认回复者或失败兜底"
+          ],
+          "evidence": [
+            "手动与 Bot 建群快照",
+            "群主和成员 SQLite 回读",
+            "群主 Tool 成功与拒绝结果",
+            "普通成员 Tool 目录",
+            "群上下文 developer instructions",
+            "普通/@/全员与不回复对照"
+          ]
+        }
+      ],
+      "evidence": [
+        "手动与 Bot 建群快照",
+        "群主和成员 SQLite 回读",
+        "群主 Tool 成功与拒绝结果",
+        "普通成员 Tool 目录",
+        "群上下文 developer instructions",
+        "普通/@/全员与不回复对照"
+      ],
+      "remaining": "Store 与 Host 定向测试已覆盖群主持久化、手动首位和 Bot 创建者规则、职责更新、添加/移除普通成员、拒绝移除群主、非群主管理拒绝、Tool 目录差异及成员上下文。仍缺真实 Electron 建群顺序、真实 App Server 跨群拒绝、目标执行中保护、重启 UI 回读和群主不兜底的模型级证据。",
+      "journeyIds": [
+        "J3"
+      ]
+    },
+    {
+      "rule": "G15",
+      "title": "建群后的群主全员公告",
+      "matrix": {
+        "steps": "手动建群并填写职责，核对成功后群主自动发出 `@everyone` 公告；另让一个私聊正在执行长任务的 Bot 建群，核对私聊 thread 继续运行而独立群成员 thread 同时启动群主公告；检查除群主外的全部活跃成员都获得公告并启动判断回合；分别构造有补充和只输出内部不回复的成员；核对公告发送者、群消息持久化、成员身份和共享上下文；制造公告及单个成员真实调用失败和重复完成事件",
+        "expected": "群创建必须形成群职责；成功后由真实群主在独立群成员会话中发出持久化 `@everyone` 公告，内容对应当前群职责。Bot 建群不等待其私聊 turn 结束，因为两者是不同 thread；只有同一群成员 thread 已有活动 turn 时才 steer 或排队。`@everyone` 分发给发送者之外的全部活跃成员，让每个成员获得公告并进入自主判断回合；成员可正式回复，也可因没有有效补充而内部不回复，后者不记为失败。发送者不自我重复触发。真实公告或成员调用失败不回滚群聊、不生成伪造群主消息，其他独立成员按 G11 继续。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "G15-01",
+          "steps": [
+            "手动填写群职责后创建群，观察群主是否在独立群成员 thread 发布持久化 @everyone 公告，内容是否对应当前职责",
+            "让一个私聊 turn 仍在执行的 Bot 调用 create_group，核对私聊 thread 继续运行，同时群主的新群成员 thread 立即启动公告；比较两个 thread ID 和 turn ID",
+            "让发送者以外的全部活跃成员接收公告并自主判断，分别构造有补充回复和只输出内部不回复的成员；核对发送者不自我触发",
+            "制造公告 Tool 调用失败、单个成员启动失败、重复完成事件和群已停止，核对群聊/成员关系不回滚、错误真实可见且没有伪造群主发言"
+          ],
+          "expected": [
+            "创建群聊必须形成群职责；成功后由真实群主以 @everyone 发布持久化公告，发送者、群消息和投递记录一致",
+            "Bot 建群不等待创建者私聊 turn 结束；公告在独立群成员 thread 启动，只有同一群成员 thread 忙碌时才按 steer/排队规则处理",
+            "@everyone 让发送者之外全部活跃成员获得公告并进入自主判断回合，可回复也可内部不回复；不回复不是失败，发送者不重复自触发",
+            "公告或成员真实失败不撤销群聊，不伪造群主消息，其他独立成员继续，错误可核对"
+          ],
+          "evidence": [
+            "群职责表单与持久化值",
+            "群主公告 Tool 请求与群消息",
+            "私聊/群成员两个 thread 并行证据",
+            "@everyone 接收成员 turn 列表",
+            "回复与内部不回复结果",
+            "失败和重复事件处理记录"
+          ]
+        }
+      ],
+      "evidence": [
+        "群职责表单与持久化值",
+        "群主公告 Tool 请求与群消息",
+        "私聊/群成员两个 thread 并行证据",
+        "@everyone 接收成员 turn 列表",
+        "回复与内部不回复结果",
+        "失败和重复事件处理记录"
+      ],
+      "remaining": "Host 已覆盖 Bot 建群后立即在独立群成员 thread 启动公告、隐藏 seed、职责与成员目录注入，以及 @everyone 派发后成员可内部不回复；Store 已覆盖群职责和群主持久化。尚未执行真实 App Server 模型公告、Electron 可见时间线、私聊长任务与公告并行、公告失败和单成员失败组合验收。",
+      "journeyIds": [
+        "J3"
+      ]
+    },
+    {
+      "rule": "G16",
+      "title": "Bot 群消息 Tool 的 `@everyone`",
+      "matrix": {
+        "steps": "在群成员会话中让 Bot 调用 Tool 分别 `@单个成员` 和 `@everyone`；构造有补充、主动不回复、已归档、非群成员、已在执行及重复投递的成员；构造 A→B→C→D→E 后继续转派及回派祖先；检查发送者、群消息和投递记录",
+        "expected": "Tool 只操作当前群；`@everyone` 持久化发送者消息并让发送者之外的全部活跃成员获得内容、各自启动判断回合；成员可回复也可内部不回复，未回复不报错。发送者不自我触发，同一消息/成员按稳定 ID 去重；已有 turn 按 steer 或排队规则处理。每次全员激活计入 G08 一层转派，遵守 4 次上限和祖先拒绝，不能跨群或向已归档/非成员派发。"
+      },
+      "layer": "integration",
+      "scenarios": [
+        {
+          "id": "G16-01",
+          "steps": [
+            "在群成员执行中让当前 Bot 调用 rambo_group_messages.send，分别定向一个其他成员和 everyone=true，核对持久化发送者、@ 文案、投递目标与接收 turn",
+            "对同一 callId 重复调用，并构造发送者自己、跨群成员、已归档成员、非成员和已有活动 turn 的目标，检查去重、拒绝与 steer/排队行为",
+            "让接收成员分别产生正式回复和内部不回复；再构造 A→B→C→D→E 后继续转派及回派祖先，检查 4 层上限、祖先拒绝和发送者不自我触发",
+            "重启后回读群消息、投递记录和成员 thread，确认同一消息/成员不会重复激活，且 Tool 只能操作当前群"
+          ],
+          "expected": [
+            "Tool 只操作当前群成员会话所属群；定向消息与 @everyone 都由当前 Bot 真实发送并持久化，发送者不收到自己的消息",
+            "@everyone 激活发送者之外全部活跃成员，成员可回复或内部不回复；已有活动 turn 按 steer/排队规则处理",
+            "同一消息/成员按稳定 ID 去重；每次激活计入一层转派，最多连续 4 次，禁止回派祖先，跨群、归档或非成员目标失败"
+          ],
+          "evidence": [
+            "Tool 输入与结果",
+            "持久化群消息和投递表",
+            "接收成员 turn/start 与 @ 文案",
+            "重复 callId 前后消息数",
+            "祖先与 4 层上限拒绝",
+            "回复/不回复和重启回读"
+          ]
+        }
+      ],
+      "evidence": [
+        "Tool 输入与结果",
+        "持久化群消息和投递表",
+        "接收成员 turn/start 与 @ 文案",
+        "重复 callId 前后消息数",
+        "祖先与 4 层上限拒绝",
+        "回复/不回复和重启回读"
+      ],
+      "remaining": "Host 已覆盖定向 @、@everyone、稳定 callId 去重、发送者自点名拒绝、跨群拒绝、祖先拒绝、4 层上限、成员判断模式和群运行态合并；Store 已覆盖投递记录持久化。尚未在真实 App Server/Electron 中验证模型自主选择成员、已有 turn 的真实 steer/排队、完整 A→B→C→D→E 链路和重启后 UI 回读。",
+      "journeyIds": [
+        "J3"
+      ]
+    },
+    {
+      "rule": "B17",
+      "title": "右键复制 Bot",
+      "matrix": {
+        "steps": "为来源 Bot 配置自定义资料、模型、权限、连接 Grant、私有密钥、记忆及四类资源开关，并在工作区放文件；在侧栏右键“复制 Bot”，核对新名称、设置、资源和数据回读，再分别修改/删除来源与副本；检查聊天、Routine、群成员和工作区文件",
+        "expected": "点击后创建独立副本并打开其唯一私聊，名称自动避让冲突。头像、短职责、长期指令、模型、权限、通知、Connector Grant、Bot 私有通用密钥、长期记忆和 Skills/MCP/Apps/Plugins 逐项开关与来源一致，复制后两边独立；私有密钥正文不进入 UI、日志或验收证据。副本使用新 chat/thread 与空工作区，不复制聊天历史、群成员关系、Routine/运行记录或工作区文件，并按 B16 启动问候。来源 Bot 执行中或复制失败时不得留下半成品 Bot、孤立密钥或对来源的修改。"
+      },
+      "layer": "electron-e2e",
+      "scenarios": [
+        {
+          "id": "B17-01",
+          "steps": [
+            "为来源 Bot 设置自定义头像、短职责、长期指令、模型、权限、通知开关、连接 Grant、私有通用密钥、专属记忆和四类资源开关，并在专属工作区放入文件",
+            "在侧栏 Bot 行右键选择“复制 Bot”，核对自动名称、自动打开的新私聊和 B16 问候，再比较副本与来源的全部配置、资源、Grant、记忆和私有密钥回读",
+            "分别修改来源与副本的资料、权限、资源开关、Grant、记忆和密钥，核对双向独立；重启后再次核对副本",
+            "检查副本 chat/thread、Routine、群成员关系和工作区文件，确认没有隐式复制；再让来源处于执行中尝试复制并制造存储失败，检查不留下半成品或孤立凭证"
+          ],
+          "expected": [
+            "右键菜单立即创建独立副本并打开其唯一私聊，名称自动避让冲突；来源 Bot 不被覆盖或修改",
+            "头像、短职责、长期指令、模型、权限、通知、Connector Grant、Bot 私有通用密钥、长期记忆及 Skills/MCP/Apps/Plugins 开关逐项与来源一致，复制后两边独立；密钥正文不出现在 UI、日志或证据中",
+            "副本拥有新的唯一 chat/thread 和空工作区，不复制聊天历史、群成员、Routine/运行记录或工作区文件，并按 B16 启动真实问候",
+            "来源执行中拒绝复制；任一步失败不留下部分 Bot、无关私有密钥或来源修改，重启后成功副本仍可完整回读"
+          ],
+          "evidence": [
+            "右键菜单与复制后界面截图",
+            "来源/副本设置页逐项对照",
+            "SQLite Bot、resources、grants、memories、bot_secrets 回读",
+            "加密凭证引用差异",
+            "chat/thread 与工作区目录清单",
+            "重启后回读",
+            "失败回滚与脱敏日志"
+          ]
+        }
+      ],
+      "evidence": [
+        "右键菜单与复制后界面截图",
+        "来源/副本设置页逐项对照",
+        "SQLite Bot、resources、grants、memories、bot_secrets 回读",
+        "加密凭证引用差异",
+        "chat/thread 与工作区目录清单",
+        "重启后回读",
+        "失败回滚与脱敏日志"
+      ],
+      "remaining": "Store 已覆盖资料、模型/权限、通知、Grant、记忆、资源开关、私有密钥元数据和名称避让的事务复制；真实 Electron 已定向验证右键入口、自动名称、打开副本、资料/记忆/resourceIds 回读及来源工作区文件不复制。跨进程私有密钥复制端到端、来源执行中拒绝与完整失败回滚、真实 App Server 问候、四类资源实际执行隔离和重启组合尚未验收。",
+      "journeyIds": [
+        "J2",
+        "interface"
+      ]
     }
   ],
   "cases": [
@@ -7217,6 +7551,7 @@
         "B07"
       ],
       "journeyIds": [
+        "J2",
         "interface"
       ],
       "title": "Bot 直达单聊、改名、旧数据迁移、右键置顶与创建时间混排",
@@ -7271,6 +7606,7 @@
         "assertion-log"
       ],
       "journeyIds": [
+        "J2",
         "interface"
       ],
       "title": "Bot 直达单聊、改名、旧数据迁移、右键置顶与创建时间混排",
@@ -7307,6 +7643,7 @@
         "assertion-log"
       ],
       "journeyIds": [
+        "J2",
         "interface"
       ],
       "title": "Bot 直达单聊、改名、旧数据迁移、右键置顶与创建时间混排",
@@ -8050,8 +8387,8 @@
         "assertion-log"
       ],
       "matrix": {
-        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；另发送普通消息",
-        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由，@everyone 活跃 Bot 各自响应，普通消息由各 Bot 自行判断，来源身份正确。"
+        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；分别构造会回复和只会内部不回复的成员；另发送普通消息",
+        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由。`@everyone` 让发送者之外的全部活跃 Bot 获得消息并进入判断回合，但成员可回复也可内部不回复，不把不回复记为失败；普通消息同样由各 Bot 自行判断，来源身份正确。"
       }
     },
     {
@@ -8082,8 +8419,8 @@
         "assertion-log"
       ],
       "matrix": {
-        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；另发送普通消息",
-        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由，@everyone 活跃 Bot 各自响应，普通消息由各 Bot 自行判断，来源身份正确。"
+        "steps": "在群聊输入框键入 `@` 和部分成员名，检查候选；分别用方向键加 Enter/Tab、鼠标选择含空格名称和 @everyone，再保留后缀发送；分别构造会回复和只会内部不回复的成员；另发送普通消息",
+        "expected": "候选只列当前未归档成员及 @everyone，显示头像、名称和短职责，并以靠近输入框左侧、明显窄于输入框的紧凑浮层呈现；方向键、Enter/Tab、Escape、鼠标操作正确，选择只替换当前 `@查询` 并保留其他原文和光标后内容；候选打开时 Enter 不发送；发送后按补全的成员名真实路由。`@everyone` 让发送者之外的全部活跃 Bot 获得消息并进入判断回合，但成员可回复也可内部不回复，不把不回复记为失败；普通消息同样由各 Bot 自行判断，来源身份正确。"
       }
     },
     {
@@ -13152,8 +13489,8 @@
         "创建后直接进入空白聊天；没有强制欢迎卡、示例任务或设置向导。"
       ],
       "matrix": {
-        "steps": "使用名称和预置头像创建 Bot",
-        "expected": "创建后直接进入空白聊天；没有强制欢迎卡、示例任务或设置向导。"
+        "steps": "使用名称和预置头像创建 Bot，观察成功后界面与首条消息",
+        "expected": "创建后自然进入该 Bot 的唯一私聊，由 Bot 发起一次真实简短问候；没有独立欢迎卡、示例任务、高级配置或设置向导。问候失败不撤销 Bot，也不伪造成功发言。"
       }
     },
     {
@@ -13175,6 +13512,7 @@
         "assertion-log"
       ],
       "journeyIds": [
+        "J2",
         "interface"
       ],
       "title": "Bot 直达单聊、改名、旧数据迁移、右键置顶与创建时间混排",
@@ -14267,18 +14605,20 @@
       "id": "B07-ELECTRON-02",
       "rules": [
         "B07",
-        "B08"
+        "B08",
+        "B17"
       ],
       "journeyIds": [
+        "J2",
         "interface"
       ],
       "title": "Bot 直达单聊、改名、旧数据迁移、右键置顶与创建时间混排",
       "gate": "feature",
       "layer": "electron-e2e",
       "target": "tests/e2e/private-chat.spec.mjs",
-      "testName": "真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和永久删除",
+      "testName": "真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、复制 Bot、归档和永久删除",
       "status": "implemented",
-      "notes": "真实 Electron 核对 Bot 私聊与群聊行的剪贴板 ID、归档/恢复及永久删除确认。",
+      "notes": "真实 Electron 核对 Bot 私聊与群聊行的剪贴板 ID、复制 Bot 的资料/记忆继承及归档/永久删除确认。",
       "invalidates": [
         "src/renderer/App.tsx",
         "src/renderer/styles.css",
@@ -14292,17 +14632,19 @@
         "screenshot",
         "trace",
         "clipboard-readback",
+        "bot-copy-readback",
         "group-id-readback",
         "archive-restore",
         "delete-confirmation"
       ],
       "steps": [
         "创建一个 Bot，在侧栏私聊行打开右键菜单",
-        "复制私聊 ID 并检查系统剪贴板；归档后恢复，再进入永久删除确认并取消",
+        "复制私聊 ID 并检查系统剪贴板；设置职责、长期指令和记忆后执行“复制 Bot”，核对新名称、新 chat 及配置继承",
+        "归档来源 Bot 后恢复，再进入永久删除确认并取消",
         "创建两个 Bot 和一个群聊，在群聊行复制 group ID、归档并恢复，最后确认永久删除"
       ],
       "expected": [
-        "私聊剪贴板内容等于唯一 chat ID；群聊剪贴板内容等于稳定 group ID；菜单分别执行 Bot 级和群聊级归档/删除语义，永久删除需确认"
+        "私聊剪贴板内容等于唯一 chat ID；复制 Bot 生成不同名称、不同 chat/thread 的独立副本并保留职责、长期指令、模型/权限、资源和私有记忆；群聊剪贴板内容等于稳定 group ID；菜单分别执行 Bot 级和群聊级归档/删除语义，永久删除需确认"
       ],
       "matrix": {
         "steps": "检查侧栏是否有“聊天”子项/子分组，直接点击 Bot；产生多条消息，核对名称下方是否显示最后一句话；在 Bot 设置修改名称并重启核对；搜索聊天内容；创建时间不同的 Bot 与群聊并发送新消息，核对不因最近更新重排；分别右键 Bot 和群聊置顶，核对置顶与最近置顶优先；再取消置顶核对回到创建时间倒序；重启核持久化；检查不存在顶部置顶投放区且会话行不可拖拽置顶；右键检查菜单及复制 ID；对有多条历史私聊的资料升级并重启",
@@ -14659,7 +15001,7 @@
       "gate": "feature",
       "layer": "electron-e2e",
       "target": "tests/e2e/private-chat.spec.mjs",
-      "testName": "真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和永久删除",
+      "testName": "真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、复制 Bot、归档和永久删除",
       "status": "implemented",
       "notes": "真实 Electron 验证群聊行右键、剪贴板 group ID、归档恢复和确认后删除。",
       "invalidates": [
@@ -15319,6 +15661,750 @@
       "matrix": {
         "steps": "在 A 私聊分别由用户明确提供 QQ 授权码、Gmail 应用专用密码、OAuth token/API Key 和连接密钥，要求 A 保存受支持凭证；再让 A 主动建议一次凭证变更并分别拒绝/同意；检查凭证 SQLite、密钥文件权限、日志、快照、导出、聊天和系统提醒，重启后验证连接",
         "expected": "用户明确要求时直接写入受支持凭证，Bot 主动建议须先同意；凭证正文使用应用本地 AES-256-GCM 加密写入独立 SQLite，密钥与数据库权限为 `0600`，产品 Store 仅有不透明引用，正文不进入模型持久化上下文、消息、提醒、日志、快照、搜索、导出或验收证据。成功结果只回显连接/资源和脱敏状态，失败不降明文保存；凭证保存不自动授予其他 Bot 的 Connection，系统密码、验证码、Face ID 和 Codex 登录密码不由 Bot 代填。"
+      }
+    },
+    {
+      "id": "B15-HOST-01",
+      "title": "Bot 默认强自主规划",
+      "status": "implemented",
+      "testName": "new text threads expose the routine tool and persist one queryable definition per call",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "B15"
+      ],
+      "journeyIds": [
+        "J2"
+      ],
+      "steps": [
+        "启动 A 的新私聊 thread/start，读取 developer instructions 与 dynamicTools",
+        "核对自主规划、最少必要询问、真实工具结果调整和最终简短说明规则",
+        "确认规则与当前实际注册的 Routine、资源和密钥等 Tools 同时出现"
+      ],
+      "expected": [
+        "新私聊的 developer instructions 明确要求强自主、强规划并依据当前真实可用 Tools 和 Routine 体系推进",
+        "低风险可推断步骤直接做，只有实质歧义、未授权不可逆外部副作用、系统/账号授权或主动全局资源/密钥变更才询问",
+        "该案例只证明提示注入与 Tool 注册；真实模型行为由显式 gap 保留"
+      ],
+      "invalidates": [
+        "src/main/host.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "thread-start-request"
+      ],
+      "limitations": [
+        "只验证新私聊 thread/start 的 developer instructions 和动态 Tools 注册，不证明真实模型已稳定按此行为执行。"
+      ],
+      "matrix": {
+        "steps": "在私聊、Live、Routine 和群成员执行中分别提出需要多步工具判断的任务、低风险可逆任务、关键信息缺失但会形成实质歧义的任务、未获授权的不可逆外部操作，以及 Bot 主动建议修改全局资源/密钥的场景；检查系统提示、真实工具选择、是否无必要地逐步询问、执行后的结果说明和失败后的调整",
+        "expected": "每个 Bot 默认先洞察真实目标并结合当前 Tools、任务性质和 Routine 体系自主规划、选择执行方式并推进；可可靠推断的低风险可逆步骤直接做，不要求用户逐项确认。只有关键信息缺失导致实质歧义、即将发生未授权不可逆副作用、需要系统/账号授权，或主动修改全局资源/密钥时才提出最短必要问题。自主规划不输出冗长计划，依真实工具结果调整并简短说明实际结果与限制；不改变既有权限、授权和不可逆操作规则。"
+      }
+    },
+    {
+      "id": "B15-HOST-02",
+      "title": "Bot 默认强自主规划",
+      "status": "implemented",
+      "testName": "a new Live private thread receives secret management tools and autonomy instructions",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "B15"
+      ],
+      "journeyIds": [
+        "J2"
+      ],
+      "steps": [
+        "在没有既有 thread 的 A 唯一私聊启动 Live 初始化",
+        "读取真实 thread/start 请求中的 autonomy instructions 和 dynamicTools",
+        "核对 Live 使用的 thread 与私聊初始化一致"
+      ],
+      "expected": [
+        "新建 Live thread 同样收到强自主、强规划规则，而不是只有文字首轮拥有",
+        "动态 Tools 随当前 Bot 能力注册，Live 沿用唯一私聊 thread",
+        "真实 Live 模型自主规划与语音行为不在本案例覆盖内"
+      ],
+      "invalidates": [
+        "src/main/host.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "live-thread-start-request"
+      ],
+      "limitations": [
+        "只验证 Live 新 thread 的宿主提示和 Tool 注册，未执行真实语音模型任务。"
+      ],
+      "matrix": {
+        "steps": "在私聊、Live、Routine 和群成员执行中分别提出需要多步工具判断的任务、低风险可逆任务、关键信息缺失但会形成实质歧义的任务、未获授权的不可逆外部操作，以及 Bot 主动建议修改全局资源/密钥的场景；检查系统提示、真实工具选择、是否无必要地逐步询问、执行后的结果说明和失败后的调整",
+        "expected": "每个 Bot 默认先洞察真实目标并结合当前 Tools、任务性质和 Routine 体系自主规划、选择执行方式并推进；可可靠推断的低风险可逆步骤直接做，不要求用户逐项确认。只有关键信息缺失导致实质歧义、即将发生未授权不可逆副作用、需要系统/账号授权，或主动修改全局资源/密钥时才提出最短必要问题。自主规划不输出冗长计划，依真实工具结果调整并简短说明实际结果与限制；不改变既有权限、授权和不可逆操作规则。"
+      }
+    },
+    {
+      "id": "B15-HOST-03",
+      "title": "Bot 默认强自主规划",
+      "status": "implemented",
+      "testName": "Routine and group member sessions inherit Bot secret reads but cannot manage secrets",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "B15"
+      ],
+      "journeyIds": [
+        "J2"
+      ],
+      "steps": [
+        "启动 A 的群成员执行 thread 和 Routine 执行 thread",
+        "分别读取每次 thread/start 的 developer instructions",
+        "确认两类独立执行上下文都包含同一默认自主规划规则"
+      ],
+      "expected": [
+        "Routine 和群成员执行不会丢失 Bot 默认自主规划角色",
+        "两类上下文各自保留独立 Tool 集合和运行时权限",
+        "真实模型是否按规则完成任务仍由显式 gap 保留"
+      ],
+      "invalidates": [
+        "src/main/host.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "group-and-routine-thread-start"
+      ],
+      "limitations": [
+        "只验证群成员和 Routine thread/start 的提示注册，不证明真实模型在各执行上下文中完成自主规划。"
+      ],
+      "matrix": {
+        "steps": "在私聊、Live、Routine 和群成员执行中分别提出需要多步工具判断的任务、低风险可逆任务、关键信息缺失但会形成实质歧义的任务、未获授权的不可逆外部操作，以及 Bot 主动建议修改全局资源/密钥的场景；检查系统提示、真实工具选择、是否无必要地逐步询问、执行后的结果说明和失败后的调整",
+        "expected": "每个 Bot 默认先洞察真实目标并结合当前 Tools、任务性质和 Routine 体系自主规划、选择执行方式并推进；可可靠推断的低风险可逆步骤直接做，不要求用户逐项确认。只有关键信息缺失导致实质歧义、即将发生未授权不可逆副作用、需要系统/账号授权，或主动修改全局资源/密钥时才提出最短必要问题。自主规划不输出冗长计划，依真实工具结果调整并简短说明实际结果与限制；不改变既有权限、授权和不可逆操作规则。"
+      }
+    },
+    {
+      "id": "T40-HOST-01",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "implemented",
+      "testName": "Bot secret tools encrypt references, isolate Bot scope, expose metadata, and redact execution output",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "A 保存 Bot 私有密钥与全局密钥，并分别由 A/B 列出",
+        "A 使用私有密钥执行脚本，B 尝试使用 A 的私有密钥",
+        "检查工具结果、产品 Store、聊天、系统提醒、事件和活动记录",
+        "轮换、切到非 Full Access、越界 cwd 与删除后继续核对范围"
+      ],
+      "expected": [
+        "A/B 私有密钥隔离，全局密钥对 B 可见；工具结果只含脱敏元数据",
+        "执行通过环境注入，输出中的精确密钥值被替换；非 Full Access 和越界 cwd 明确失败",
+        "产品 Store、聊天、提醒、事件与活动记录不保存密钥正文",
+        "轮换保持稳定 ID，删除私有密钥后只保留全局密钥"
+      ],
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts",
+        "src/main/bot-secret-tools.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "redacted-store-scan",
+        "tool-call-result"
+      ],
+      "limitations": [
+        "使用注入凭证存储和 Node 测试脚本，未验证真实业务脚本、完整日志/快照/搜索/导出扫描或安装版 UI。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "T40-HOST-02",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "implemented",
+      "testName": "Routine and group member sessions inherit Bot secret reads but cannot manage secrets",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "A 保存 Bot 私有密钥后启动 A 的群成员执行和 Routine 执行",
+        "从两类 thread/start 读取 rambo_secrets runtime tool 清单",
+        "通过真实 Host 路由列出密钥，并直接尝试保存或删除"
+      ],
+      "expected": [
+        "Routine 和群成员执行继承所属 Bot 的全局与私有密钥可见范围",
+        "两类会话只注册 list_secrets 和 run_with_secret，不注册管理工具",
+        "直接调用管理操作由宿主拒绝并保留原密钥"
+      ],
+      "invalidates": [
+        "src/main/host.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "runtime-tool-list",
+        "rejection-result"
+      ],
+      "limitations": [
+        "使用 Host 假运行时验证注册与路由，未执行真实 Routine 调度或群成员模型的密钥使用。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "T40-UNIT-01",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "implemented",
+      "testName": "secret redaction covers raw, JSON, URL, base64, base64url, and hex variants",
+      "target": "tests/backend/bot-secret-tools.test.mjs",
+      "gate": "feature",
+      "layer": "unit",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "构造包含原始密钥及 JSON、URL、Base64、Base64URL、hex 变体的输出",
+        "调用宿主脱敏函数并逐项检查结果"
+      ],
+      "expected": [
+        "所有已知精确值及其支持的编码变体都替换为隐藏标记",
+        "非密钥文本保持可读，空密钥不会造成误替换"
+      ],
+      "invalidates": [
+        "src/main/bot-secret-tools.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log"
+      ],
+      "limitations": [
+        "只覆盖已知精确值的常见编码变体；脚本自定义加密、分片或变换后的外传无法被精确值脱敏发现。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "T40-STORE-01",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "implemented",
+      "testName": "global and Bot-private secret metadata persists with scope isolation and Bot cascade cleanup",
+      "target": "tests/backend/store.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "创建全局密钥、A/B 私有密钥并重启 Store",
+        "验证 A/B 可见范围、同名唯一和加密引用元数据",
+        "永久删除 A，检查其私有元数据级联与全局密钥保留"
+      ],
+      "expected": [
+        "私有和全局范围重启后保持隔离，产品表只保存不透明引用",
+        "同名规则按范围和所属 Bot 生效，跨 Bot 私有访问失败",
+        "删除 A 清理其私有范围，B 私有和全局密钥不受影响"
+      ],
+      "invalidates": [
+        "src/main/store.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "sqlite-row-readback"
+      ],
+      "limitations": [
+        "使用合成加密引用验证产品元数据，不验证真实凭证数据库文件权限或安装版备份/导出。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "T40-CRED-01",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "implemented",
+      "testName": "generic Bot secrets use the same encrypted store and never persist plaintext",
+      "target": "tests/backend/connector-credentials.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "向应用本地凭证库写入 generic-secret 通用密钥载荷",
+        "扫描凭证 SQLite 与产品可见数据并重启后回读",
+        "检查密钥文件和数据库权限以及错误脱敏"
+      ],
+      "expected": [
+        "通用密钥使用与其他连接凭据相同的 AES-256-GCM 加密库",
+        "SQLite 不出现明文，重启后可通过稳定引用回读",
+        "错误不返回部分秘密，符合当前应用本地密钥安全边界"
+      ],
+      "invalidates": [
+        "src/main/connector-credentials.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "encrypted-database-scan",
+        "restart-readback"
+      ],
+      "limitations": [
+        "只证明应用本地加密存储与回读；同用户权限进程仍可能读取应用密钥文件，不能替代 Keychain 或系统级隔离验收。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "B15-GAP-01",
+      "title": "Bot 默认强自主规划",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "model-smoke autonomy across private, Live, Routine and group acceptance",
+      "gate": "release",
+      "layer": "model-smoke",
+      "rules": [
+        "B15"
+      ],
+      "journeyIds": [
+        "J2"
+      ],
+      "steps": [
+        "在私聊、Live、Routine 和群成员执行中分别提出多步任务与关键歧义/不可逆操作场景",
+        "记录真实模型输出、工具调用顺序、必要追问、失败后调整和最终结果说明"
+      ],
+      "expected": [
+        "真实模型在四类上下文都能自主规划并调用当前可用 Tools，不无必要地逐步询问",
+        "只在实质歧义、未授权不可逆副作用、系统/账号授权或主动全局/密钥变更时提出最短必要问题",
+        "失败时依据真实结果调整并如实总结，不伪造完成"
+      ],
+      "invalidates": [
+        "src/main/host.ts"
+      ],
+      "evidence": [
+        "real-model-transcripts",
+        "tool-call-sequence",
+        "question-and-consent-record",
+        "failure-recovery-log"
+      ],
+      "limitations": [
+        "当前只完成 developer instructions 和动态 Tools 注册测试；真实模型在私聊、Live、Routine 与群成员执行中的自主规划、最少追问和失败恢复尚未执行。"
+      ],
+      "matrix": {
+        "steps": "在私聊、Live、Routine 和群成员执行中分别提出需要多步工具判断的任务、低风险可逆任务、关键信息缺失但会形成实质歧义的任务、未获授权的不可逆外部操作，以及 Bot 主动建议修改全局资源/密钥的场景；检查系统提示、真实工具选择、是否无必要地逐步询问、执行后的结果说明和失败后的调整",
+        "expected": "每个 Bot 默认先洞察真实目标并结合当前 Tools、任务性质和 Routine 体系自主规划、选择执行方式并推进；可可靠推断的低风险可逆步骤直接做，不要求用户逐项确认。只有关键信息缺失导致实质歧义、即将发生未授权不可逆副作用、需要系统/账号授权，或主动修改全局资源/密钥时才提出最短必要问题。自主规划不输出冗长计划，依真实工具结果调整并简短说明实际结果与限制；不改变既有权限、授权和不可逆操作规则。"
+      }
+    },
+    {
+      "id": "T40-GAP-01",
+      "title": "全局与 Bot 私有密钥 Tools",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "release secret lifecycle, UI and full evidence scan acceptance",
+      "gate": "release",
+      "layer": "integration",
+      "rules": [
+        "T40"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "steps": [
+        "在安装版中由真实模型自主选择 rambo_secrets Tools，保存真实业务密钥并从业务脚本、Routine 和群成员会话使用",
+        "扫描日志、快照、搜索结果、备份导出和旧 thread 初始化流程，制造凭证库损坏、密钥缺失和输出编码变体",
+        "在界面核对保存、轮换、删除、系统提醒和错误状态不回显正文"
+      ],
+      "expected": [
+        "真实模型与业务脚本闭环可用，全局/私有范围在安装版和重启后保持",
+        "旧 thread 获得 Tools 或明确不可用的产品路径可验证，不能把新 thread 成功冒充旧 thread 已支持",
+        "全部日志、快照、搜索与导出不持久化密钥正文，失败状态可见且不降级明文"
+      ],
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/index.ts",
+        "src/renderer"
+      ],
+      "evidence": [
+        "installed-app-transcript",
+        "real-business-script-result",
+        "full-secret-scan",
+        "restart-and-old-thread-evidence",
+        "ui-screenshots"
+      ],
+      "limitations": [
+        "尚未执行真实模型工具选择、真实业务脚本、安装版 UI、完整日志/快照/搜索/导出扫描，以及旧 thread 获取 rambo_secrets 的迁移路径；当前 App Server 的 thread/resume 不接受 dynamicTools。"
+      ],
+      "matrix": {
+        "steps": "在 A 私聊明确要求保存一条 Bot 私有密钥和一条全局密钥；检查 Tool 参数只含名称、说明和范围，用户在应用本机密码框直接输入正文，再分别重启回读；让 B 列出并尝试使用 A 的私有密钥、列出并使用全局密钥；再在 A 的 Routine 和群成员执行中列出/使用密钥并尝试管理；分别制造同名、越权 Bot、取消输入、非 Full Access、工作区外 cwd、命令参数注入、显式 shell/解释器和超时；扫描凭证库、产品 Store、消息、系统提醒、活动记录、日志、快照、搜索和导出",
+        "expected": "A/B 的私有范围隔离，全局密钥对两者及其 Routine/群成员可见；身份只由 thread 解析，模型不能指定其他 Bot ID。私聊可保存/列出/轮换/删除/使用，Routine 与群成员只能列出/使用。`save_secret`/`rotate_secret` 参数不含正文；正文经本机密码框直接进入主进程，只存在于 AES-256-GCM 加密库中，不进入模型上下文、工具参数、产品持久化、工具结果、消息、提醒和活动记录。`run_with_secret` 仅 Full Access、cwd 限于 Bot 工作区、使用 `shell: false` 且宿主不拼接命令字符串，密钥进环境、输出对精确值脱敏，超时和不安全参数明确失败。显式指定 shell 或解释器属于 Full Access 任务能力，不被该参数边界禁止，也不能被宣称为安全沙箱。删除 Bot 清理私有密钥而保留全局；用户明确要求可直接管理，Bot 主动建议先征同意。"
+      }
+    },
+    {
+      "id": "B16-HOST-01",
+      "rules": [
+        "B16"
+      ],
+      "gate": "feature",
+      "layer": "integration",
+      "target": "tests/backend/host.test.mjs",
+      "testName": "new Bot greeting starts one hidden real turn with autonomy and secret Tools",
+      "status": "implemented",
+      "notes": "验证新 Bot 的问候使用隐藏 seed 和真实 turn，不插入用户消息，并在新私聊 thread 注册自主规划与密钥 Tools；真实模型问候内容和失败分支仍保留缺口。",
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts"
+      ],
+      "evidence": [
+        "junit",
+        "assertion-log",
+        "thread-start-request",
+        "turn-start-request"
+      ],
+      "journeyIds": [
+        "J1"
+      ],
+      "title": "新 Bot 创建后的首个问候回合",
+      "steps": [
+        "创建带短职责和长期指令的 Bot，并启动 greetNewBot",
+        "检查 thread/start 的 developer instructions 与动态 Tools",
+        "检查 turn/start 使用隐藏问候 seed，且用户消息表保持为空",
+        "解析真实 turn id 后确认同一私聊 thread 已绑定"
+      ],
+      "expected": [
+        "问候回合是真实 turn，不伪造 Assistant 消息",
+        "隐藏 seed 不持久化为用户消息",
+        "thread 获得默认自主规划规则和 rambo_secrets Tools"
+      ],
+      "matrix": {
+        "steps": "新建 Bot 后观察自动打开的私聊和首条 Assistant 消息；分别在模型未配置、App Server 不可用、问候请求失败和正常配置下复验；问候完成后重启并继续对话；另让新 Bot 声明连接、密钥或工具能力",
+        "expected": "创建成功后自动打开该 Bot 唯一私聊，并在后台完成准备后启动真实问候 turn；隐藏 seed 不作为用户消息显示。问候结合当前名称、短职责、长期指令和真实能力，不编造未接通的连接、Tools 或权限；失败不回滚 Bot、不生成伪 Assistant 消息，空聊天仍可正常接收用户第一条消息；重启后问候历史和对话连续性保留。具体首句文案与可配置性不冒充已实现。"
+      }
+    },
+    {
+      "id": "G14-HOST-01",
+      "rules": [
+        "G14"
+      ],
+      "gate": "feature",
+      "layer": "integration",
+      "target": "tests/backend/host.test.mjs",
+      "testName": "group owner tools manage purpose and members while non-owner sessions are read-only",
+      "status": "implemented",
+      "notes": "验证群主 Tool 更新职责、添加和移除普通成员，普通成员没有管理 Tool 且直接调用被拒绝，群主不能被移除。",
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts",
+        "src/shared/contracts.ts"
+      ],
+      "evidence": [
+        "junit",
+        "tool-result",
+        "sqlite-readback",
+        "refusal-result"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "title": "群主职责与成员管理",
+      "steps": [
+        "创建群主与普通成员群，并启动群主成员 thread",
+        "检查群主获得 update_purpose/add_members/remove_members",
+        "执行职责更新、添加和移除普通成员，并核对聊天与会话清理",
+        "用普通成员 thread 调用管理 Tool 并尝试移除群主"
+      ],
+      "expected": [
+        "群主操作真实成功并持久化",
+        "非群主没有管理工具，越权调用失败",
+        "群主不能被直接移除，成员会话随移除清理"
+      ],
+      "matrix": {
+        "steps": "用户手动建群时选择多个成员并核对第一位为群主；由不同 Bot 分别创建群并核对创建者为群主；群主通过 Tool 更新群职责、添加未归档 Bot、移除成员并重启核持久化；非群主尝试同样操作；另发送普通消息、`@成员` 和全员不回复场景，核对群主未被当作默认回复者或兜底",
+        "expected": "每个群有唯一群主；手动创建取成员列表首位，Bot 创建取创建者；群主可维护群职责和增删成员，非群主只读且跨群操作被拒绝；群职责、群主和成员目录进入成员上下文但文本不能提升权限；重启后身份与内容保持；群主不改变 G02–G04 的消息判断和无隐式兜底规则。群主转移、归档、删除和自行退出后的行为在另行确认前不得用隐式新群主冒充已实现。"
+      }
+    },
+    {
+      "id": "G15-HOST-01",
+      "rules": [
+        "G15"
+      ],
+      "gate": "feature",
+      "layer": "integration",
+      "target": "tests/backend/host.test.mjs",
+      "testName": "a Bot can create and focus a persisted group from its private chat with itself and active members only",
+      "status": "implemented",
+      "notes": "验证 Bot 建群必须提交群职责，创建者在独立群成员 thread 启动隐藏公告 seed，不等待原私聊 turn。",
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts",
+        "src/shared/contracts.ts"
+      ],
+      "evidence": [
+        "junit",
+        "thread-start-request",
+        "announcement-turn-request",
+        "sqlite-readback"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "title": "建群后的群主全员公告",
+      "steps": [
+        "在 Bot 私聊 active turn 中调用 create_group 并提交职责",
+        "核对群主、成员和职责持久化",
+        "等待第二个 thread/start 与 turn/start，并检查独立群成员 thread",
+        "检查公告 seed 要求调用 rambo_group_messages.send everyone=true"
+      ],
+      "expected": [
+        "群创建成功后不等私聊 turn 结束",
+        "群主在独立群成员 thread 启动真实公告回合",
+        "职责与成员信息进入公告内容，且不伪造群消息"
+      ],
+      "matrix": {
+        "steps": "手动建群并填写职责，核对成功后群主自动发出 `@everyone` 公告；另让一个私聊正在执行长任务的 Bot 建群，核对私聊 thread 继续运行而独立群成员 thread 同时启动群主公告；检查除群主外的全部活跃成员都获得公告并启动判断回合；分别构造有补充和只输出内部不回复的成员；核对公告发送者、群消息持久化、成员身份和共享上下文；制造公告及单个成员真实调用失败和重复完成事件",
+        "expected": "群创建必须形成群职责；成功后由真实群主在独立群成员会话中发出持久化 `@everyone` 公告，内容对应当前群职责。Bot 建群不等待其私聊 turn 结束，因为两者是不同 thread；只有同一群成员 thread 已有活动 turn 时才 steer 或排队。`@everyone` 分发给发送者之外的全部活跃成员，让每个成员获得公告并进入自主判断回合；成员可正式回复，也可因没有有效补充而内部不回复，后者不记为失败。发送者不自我重复触发。真实公告或成员调用失败不回滚群聊、不生成伪造群主消息，其他独立成员按 G11 继续。"
+      }
+    },
+    {
+      "id": "G16-HOST-01",
+      "rules": [
+        "G16"
+      ],
+      "gate": "feature",
+      "layer": "integration",
+      "target": "tests/backend/host.test.mjs",
+      "testName": "Bot group message Tool supports directed and everyone delivery with stable deduplication and delegation limits",
+      "status": "implemented",
+      "notes": "验证 rambo_group_messages.send 的定向、全员、去重、自点名拒绝、跨群拒绝、祖先拒绝和 4 层上限。",
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts",
+        "src/shared/contracts.ts"
+      ],
+      "evidence": [
+        "junit",
+        "tool-result",
+        "turn-start-request",
+        "refusal-result"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "title": "Bot 群消息 Tool 的 `@everyone`",
+      "steps": [
+        "在群成员 thread 中定向另一成员并检查接收 turn",
+        "用同一 callId 重试并构造自点名、跨群、祖先和超过 4 层的目标",
+        "调用 everyone=true 并检查除发送者外活跃成员的接收 turn",
+        "让接收成员输出内部不回复标记并核对持久化群消息"
+      ],
+      "expected": [
+        "定向与全员消息均以当前 Bot 身份持久化",
+        "同一 callId 不重复追加或投递",
+        "非法目标、祖先回派和超过 4 层被拒绝",
+        "发送者不自我触发，成员可内部不回复且不记失败"
+      ],
+      "matrix": {
+        "steps": "在群成员会话中让 Bot 调用 Tool 分别 `@单个成员` 和 `@everyone`；构造有补充、主动不回复、已归档、非群成员、已在执行及重复投递的成员；构造 A→B→C→D→E 后继续转派及回派祖先；检查发送者、群消息和投递记录",
+        "expected": "Tool 只操作当前群；`@everyone` 持久化发送者消息并让发送者之外的全部活跃成员获得内容、各自启动判断回合；成员可回复也可内部不回复，未回复不报错。发送者不自我触发，同一消息/成员按稳定 ID 去重；已有 turn 按 steer 或排队规则处理。每次全员激活计入 G08 一层转派，遵守 4 次上限和祖先拒绝，不能跨群或向已归档/非成员派发。"
+      }
+    },
+    {
+      "id": "B16-GAP-01",
+      "title": "新 Bot 创建后的首个问候回合",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "integration group owner and group message acceptance",
+      "gate": "release",
+      "layer": "integration",
+      "rules": [
+        "B16"
+      ],
+      "journeyIds": [
+        "J1"
+      ],
+      "steps": [
+        "在真实 App Server 与 Electron 中复用对应 Host 案例的操作序列",
+        "采集 UI、thread/turn、SQLite 和失败状态证据",
+        "重启后重复关键回读并确认没有伪造消息或隐式兜底"
+      ],
+      "expected": [
+        "规则要求的真实用户可见行为与持久化结果一致",
+        "失败分支可见且不伪造成功，不改变未确认的群主转移等边界"
+      ],
+      "invalidates": [
+        "src/main",
+        "src/shared",
+        "src/renderer"
+      ],
+      "evidence": [
+        "playwright-report",
+        "trace",
+        "sqlite-readback",
+        "refusal-result"
+      ],
+      "limitations": [
+        "真实 App Server/Electron 的模型问候内容、模型未配置、运行断开、turn 启动失败、回复失败、重启连续性和能力真实性尚未执行。"
+      ],
+      "matrix": {
+        "steps": "新建 Bot 后观察自动打开的私聊和首条 Assistant 消息；分别在模型未配置、App Server 不可用、问候请求失败和正常配置下复验；问候完成后重启并继续对话；另让新 Bot 声明连接、密钥或工具能力",
+        "expected": "创建成功后自动打开该 Bot 唯一私聊，并在后台完成准备后启动真实问候 turn；隐藏 seed 不作为用户消息显示。问候结合当前名称、短职责、长期指令和真实能力，不编造未接通的连接、Tools 或权限；失败不回滚 Bot、不生成伪 Assistant 消息，空聊天仍可正常接收用户第一条消息；重启后问候历史和对话连续性保留。具体首句文案与可配置性不冒充已实现。"
+      }
+    },
+    {
+      "id": "G14-GAP-01",
+      "title": "群主职责与成员管理",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "integration group owner and group message acceptance",
+      "gate": "release",
+      "layer": "integration",
+      "rules": [
+        "G14"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "steps": [
+        "在真实 App Server 与 Electron 中复用对应 Host 案例的操作序列",
+        "采集 UI、thread/turn、SQLite 和失败状态证据",
+        "重启后重复关键回读并确认没有伪造消息或隐式兜底"
+      ],
+      "expected": [
+        "规则要求的真实用户可见行为与持久化结果一致",
+        "失败分支可见且不伪造成功，不改变未确认的群主转移等边界"
+      ],
+      "invalidates": [
+        "src/main",
+        "src/shared",
+        "src/renderer"
+      ],
+      "evidence": [
+        "playwright-report",
+        "trace",
+        "sqlite-readback",
+        "refusal-result"
+      ],
+      "limitations": [
+        "真实 Electron 建群顺序、跨群拒绝、目标执行中保护、重启 UI 回读及群主不成为模型兜底的完整串联尚未执行。"
+      ],
+      "matrix": {
+        "steps": "用户手动建群时选择多个成员并核对第一位为群主；由不同 Bot 分别创建群并核对创建者为群主；群主通过 Tool 更新群职责、添加未归档 Bot、移除成员并重启核持久化；非群主尝试同样操作；另发送普通消息、`@成员` 和全员不回复场景，核对群主未被当作默认回复者或兜底",
+        "expected": "每个群有唯一群主；手动创建取成员列表首位，Bot 创建取创建者；群主可维护群职责和增删成员，非群主只读且跨群操作被拒绝；群职责、群主和成员目录进入成员上下文但文本不能提升权限；重启后身份与内容保持；群主不改变 G02–G04 的消息判断和无隐式兜底规则。群主转移、归档、删除和自行退出后的行为在另行确认前不得用隐式新群主冒充已实现。"
+      }
+    },
+    {
+      "id": "G15-GAP-01",
+      "title": "建群后的群主全员公告",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "integration group owner and group message acceptance",
+      "gate": "release",
+      "layer": "integration",
+      "rules": [
+        "G15"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "steps": [
+        "在真实 App Server 与 Electron 中复用对应 Host 案例的操作序列",
+        "采集 UI、thread/turn、SQLite 和失败状态证据",
+        "重启后重复关键回读并确认没有伪造消息或隐式兜底"
+      ],
+      "expected": [
+        "规则要求的真实用户可见行为与持久化结果一致",
+        "失败分支可见且不伪造成功，不改变未确认的群主转移等边界"
+      ],
+      "invalidates": [
+        "src/main",
+        "src/shared",
+        "src/renderer"
+      ],
+      "evidence": [
+        "playwright-report",
+        "trace",
+        "sqlite-readback",
+        "refusal-result"
+      ],
+      "limitations": [
+        "真实 App Server 模型公告、Electron 可见时间线、私聊长任务与公告并行、公告失败和单成员失败组合尚未执行。"
+      ],
+      "matrix": {
+        "steps": "手动建群并填写职责，核对成功后群主自动发出 `@everyone` 公告；另让一个私聊正在执行长任务的 Bot 建群，核对私聊 thread 继续运行而独立群成员 thread 同时启动群主公告；检查除群主外的全部活跃成员都获得公告并启动判断回合；分别构造有补充和只输出内部不回复的成员；核对公告发送者、群消息持久化、成员身份和共享上下文；制造公告及单个成员真实调用失败和重复完成事件",
+        "expected": "群创建必须形成群职责；成功后由真实群主在独立群成员会话中发出持久化 `@everyone` 公告，内容对应当前群职责。Bot 建群不等待其私聊 turn 结束，因为两者是不同 thread；只有同一群成员 thread 已有活动 turn 时才 steer 或排队。`@everyone` 分发给发送者之外的全部活跃成员，让每个成员获得公告并进入自主判断回合；成员可正式回复，也可因没有有效补充而内部不回复，后者不记为失败。发送者不自我重复触发。真实公告或成员调用失败不回滚群聊、不生成伪造群主消息，其他独立成员按 G11 继续。"
+      }
+    },
+    {
+      "id": "G16-GAP-01",
+      "title": "Bot 群消息 Tool 的 `@everyone`",
+      "status": "not_implemented",
+      "testName": null,
+      "target": "integration group owner and group message acceptance",
+      "gate": "release",
+      "layer": "integration",
+      "rules": [
+        "G16"
+      ],
+      "journeyIds": [
+        "J3"
+      ],
+      "steps": [
+        "在真实 App Server 与 Electron 中复用对应 Host 案例的操作序列",
+        "采集 UI、thread/turn、SQLite 和失败状态证据",
+        "重启后重复关键回读并确认没有伪造消息或隐式兜底"
+      ],
+      "expected": [
+        "规则要求的真实用户可见行为与持久化结果一致",
+        "失败分支可见且不伪造成功，不改变未确认的群主转移等边界"
+      ],
+      "invalidates": [
+        "src/main",
+        "src/shared",
+        "src/renderer"
+      ],
+      "evidence": [
+        "playwright-report",
+        "trace",
+        "sqlite-readback",
+        "refusal-result"
+      ],
+      "limitations": [
+        "真实 App Server/Electron 的模型自主选人、已有 turn steer/排队、完整 A→B→C→D→E 链路和重启后 UI 回读尚未执行。"
+      ],
+      "matrix": {
+        "steps": "在群成员会话中让 Bot 调用 Tool 分别 `@单个成员` 和 `@everyone`；构造有补充、主动不回复、已归档、非群成员、已在执行及重复投递的成员；构造 A→B→C→D→E 后继续转派及回派祖先；检查发送者、群消息和投递记录",
+        "expected": "Tool 只操作当前群；`@everyone` 持久化发送者消息并让发送者之外的全部活跃成员获得内容、各自启动判断回合；成员可回复也可内部不回复，未回复不报错。发送者不自我触发，同一消息/成员按稳定 ID 去重；已有 turn 按 steer 或排队规则处理。每次全员激活计入 G08 一层转派，遵守 4 次上限和祖先拒绝，不能跨群或向已归档/非成员派发。"
       }
     }
   ]

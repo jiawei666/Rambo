@@ -50,6 +50,27 @@ export interface Bot {
   /** Whether completed Bot replies may show a macOS notification. */
   notificationsEnabled: boolean;
 }
+export type SecretScope = 'global' | 'bot';
+export interface BotSecret {
+  id: string;
+  name: string;
+  description: string;
+  scope: SecretScope;
+  /** Owning Bot for a Bot-private secret; null for a global secret. */
+  botId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface SecretCapturePrompt {
+  requestId: string;
+  chatId: string;
+  botId: string;
+  botName: string;
+  operation: 'save' | 'rotate';
+  name: string;
+  description: string;
+  scope: SecretScope;
+}
 export type ConnectorCategory =
   | 'email'
   | 'calendar'
@@ -103,6 +124,10 @@ export interface GroupChat {
   id: string; title: string; archived: boolean;
   /** Timestamp of the latest pin action; null means not pinned. */
   pinnedAt: string | null;
+  /** Unique group owner. Null only for legacy groups whose owner Bot no longer exists. */
+  ownerBotId: string | null;
+  /** Shared responsibility used as collaboration context, never as an authorization source. */
+  purpose: string;
   /** Members are ordered by when they were added; retained defaultBotId is legacy data and is not a responder rule. */
   memberIds: string[];
   /** Legacy schema value. New groups leave this null and group dispatch ignores it. */
@@ -423,6 +448,8 @@ export type AppEvent =
   | { type: 'voiceEndRequested'; chatId: string; reason: string }
   | { type: 'mcpElicitation'; prompt: McpElicitationPrompt }
   | { type: 'mcpElicitationResolved'; requestId: string }
+  | { type: 'secretCapture'; prompt: SecretCapturePrompt }
+  | { type: 'secretCaptureResolved'; requestId: string }
   | { type: 'focusBot'; botId: string }
   | { type: 'groupCreated'; group: GroupChat }
   | { type: 'error'; chatId?: string; message: string };
@@ -461,6 +488,8 @@ export interface RamboAPI {
   respondMcpElicitation(requestId: string, action: McpElicitationAction): Promise<void>;
   verifyPlaywrightConnection(): Promise<PlaywrightVerificationResult>;
   cancelPlaywrightVerification(): Promise<void>;
+  completeSecretCapture(requestId: string, secret: string): Promise<void>;
+  cancelSecretCapture(requestId: string): Promise<void>;
   connectorProviders(): Promise<ConnectorProvider[]>;
   beginConnectorAuth(providerId: string, displayName?: string): Promise<ConnectorAuthStartResult>;
   openConnectorAuth(challenge: ConnectorAuthChallenge): Promise<ConnectorConnection>;
@@ -472,14 +501,17 @@ export interface RamboAPI {
   removeConnection(id: string): Promise<void>;
   setConnectorGrant(botId: string, connectionId: string, granted: boolean): Promise<ConnectorGrant[]>;
   createBot(input: { name: string; avatar: string }): Promise<{ bot: Bot; chat: Chat }>;
+  copyBot(id: string): Promise<{ bot: Bot; chat: Chat }>;
   updateBot(id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>): Promise<Bot>;
   updateBotExecutionConfig(id: string, patch: { model: string; permission: PermissionMode }): Promise<Bot>;
   setBotArchived(id: string, archived: boolean): Promise<Bot>;
   setBotPinned(id: string, pinned: boolean): Promise<Bot>;
   deleteBot(id: string): Promise<void>;
   ensureBotChat(botId: string): Promise<Chat>;
-  createGroup(input: { title: string; botIds: string[] }): Promise<GroupChat>;
+  createGroup(input: { title: string; purpose: string; botIds: string[] }): Promise<GroupChat>;
+  updateGroupPurpose(groupId: string, purpose: string): Promise<GroupChat>;
   addGroupMembers(groupId: string, botIds: string[]): Promise<GroupChat>;
+  removeGroupMembers(groupId: string, botIds: string[]): Promise<GroupChat>;
   setGroupArchived(groupId: string, archived: boolean): Promise<GroupChat>;
   setGroupPinned(groupId: string, pinned: boolean): Promise<GroupChat>;
   deleteGroup(groupId: string): Promise<void>;

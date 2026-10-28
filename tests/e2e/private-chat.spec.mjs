@@ -51,6 +51,60 @@ async function waitForBoundTurn(page, chatId) {
   throw new Error(`发送回合没有绑定到当前 thread：${JSON.stringify(observed)}`);
 }
 
+async function settleInitialBotTurn(page, botId, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastInterruptAt = 0;
+  let observed = [];
+  while (Date.now() < deadline) {
+    observed = await page.evaluate(async id => {
+      const snapshot = await window.rambo.snapshot();
+      const chats = snapshot.chats.filter(chat => chat.botId === id && !chat.groupChatId);
+      return Promise.all(chats.map(async chat => {
+        const [turns, messages] = await Promise.all([
+          window.rambo.turns(chat.id),
+          window.rambo.messages(chat.id)
+        ]);
+        return {
+          chatId: chat.id,
+          activeTurnId: snapshot.activeTurns[chat.id] ?? null,
+          starting: snapshot.startingTurns[chat.id] === true,
+          turnCount: turns.length,
+          unsettledTurn: turns.some(turn =>
+            turn.status === 'starting' || turn.status === 'running'
+          ),
+          greetingFailed: messages.some(message =>
+            message.role === 'system' && message.status === 'failed'
+          )
+        };
+      }));
+    }, botId);
+    const activeChat = observed.find(chat =>
+      chat.activeTurnId && !chat.starting
+    );
+    if (activeChat && Date.now() - lastInterruptAt >= 1_000) {
+      try {
+        await page.evaluate(chatId => window.rambo.interrupt(chatId), activeChat.chatId);
+      } catch {
+        // The greeting may finish between the snapshot and the interrupt request.
+      }
+      lastInterruptAt = Date.now();
+    }
+    const pending = observed.some(chat =>
+      chat.activeTurnId || chat.starting || chat.unsettledTurn
+    );
+    const settled = !pending && observed.some(chat =>
+      chat.turnCount > 0 || chat.greetingFailed
+    );
+    if (settled) {
+      // Let sendConversation's finally block release its internal busy marker.
+      await page.waitForTimeout(100);
+      return;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`Bot 的创建问候回合未在限定时间内结束：${JSON.stringify(observed)}`);
+}
+
 async function computedColorAsRgb(locator) {
   return locator.evaluate(element => {
     const canvas = document.createElement('canvas');
@@ -369,6 +423,51 @@ test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', a
   await expect(page.getByLabel('所有 Bot 的定时任务')).toBeVisible();
 });
 
+test('密钥安全输入框只把正文交给宿主并清除界面状态', async ({ electron }) => {
+  const page = electron.page;
+  const snapshot = await page.evaluate(() => window.rambo.snapshot());
+  const bot = snapshot.bots.find(item => item.name === 'E2E Pilot');
+  const chat = snapshot.chats.find(item => item.botId === bot?.id && !item.groupChatId);
+  if (!bot || !chat) throw new Error('密钥安全输入测试缺少 E2E Pilot 私聊');
+
+  await page.evaluate(() => {
+    window.__ramboSecretCaptureEvents = [];
+    window.rambo.onEvent(event => {
+      if (event.type === 'secretCapture' || event.type === 'secretCaptureResolved') {
+        window.__ramboSecretCaptureEvents.push(event);
+      }
+    });
+  });
+  const requestId = 'e2e-secret-capture-save';
+  const secret = 'e2e-secret-body-must-not-render';
+  await page.evaluate(({ requestId, bot, chat }) => window.rambo.injectAcceptanceEvent({
+    type: 'secretCapture',
+    requestId,
+    chatId: chat.id,
+    botId: bot.id,
+    botName: bot.name,
+    operation: 'save',
+    name: 'E2E 发布令牌',
+    description: '仅用于验证本机安全输入闭环',
+    scope: 'bot'
+  }), { requestId, bot, chat });
+
+  const dialog = page.getByRole('dialog', { name: '保存密钥' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('E2E Pilot · 仅当前 Bot 可用', { exact: true })).toBeVisible();
+  const input = dialog.getByLabel('密钥正文');
+  await expect(input).toHaveAttribute('type', 'password');
+  await input.fill(secret);
+  await dialog.getByRole('button', { name: '安全保存' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText(secret);
+  await expect.poll(() => page.evaluate(() =>
+    window.__ramboSecretCaptureEvents.some(event =>
+      event.type === 'secretCaptureResolved' && event.requestId === 'e2e-secret-capture-save'
+    )
+  )).toBe(true);
+});
+
 test('连接应用市场显示五个应用、品牌图标并适配明暗主题', async ({ electron }) => {
   const page = electron.page;
   await openConnectors(page);
@@ -480,6 +579,8 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   }
   const subtabPresentation = async colorScheme => {
     await page.emulateMedia({ colorScheme });
+    await expect.poll(async () => globalPanel.locator('.resource-subtab.selected small')
+      .evaluate(badge => getComputedStyle(badge).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
     return globalPanel.locator('.resource-subtabs').evaluate(tablist => {
       const tabs = [...tablist.querySelectorAll('.resource-subtab')];
       const selected = tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
@@ -489,6 +590,7 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
         minHeight: Math.min(...tabs.map(tab =>
           tab.getBoundingClientRect().height)),
         selectedBackground: selected ? getComputedStyle(selected).backgroundColor : '',
+        selectedBackgroundImage: selected ? getComputedStyle(selected).backgroundImage : '',
         selectedColor: selected ? getComputedStyle(selected).color : '',
         badgeBackground: badge ? getComputedStyle(badge).backgroundColor : '',
         badgeColor: badge ? getComputedStyle(badge).color : ''
@@ -499,12 +601,16 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
     const presentation = await subtabPresentation(colorScheme);
     expect(presentation.count).toBe(3);
     expect(presentation.minHeight).toBeGreaterThanOrEqual(40);
+    expect(
+      presentation.selectedBackgroundImage !== 'none' ||
+      !/rgba?\([^)]*,\s*0\)/u.test(presentation.selectedBackground),
+      `${colorScheme} selected resource subtab has no visible background`
+    ).toBe(true);
     for (const color of [
-      presentation.selectedBackground,
       presentation.selectedColor,
       presentation.badgeBackground,
       presentation.badgeColor
-    ]) expect(color).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
+    ]) expect(color, `${colorScheme} ${JSON.stringify(presentation)}`).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
   }
   await page.emulateMedia({ colorScheme: 'light' });
   await globalPanel.getByRole('tab', { name: /^MCP 服务/ }).click();
@@ -805,7 +911,9 @@ test('Gmail 使用应用专用密码并保持本机凭证连接流程', async ({
   expect(afterCancel.connections.some(connection => connection.providerId === 'gmail')).toBe(false);
 });
 
-test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和永久删除', async ({ electron }) => {
+test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、复制 Bot、归档和永久删除', async ({
+  electron, acceptanceRun
+}) => {
     const app = electron.app;
     const page = electron.page;
     await page.getByLabel('创建 Bot').click();
@@ -816,7 +924,20 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     const bot = snapshot.bots.find(item => item.name === 'Menu Pilot');
     const chat = snapshot.chats.find(item => item.botId === bot.id && !item.groupChatId);
-    const row = page.locator('.bot-list-row').filter({ hasText: 'Menu Pilot' });
+    const row = page.locator('.bot-list-row').filter({
+      has: page.getByText('Menu Pilot', { exact: true })
+    });
+    await page.evaluate(async botId => {
+      await window.rambo.updateBot(botId, {
+        role: '负责菜单流程验证',
+        instructions: '复制时保留这段长期指令。'
+      });
+      await window.rambo.saveMemory({ botId, text: '复制后应保留这条私有记忆。' });
+    }, bot.id);
+    const sourceWorkspace = join(acceptanceRun.profile, 'bots', bot.id, 'workspace');
+    mkdirSync(sourceWorkspace, { recursive: true });
+    writeFileSync(join(sourceWorkspace, 'source-only.txt'), '只属于来源 Bot 的工作区文件');
+    await settleInitialBotTurn(page, bot.id);
 
     await row.click({ button: 'right' });
     const menu = page.getByRole('menu', { name: 'Menu Pilot 会话菜单' });
@@ -827,6 +948,33 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(chat.id);
 
     await row.click({ button: 'right' });
+    await page.getByRole('menu').getByRole('menuitem', { name: '复制 Bot' }).click();
+    await expect(page.getByPlaceholder('发消息给 Menu Pilot 副本')).toBeVisible();
+    await expect(page.getByText('已复制 Bot：Menu Pilot 副本')).toBeVisible();
+    const copiedSnapshot = await page.evaluate(() => window.rambo.snapshot());
+    const copiedBot = copiedSnapshot.bots.find(item => item.name === 'Menu Pilot 副本');
+    const copiedChat = copiedSnapshot.chats.find(item =>
+      item.botId === copiedBot.id && !item.groupChatId
+    );
+    expect(copiedBot.role).toBe('负责菜单流程验证');
+    expect(copiedBot.instructions).toBe('复制时保留这段长期指令。');
+    expect(copiedBot.avatar).toBe(bot.avatar);
+    expect(copiedBot.model).toBe(bot.model);
+    expect(copiedBot.permission).toBe(bot.permission);
+    expect(copiedBot.resourceIds).toEqual(bot.resourceIds);
+    expect(copiedChat.id).not.toBe(chat.id);
+    expect(
+      copiedChat.threadId === null || copiedChat.threadId !== chat.threadId,
+      '副本不应复用来源 Bot 的 thread'
+    ).toBe(true);
+    expect(existsSync(join(
+      acceptanceRun.profile, 'bots', copiedBot.id, 'workspace', 'source-only.txt'
+    ))).toBe(false);
+    expect(await page.evaluate(copiedBotId =>
+      window.rambo.memories(copiedBotId), copiedBot.id
+    )).toMatchObject([{ text: '复制后应保留这条私有记忆。' }]);
+
+    await row.click({ button: 'right' });
     await page.getByRole('menu').getByRole('menuitem', { name: '归档 Bot' }).click();
     await expect(row).toHaveCount(0);
     await expect(page.getByRole('region', { name: '已归档的 Bot' })).toContainText('Menu Pilot');
@@ -835,9 +983,9 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
       .getByRole('button', { name: 'Menu Pilot', exact: true }).click();
     await page.getByRole('tab', { name: 'Bot 管理' }).click();
     await page.getByRole('button', { name: '恢复 Bot' }).click();
-    await expect(page.locator('.bot-list-row').filter({ hasText: 'Menu Pilot' })).toBeVisible();
+    await expect(row).toBeVisible();
 
-    await page.locator('.bot-list-row').filter({ hasText: 'Menu Pilot' }).click({ button: 'right' });
+    await row.click({ button: 'right' });
     await page.getByRole('menu').getByRole('menuitem', { name: /永久删除 Bot/ }).click();
     const dialog = page.getByRole('alertdialog', { name: '永久删除「Menu Pilot」？' });
     await expect(dialog).toBeVisible();
@@ -847,8 +995,19 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、归档和�
     const group = await page.evaluate(async () => {
       const first = await window.rambo.createBot({ name: 'Group Menu One', avatar: 'a' });
       const second = await window.rambo.createBot({ name: 'Group Menu Two', avatar: 'b' });
-      return window.rambo.createGroup({ title: 'Group Menu Room', botIds: [first.bot.id, second.bot.id] });
+      return window.rambo.createGroup({
+        title: 'Group Menu Room',
+        purpose: 'Validate group menu actions.',
+        botIds: [first.bot.id, second.bot.id]
+      });
     });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const runtime = (await page.evaluate(() => window.rambo.snapshot())).groupRuntimes[group.id];
+      if (runtime) await page.evaluate(groupId => window.rambo.interruptGroup(groupId), group.id);
+      await page.waitForTimeout(500);
+    }
+    await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
+      .groupRuntimes[group.id] ?? null).toBeNull();
     const groupRow = page.locator('.bot-list-row').filter({ hasText: 'Group Menu Room' });
     await expect(groupRow).toBeVisible();
     await groupRow.click({ button: 'right' });
@@ -892,6 +1051,7 @@ test('真实 Electron 会话置顶按创建时间混排并重启保持', async (
     const second = snapshot.bots.find(bot => bot.name === 'Pin Second');
     return window.rambo.createGroup({
       title: 'Pin Group',
+      purpose: 'Validate pinned group ordering.',
       botIds: [first.id, second.id]
     });
   });
@@ -2255,7 +2415,7 @@ test('真实 Electron 选择本机附件显示为附件卡片且不改草稿', a
     window.rambo.createBot({ name: 'Group Select Beta', avatar: 'b' })
   ]));
   const group = await page.evaluate(({ title, botIds }) =>
-    window.rambo.createGroup({ title, botIds }), {
+    window.rambo.createGroup({ title, purpose: 'Validate group management menu actions.', botIds }), {
     title: 'Group Select E2E',
     botIds: groupBots.map(item => item.bot.id)
   });

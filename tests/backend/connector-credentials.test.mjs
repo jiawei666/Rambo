@@ -229,6 +229,39 @@ test('model API keys are encrypted and reject malformed provider payloads', asyn
   });
 });
 
+test('generic Bot secrets use the same encrypted store and never persist plaintext', async () => {
+  await withModule(async ({ ConnectorCredentials, ConnectorCredentialsError }, directory) => {
+    const profile = join(directory, 'profile');
+    const store = new ConnectorCredentials(profile);
+    const reference = store.save(connectionId, {
+      kind: 'generic-secret',
+      name: 'Deployment token',
+      secret: 'generic-secret-value-93821'
+    });
+    assert.match(reference, /^db:/u);
+    assert.deepEqual(store.load(reference), {
+      kind: 'generic-secret',
+      name: 'Deployment token',
+      secret: 'generic-secret-value-93821'
+    });
+    const database = new DatabaseSync(join(profile, 'connector-credentials', 'credentials.sqlite'));
+    const stored = database.prepare('SELECT body FROM connector_credentials WHERE reference=?').get(reference);
+    database.close();
+    assert.equal(String(stored.body).includes('generic-secret-value-93821'), false);
+    store.close();
+
+    const reopened = new ConnectorCredentials(profile);
+    try {
+      assert.equal(reopened.load(reference).secret, 'generic-secret-value-93821');
+      assert.throws(() => reopened.save(connectionId, {
+        kind: 'generic-secret',
+        name: 'Invalid',
+        secret: 'bad\0value'
+      }), ConnectorCredentialsError);
+    } finally { reopened.close(); }
+  });
+});
+
 test('WeChat SQLCipher credentials round-trip an absolute account directory and reject invalid key material', async () => {
   await withModule(async ({ ConnectorCredentials, ConnectorCredentialsError }, directory) => {
     const store = new ConnectorCredentials(directory, fakeCipher());

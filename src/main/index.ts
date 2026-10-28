@@ -937,6 +937,12 @@ function registerIPC(): void {
       }
       host.respondMcpElicitation(id(requestIdValue), actionValue as McpElicitationAction);
     },
+    completeSecretCapture: (requestIdValue, secretValue) => {
+      host.completeSecretCapture(id(requestIdValue), text(secretValue, 65_536));
+    },
+    cancelSecretCapture: requestIdValue => {
+      host.cancelSecretCapture(id(requestIdValue));
+    },
     verifyPlaywrightConnection: async () => {
       if (!playwrightExtensionVerifier) throw new Error('Playwright 连接验证器尚未启动，请重启 Rambo 后重试。');
       const global = resourceIdsSetting(store.settings().globalResourceIds);
@@ -1208,7 +1214,39 @@ function registerIPC(): void {
       if (!name) throw new Error('请填写机器人名称');
       const readiness = host.snapshot().executionDefaults;
       if (!readiness.ready) throw new Error(readiness.error ?? '模型配置尚未就绪，暂时不能新建 Bot');
-      const result = store.createBot(name, avatar); host.changed(); return result;
+      const result = store.createBot(name, avatar);
+      host.changed();
+      host.startBotGreeting(result.bot.id);
+      return result;
+    },
+    copyBot: botId => {
+      const source = store.bot(id(botId));
+      if (host.isBotBusy(source.id)) throw new Error('请先停止该 Bot 的任务，再复制 Bot');
+      const targetBotId = randomUUID();
+      const secretCopies: Array<{
+        sourceSecretId: string;
+        id: string;
+        credentialRef: string;
+      }> = [];
+      try {
+        for (const secret of store.ownedBotSecrets(source.id)) {
+          const payload = connectorCredentials.load(secret.credentialRef);
+          const secretId = randomUUID();
+          const credentialRef = connectorCredentials.save(secretId, payload);
+          secretCopies.push({
+            sourceSecretId: secret.id,
+            id: secretId,
+            credentialRef
+          });
+        }
+        const result = store.copyBot(source.id, targetBotId, secretCopies);
+        host.changed();
+        host.startBotGreeting(result.bot.id);
+        return result;
+      } catch (error) {
+        for (const copy of secretCopies) connectorCredentials.delete(copy.credentialRef);
+        throw error;
+      }
     },
     updateBot: (botId, input) => {
       const patch = object(input);
@@ -1263,6 +1301,7 @@ function registerIPC(): void {
     deleteBot: async botId => {
       const bot = store.bot(id(botId));
       const chats = store.botChats(bot.id);
+      const secretRefs = store.ownedBotSecrets(bot.id).map(secret => secret.credentialRef);
       if (chats.some(chat => host.activeTurns.has(chat.id))) throw new Error('请先停止该 Bot 的任务，再永久删除');
       const threadIds = [...new Set(chats.flatMap(chat => chat.threadId ? [chat.threadId] : []))];
       if (threadIds.length) {
@@ -1270,6 +1309,7 @@ function registerIPC(): void {
         for (const threadId of threadIds) await runtime.request('thread/delete', { threadId });
       }
       store.deleteBot(bot.id);
+      for (const credentialRef of secretRefs) connectorCredentials.delete(credentialRef);
       try {
         removeManagedBotDirectory(store.directory, bot.id);
       } catch (error) {
@@ -1283,17 +1323,22 @@ function registerIPC(): void {
       const input = object(value);
       const title = text(input.title, 120).trim();
       if (!title) throw new Error('请填写群聊名称');
+      const purpose = text(input.purpose, 4_000).trim();
+      if (!purpose) throw new Error('请填写群聊职责');
       if (!Array.isArray(input.botIds)) throw new Error('无效的群聊成员');
       const botIds = input.botIds.map(id);
-      const group = store.createGroup(title, botIds);
-      host.changed();
-      return group;
+      return host.createGroup(title, purpose, botIds);
+    },
+    updateGroupPurpose: (groupId, purpose) => {
+      return host.updateGroupPurpose(id(groupId), text(purpose, 4_000));
     },
     addGroupMembers: (groupId, botIds) => {
       if (!Array.isArray(botIds)) throw new Error('无效的群聊成员');
-      const group = store.addGroupMembers(id(groupId), botIds.map(id));
-      host.changed();
-      return group;
+      return host.addGroupMembers(id(groupId), botIds.map(id));
+    },
+    removeGroupMembers: (groupId, botIds) => {
+      if (!Array.isArray(botIds)) throw new Error('无效的群聊成员');
+      return host.removeGroupMembers(id(groupId), botIds.map(id));
     },
     groupMemberChats: groupId => store.groupMemberChats(id(groupId)),
     groupMessages: groupId => store.groupMessages(id(groupId)),
@@ -1586,6 +1631,34 @@ function registerIPC(): void {
         host.acceptMcpElicitationForAcceptance(prompt);
         return;
       }
+      if (value.type === 'secretCapture') {
+        const requestId = id(value.requestId);
+        const chatId = id(value.chatId);
+        const botId = id(value.botId);
+        const chat = store.chat(chatId);
+        const bot = store.bot(botId);
+        if (chat.botId !== botId) throw new Error('验收密钥请求的 Bot 与聊天不匹配');
+        const operation = String(value.operation);
+        const scope = String(value.scope);
+        if (!['save', 'rotate'].includes(operation) || !['global', 'bot'].includes(scope)) {
+          throw new Error('验收密钥请求的操作或范围无效');
+        }
+        const prompt = {
+          requestId,
+          chatId,
+          botId,
+          botName: text(value.botName, 200),
+          operation: operation as 'save' | 'rotate',
+          name: text(value.name, 120),
+          description: text(value.description ?? '', 1_000),
+          scope: scope as 'global' | 'bot'
+        };
+        if (!prompt.requestId || !prompt.botName || !prompt.name) {
+          throw new Error('验收密钥请求缺少必要字段');
+        }
+        host.acceptSecretCaptureForAcceptance(prompt);
+        return;
+      }
       if (value.type === 'message') {
         const message = object(value.message);
         const chatId = id(message.chatId);
@@ -1658,6 +1731,7 @@ function registerIPC(): void {
         if (namespace === 'rambo_bot') return host.submitAcceptanceBotTool(request);
         if (namespace === 'rambo_resources') return host.submitAcceptanceBotResourceTool(request);
         if (namespace === 'rambo_credentials') return host.submitAcceptanceBotCredentialTool(request);
+        if (namespace === 'rambo_secrets') return host.submitAcceptanceBotSecretTool(request);
         if (namespace === 'rambo_memories') return host.submitAcceptanceMemoryTool(request);
         if (namespace === 'rambo_group_history') return host.submitAcceptanceGroupHistoryTool(request);
         if (namespace === 'rambo_groups') return host.submitAcceptanceGroupManagementTool(request);

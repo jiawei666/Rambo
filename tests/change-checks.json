@@ -127,7 +127,9 @@
         "src/main/mail-runtime.ts",
         "src/main/mail-tools.ts",
         "src/main/bot-credential-tools.ts",
+        "src/main/bot-secret-tools.ts",
         "tests/backend/bot-credential-tools.test.mjs",
+        "tests/backend/bot-secret-tools.test.mjs",
         "tests/backend/connector-credentials.test.mjs",
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",
@@ -139,6 +141,7 @@
       "checks": ["typecheck", "backend-unit"],
       "backendTargets": [
         "tests/backend/bot-credential-tools.test.mjs",
+        "tests/backend/bot-secret-tools.test.mjs",
         "tests/backend/connector-credentials.test.mjs",
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",

@@ -25,6 +25,10 @@ const api: RamboAPI = {
   setBotResource: (botId, resourceId, enabled) => invoke('setBotResource', botId, resourceId, enabled),
   respondMcpElicitation: (requestId, action) =>
     invoke('respondMcpElicitation', requestId, action),
+  completeSecretCapture: (requestId, secret) =>
+    invoke('completeSecretCapture', requestId, secret),
+  cancelSecretCapture: requestId =>
+    invoke('cancelSecretCapture', requestId),
   verifyPlaywrightConnection: () => invoke('verifyPlaywrightConnection'),
   cancelPlaywrightVerification: () => invoke('cancelPlaywrightVerification'),
   connectorProviders: () => invoke('connectorProviders'),
@@ -39,6 +43,7 @@ const api: RamboAPI = {
   removeConnection: id => invoke('removeConnection', id),
   setConnectorGrant: (botId, connectionId, granted) => invoke('setConnectorGrant', botId, connectionId, granted),
   createBot: input => invoke('createBot', input),
+  copyBot: id => invoke('copyBot', id),
   updateBot: (id, patch) => invoke('updateBot', id, patch),
   updateBotExecutionConfig: (id, patch) => invoke('updateBotExecutionConfig', id, patch),
   setBotArchived: (id, archived) => invoke('setBotArchived', id, archived),
@@ -46,7 +51,9 @@ const api: RamboAPI = {
   deleteBot: id => invoke('deleteBot', id),
   ensureBotChat: id => invoke('ensureBotChat', id),
   createGroup: input => invoke('createGroup', input),
+  updateGroupPurpose: (id, purpose) => invoke('updateGroupPurpose', id, purpose),
   addGroupMembers: (id, botIds) => invoke('addGroupMembers', id, botIds),
+  removeGroupMembers: (id, botIds) => invoke('removeGroupMembers', id, botIds),
   setGroupArchived: (id, archived) => invoke('setGroupArchived', id, archived),
   setGroupPinned: (id, pinned) => invoke('setGroupPinned', id, pinned),
   deleteGroup: id => invoke('deleteGroup', id),

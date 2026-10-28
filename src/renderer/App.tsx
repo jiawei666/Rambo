@@ -79,6 +79,7 @@ import type {
   RoutineListItem,
   RoutineRun,
   RuntimeState,
+  SecretCapturePrompt,
   Snapshot,
   TurnActivity,
   VoiceState
@@ -548,6 +549,7 @@ function App() {
   const [deletingGroup, setDeletingGroup] = useState<GroupChat | null>(null);
   const [mcpElicitations, setMcpElicitations] = useState<McpElicitationPrompt[]>([]);
   const [mcpElicitationBusy, setMcpElicitationBusy] = useState(false);
+  const [secretCapture, setSecretCapture] = useState<SecretCapturePrompt | null>(null);
   const [sidebarMenu, setSidebarMenu] = useState<
     | { kind: 'bot'; bot: Bot; conversationId: string; x: number; y: number }
     | { kind: 'group'; group: GroupChat; conversationId: string; x: number; y: number }
@@ -1060,6 +1062,11 @@ function App() {
       } else if (event.type === 'mcpElicitationResolved') {
         setMcpElicitations(current =>
           current.filter(item => item.requestId !== event.requestId));
+      } else if (event.type === 'secretCapture') {
+        setSecretCapture(event.prompt);
+      } else if (event.type === 'secretCaptureResolved') {
+        setSecretCapture(current =>
+          current?.requestId === event.requestId ? null : current);
       } else if (event.type === 'error') {
         if (!event.chatId || event.chatId === selectedChatRef.current) setAppError(event.message);
       }
@@ -1230,8 +1237,8 @@ function App() {
     void loadGroupMessages(group.id);
   };
 
-  const createGroup = async (title: string, botIds: string[]) => {
-    const group = await window.rambo.createGroup({ title, botIds });
+  const createGroup = async (title: string, purpose: string, botIds: string[]) => {
+    const group = await window.rambo.createGroup({ title, purpose, botIds });
     setSnapshot(current => current
       ? { ...current, groups: [group, ...current.groups.filter(item => item.id !== group.id)] }
       : current);
@@ -1252,6 +1259,22 @@ function App() {
       ? { ...current, groups: current.groups.map(item => item.id === group.id ? group : item) }
       : current);
     setView('group-chat');
+    setAppError(null);
+    return group;
+  };
+  const updateGroupPurpose = async (groupId: string, purpose: string) => {
+    const group = await window.rambo.updateGroupPurpose(groupId, purpose);
+    setSnapshot(current => current
+      ? { ...current, groups: current.groups.map(item => item.id === group.id ? group : item) }
+      : current);
+    setAppError(null);
+    return group;
+  };
+  const removeGroupMembers = async (groupId: string, botIds: string[]) => {
+    const group = await window.rambo.removeGroupMembers(groupId, botIds);
+    setSnapshot(current => current
+      ? { ...current, groups: current.groups.map(item => item.id === group.id ? group : item) }
+      : current);
     setAppError(null);
     return group;
   };
@@ -1450,7 +1473,7 @@ function App() {
     event.stopPropagation();
     if (target.kind === 'bot' && !target.chat) return;
     const width = 196;
-    const height = 164;
+    const height = target.kind === 'bot' ? 202 : 164;
     const x = Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8));
     const y = Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8));
     setSidebarNotice(null);
@@ -1464,6 +1487,34 @@ function App() {
     try {
       await window.rambo.copyText(conversationId);
       setSidebarNotice('对话 ID 已复制');
+    } catch (error) {
+      setAppError(toError(error));
+    }
+  };
+
+  const copyBotFromSidebar = async (menu: NonNullable<typeof sidebarMenu>) => {
+    setSidebarMenu(null);
+    if (menu.kind !== 'bot') return;
+    try {
+      const result = await window.rambo.copyBot(menu.bot.id);
+      setSnapshot(current => current
+        ? {
+            ...current,
+            bots: current.bots.some(bot => bot.id === result.bot.id)
+              ? current.bots.map(bot => bot.id === result.bot.id ? result.bot : bot)
+              : [...current.bots, result.bot],
+            chats: current.chats.some(chat => chat.id === result.chat.id)
+              ? current.chats.map(chat => chat.id === result.chat.id ? result.chat : chat)
+              : [result.chat, ...current.chats]
+          }
+        : current);
+      setSelectedGroupId(null);
+      selectedGroupRef.current = null;
+      setView('chat');
+      setSelectedBotId(result.bot.id);
+      await openChat(result.chat);
+      setSidebarNotice(`已复制 Bot：${result.bot.name}`);
+      setAppError(null);
     } catch (error) {
       setAppError(toError(error));
     }
@@ -1715,9 +1766,11 @@ function App() {
         ) : view === 'group-members' && currentGroup ? (
           <AddGroupMembersPage
             group={currentGroup}
-            bots={activeBots}
+            bots={currentSnapshot.bots}
             onCancel={() => setView('group-chat')}
             onAdd={botIds => addGroupMembers(currentGroup.id, botIds)}
+            onUpdatePurpose={purpose => updateGroupPurpose(currentGroup.id, purpose)}
+            onRemove={botIds => removeGroupMembers(currentGroup.id, botIds)}
           />
         ) : view === 'group-chat' && currentGroup ? (
             <GroupChatPage key={currentGroup.id} group={currentGroup} bots={currentSnapshot.bots} messages={groupMessages}
@@ -2017,6 +2070,13 @@ function App() {
             <Icon name="copy" size={14} />
             <span>复制对话 ID</span>
           </button>
+          {sidebarMenu.kind === 'bot' && (
+            <button type="button" role="menuitem"
+              onClick={() => void copyBotFromSidebar(sidebarMenu)}>
+              <Icon name="copy" size={14} />
+              <span>复制 Bot</span>
+            </button>
+          )}
           <button type="button" role="menuitem"
             onClick={() => void archiveFromSidebar(sidebarMenu)}>
             <Icon name="archive" size={14} />
@@ -2067,6 +2127,27 @@ function App() {
             } finally {
               setMcpElicitationBusy(false);
             }
+          }}
+        />
+      )}
+      {secretCapture && (
+        <SecretCaptureDialog
+          prompt={secretCapture}
+          onCancel={async () => {
+            const requestId = secretCapture.requestId;
+            setSecretCapture(current =>
+              current?.requestId === requestId ? null : current);
+            try {
+              await window.rambo.cancelSecretCapture(requestId);
+            } catch (error) {
+              setAppError(toError(error));
+            }
+          }}
+          onSave={async secret => {
+            const requestId = secretCapture.requestId;
+            await window.rambo.completeSecretCapture(requestId, secret);
+            setSecretCapture(current =>
+              current?.requestId === requestId ? null : current);
           }}
         />
       )}
@@ -3178,31 +3259,36 @@ function CreateGroupPage({
 }: {
   bots: Bot[];
   onCancel: () => void;
-  onCreate: (title: string, botIds: string[]) => Promise<GroupChat>;
+  onCreate: (title: string, purpose: string, botIds: string[]) => Promise<GroupChat>;
 }) {
   const [title, setTitle] = useState('新群聊');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [purpose, setPurpose] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const toggleBot = (botId: string) => {
-    setSelectedIds(current => {
-      const next = new Set(current);
-      if (next.has(botId)) next.delete(botId);
-      else next.add(botId);
-      return next;
-    });
+    setSelectedIds(current => current.includes(botId)
+      ? current.filter(id => id !== botId)
+      : [...current, botId]);
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const normalizedTitle = title.trim();
     if (!normalizedTitle) { setError('请填写群聊名称'); return; }
-    if (selectedIds.size < 2) { setError('请至少选择两个 Bot'); return; }
+    const normalizedPurpose = purpose.trim();
+    if (!normalizedPurpose) { setError('请填写群聊职责'); return; }
+    if (selectedIds.length < 2) { setError('请至少选择两个 Bot'); return; }
     setBusy(true);
     setError(null);
     try {
-      await runGroupCreateAction({ type: 'create', title: normalizedTitle, botIds: [...selectedIds] }, {
+      await runGroupCreateAction({
+        type: 'create',
+        title: normalizedTitle,
+        purpose: normalizedPurpose,
+        botIds: selectedIds
+      }, {
         cancel: onCancel,
         create: onCreate
       });
@@ -3219,7 +3305,7 @@ function CreateGroupPage({
         <div>
           <div className="eyebrow">本机群聊</div>
           <h1>创建群聊</h1>
-          <p>选择至少两个 Bot。群聊和成员会保存在此设备。</p>
+          <p>选择至少两个 Bot，第一位自动成为群主。群主会在创建后发布群职责公告。</p>
         </div>
       </div>
       <form className="settings-form" onSubmit={event => void submit(event)}>
@@ -3228,28 +3314,38 @@ function CreateGroupPage({
           <input className="text-input" value={title} maxLength={120} required
             onChange={event => setTitle(event.target.value)} />
         </label>
+        <label className="settings-field">
+          <span>群聊职责</span>
+          <textarea className="text-input group-purpose-input" value={purpose} maxLength={4000} required
+            placeholder="说明这个群共同要完成什么、边界是什么，以及成员如何协作。"
+            onChange={event => setPurpose(event.target.value)} />
+        </label>
         <fieldset className="group-member-picker">
-          <legend>选择成员</legend>
+          <legend>选择成员（按选择顺序）</legend>
           {bots.length === 0 ? (
             <div className="sidebar-hint">当前没有可加入的 Bot。</div>
-          ) : bots.map(bot => (
-            <label className={'group-member-option' + (selectedIds.has(bot.id) ? ' selected' : '')} key={bot.id}>
-              <input type="checkbox" checked={selectedIds.has(bot.id)} disabled={busy}
+          ) : bots.map(bot => {
+            const selectedIndex = selectedIds.indexOf(bot.id);
+            return (
+            <label className={'group-member-option' + (selectedIndex >= 0 ? ' selected' : '')} key={bot.id}>
+              <input type="checkbox" checked={selectedIndex >= 0} disabled={busy}
                 onChange={() => toggleBot(bot.id)} />
               <Avatar value={bot.avatar} size="small" />
               <span className="group-member-copy">
                 <strong>{bot.name}</strong>
                 <small>{bot.role.trim() || '个人助手'}</small>
               </span>
+              {selectedIndex === 0 && <span className="group-owner-badge">群主</span>}
+              {selectedIndex > 0 && <span className="group-member-order">{selectedIndex + 1}</span>}
             </label>
-          ))}
-          <p className="group-selection-count">已选 {selectedIds.size} 个；普通消息由成员各自判断，明确点名时仅对应 Bot 回复。</p>
+          );})}
+          <p className="group-selection-count">已选 {selectedIds.length} 个；第一位的 {selectedIds[0] ? bots.find(bot => bot.id === selectedIds[0])?.name : 'Bot'} 将成为群主。</p>
         </fieldset>
         {error && <div className="form-error" role="alert">{error}</div>}
         <div className="settings-save-row">
           <button type="button" className="secondary-button" disabled={busy}
             onClick={() => void runGroupCreateAction({ type: 'cancel' }, { cancel: onCancel, create: onCreate })}>取消</button>
-          <button type="submit" className="primary-button" disabled={busy || bots.length < 2 || selectedIds.size < 2 || !title.trim()}>
+          <button type="submit" className="primary-button" disabled={busy || bots.length < 2 || selectedIds.length < 2 || !title.trim() || !purpose.trim()}>
             {busy ? '正在创建…' : '创建群聊'}
           </button>
         </div>
@@ -3258,19 +3354,49 @@ function CreateGroupPage({
   );
 }
 
-function AddGroupMembersPage({ group, bots, onCancel, onAdd }: {
+function AddGroupMembersPage({
+  group,
+  bots,
+  onCancel,
+  onAdd,
+  onUpdatePurpose,
+  onRemove
+}: {
   group: GroupChat;
   bots: Bot[];
   onCancel: () => void;
   onAdd: (botIds: string[]) => Promise<GroupChat>;
+  onUpdatePurpose: (purpose: string) => Promise<GroupChat>;
+  onRemove: (botIds: string[]) => Promise<GroupChat>;
 }) {
   const existing = new Set(group.memberIds);
   const candidates = bots.filter(bot => !existing.has(bot.id) && !bot.archived);
+  const members = group.memberIds
+    .map(id => bots.find(bot => bot.id === id))
+    .filter((bot): bot is Bot => Boolean(bot));
+  const owner = bots.find(bot => bot.id === group.ownerBotId);
+  const [purpose, setPurpose] = useState(group.purpose);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const submit = async (event: FormEvent) => {
+  const savePurpose = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    const normalized = purpose.trim();
+    if (!normalized) { setError('请填写群聊职责'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await onUpdatePurpose(normalized);
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addMembers = async (event: FormEvent) => {
     event.preventDefault();
     if (!selectedIds.size || busy) return;
     setBusy(true);
@@ -3284,16 +3410,75 @@ function AddGroupMembersPage({ group, bots, onCancel, onAdd }: {
     }
   };
 
+  const removeMember = async (botId: string) => {
+    if (busy || botId === group.ownerBotId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRemove([botId]);
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="settings-page group-members-page">
       <header className="settings-page-heading">
         <div>
           <div className="eyebrow">GROUP</div>
-          <h1>群聊成员</h1>
-          <p>「{group.title}」已加入的 Bot 会保留原顺序；新成员可以读取加入前的本群历史，不会带入其他 Bot 私聊。</p>
+          <h1>群主与职责</h1>
+          <p>「{group.title}」由 {owner?.name ?? '未知 Bot'} 担任群主，成员共同遵循群职责协作。</p>
         </div>
       </header>
-      <form className="settings-form" onSubmit={event => void submit(event)}>
+      <form className="settings-form" onSubmit={event => void savePurpose(event)}>
+        <div className="group-owner-summary">
+          <span className="group-owner-badge">群主</span>
+          {owner ? (
+            <span className="group-owner-identity">
+              <Avatar value={owner.avatar} size="small" />
+              <strong>{owner.name}</strong>
+              <small>{owner.role.trim() || '个人助手'}</small>
+            </span>
+          ) : <span className="sidebar-hint">当前群主不可用。</span>}
+        </div>
+        <label className="settings-field">
+          <span>群聊职责</span>
+          <textarea className="text-input group-purpose-input" value={purpose} maxLength={4000}
+            onChange={event => { setPurpose(event.target.value); setError(null); }} />
+        </label>
+        <div className="settings-save-row">
+          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>返回群聊</button>
+          <button type="submit" className="primary-button" disabled={busy || !purpose.trim() || purpose.trim() === group.purpose}>
+            {busy ? '正在保存…' : '保存群聊职责'}
+          </button>
+        </div>
+      </form>
+      <div className="group-member-section">
+        <div>
+          <div className="eyebrow">MEMBERS</div>
+          <h2>当前成员</h2>
+          <p>成员按加入顺序排列；群主不能被直接移除。</p>
+        </div>
+        <div className="group-current-members">
+          {members.map(bot => (
+            <div className="group-current-member" key={bot.id}>
+              <Avatar value={bot.avatar} size="small" />
+              <span className="group-member-copy">
+                <strong>{bot.name}{bot.id === group.ownerBotId ? ' · 群主' : ''}</strong>
+                <small>{bot.role.trim() || '个人助手'}</small>
+              </span>
+              <button type="button" className="secondary-button compact-button"
+                disabled={busy || bot.id === group.ownerBotId}
+                onClick={() => void removeMember(bot.id)}>
+                移除
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+      <form className="settings-form" onSubmit={event => void addMembers(event)}>
         <fieldset className="group-member-picker">
           <legend>添加成员</legend>
           {candidates.length ? candidates.map(bot => (
@@ -3318,7 +3503,7 @@ function AddGroupMembersPage({ group, bots, onCancel, onAdd }: {
         </fieldset>
         {error && <div className="form-error" role="alert">{error}</div>}
         <div className="settings-save-row">
-          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>取消</button>
+          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>返回群聊</button>
           <button type="submit" className="primary-button" disabled={busy || !selectedIds.size}>
             {busy ? '正在添加…' : '添加到群聊'}
           </button>
@@ -3339,13 +3524,24 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
   const members = group.memberIds
     .map(id => bots.find(bot => bot.id === id))
     .filter((bot): bot is Bot => Boolean(bot));
+  const owner = bots.find(bot => bot.id === group.ownerBotId);
   const activeMembers = members.filter(bot => !bot.archived);
   const hasUnreadyMembers = activeMembers.some(bot => botExecutionConfigError(bot) !== null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const transcriptFollowsLatestRef = useRef(true);
   const preservedScrollRef = useRef<{
-    scrollTop: number; scrollHeight: number; followsLatest: boolean;
+    anchorId: string | null; anchorOffset: number | null;
   } | null>(null);
+
+  const captureScrollAnchor = (element: HTMLDivElement) => {
+    const containerTop = element.getBoundingClientRect().top;
+    const anchor = [...element.querySelectorAll<HTMLElement>('.message-row[data-message-id]')]
+      .find(row => row.getBoundingClientRect().bottom > containerTop);
+    preservedScrollRef.current = anchor ? {
+      anchorId: anchor.dataset.messageId ?? null,
+      anchorOffset: anchor.getBoundingClientRect().top - containerTop
+    } : null;
+  };
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -3353,16 +3549,18 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
     if (!element) return;
     if (transcriptFollowsLatestRef.current) {
       element.scrollTop = element.scrollHeight;
-    } else if (previous && !previous.followsLatest) {
-      const heightDelta = element.scrollHeight - previous.scrollHeight;
-      if (heightDelta < 0) {
-        element.scrollTop = Math.max(0, previous.scrollTop + heightDelta);
+    } else if (previous?.anchorId && previous.anchorOffset !== null) {
+      const anchor = [...element.querySelectorAll<HTMLElement>('.message-row[data-message-id]')]
+        .find(row => row.dataset.messageId === previous.anchorId);
+      if (anchor) {
+        const anchorOffset = anchor.getBoundingClientRect().top - element.getBoundingClientRect().top;
+        element.scrollTop += anchorOffset - previous.anchorOffset;
       }
     }
-    preservedScrollRef.current = {
-      scrollTop: element.scrollTop,
-      scrollHeight: element.scrollHeight,
-      followsLatest: transcriptFollowsLatestRef.current
+    captureScrollAnchor(element);
+    return () => {
+      const current = scrollRef.current;
+      if (current) captureScrollAnchor(current);
     };
   }, [messages, runtime?.members]);
 
@@ -3382,12 +3580,17 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
         : '正在思考';
 
   return (
-      <section className="chat-workspace" aria-label={group.title}>
+      <section className="chat-workspace group-workspace" aria-label={group.title}>
+      <div className="group-purpose-banner">
+        <span className="group-purpose-owner">群主 {owner?.name ?? '不可用'}</span>
+        <p>{group.purpose || '尚未设置群职责'}</p>
+      </div>
       <div className="transcript-scroll" ref={scrollRef} aria-label="群聊消息"
         onScroll={event => {
           const element = event.currentTarget;
           transcriptFollowsLatestRef.current =
             element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+          captureScrollAnchor(element);
         }}>
         {loading ? <div className="messages-loading" aria-label="正在读取群聊" /> : messages.length > 0 ? (
           <div className="message-column">
@@ -3407,7 +3610,7 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
         ) : (
           <div className="conversation-empty-state">
             <strong>开始群聊</strong>
-            <p>普通消息由成员各自判断是否回复；@名字 指定一个成员，@everyone 邀请所有活跃成员回复。</p>
+            <p>普通消息由成员各自判断是否回复；@名字 指定一个成员，@everyone 通知所有其他活跃成员自主判断。</p>
           </div>
         )}
       </div>
@@ -4461,6 +4664,98 @@ function McpElicitationDialog({
             {busy ? '正在处理…' : '允许本次'}
           </button>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function SecretCaptureDialog({
+  prompt,
+  onCancel,
+  onSave
+}: {
+  prompt: SecretCapturePrompt;
+  onCancel: () => Promise<void>;
+  onSave: (secret: string) => Promise<void>;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const [secret, setSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy || !secret) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave(secret);
+      setSecret('');
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const cancel = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCancel();
+      setSecret('');
+    } catch (issue) {
+      setError(toError(issue));
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="modal-backdrop">
+      <section className="create-dialog secret-capture-dialog" role="dialog" aria-modal="true"
+        aria-labelledby={titleId} aria-describedby={descriptionId}>
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow">本机安全输入</span>
+            <h2 id={titleId}>{prompt.operation === 'rotate' ? '轮换密钥' : '保存密钥'}</h2>
+            <p id={descriptionId}>
+              {prompt.botName} · {prompt.scope === 'global' ? '所有 Bot 可用' : '仅当前 Bot 可用'}
+            </p>
+          </div>
+        </header>
+        <div className="secret-capture-summary">
+          <strong>{prompt.name}</strong>
+          {prompt.description && <span>{prompt.description}</span>}
+        </div>
+        <form onSubmit={event => void submit(event)}>
+          <label className="secret-capture-field">
+            <span>{prompt.operation === 'rotate' ? '新密钥正文' : '密钥正文'}</span>
+            <input
+              className="text-input"
+              type="password"
+              value={secret}
+              maxLength={65_536}
+              autoComplete="new-password"
+              spellCheck={false}
+              autoFocus
+              disabled={busy}
+              onChange={event => {
+                setSecret(event.target.value);
+                setError(null);
+              }}
+            />
+          </label>
+          <p className="secret-capture-note">
+            正文只从本窗口直接交给 Rambo 主进程并加密保存，不进入聊天消息、模型上下文或工具参数。
+          </p>
+          {error && <div className="form-error" role="alert">{error}</div>}
+          <div className="dialog-actions">
+            <button type="button" className="secondary-button" disabled={busy}
+              onClick={() => void cancel()}>取消</button>
+            <button type="submit" className="primary-button" disabled={busy || !secret}>
+              {busy ? '正在确认…' : prompt.operation === 'rotate' ? '安全轮换' : '安全保存'}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   );
