@@ -50,8 +50,8 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 ### Daily planning and independent routines
 
 <p align="center">
-  <a href="assets/screenshots/life-manager-routines.png">
-    <img src="assets/screenshots/life-manager-routines.png" alt="Rambo Bot turning a natural-language daily routine into separate planning, connected-app checks, meals, and fitness tasks" width="86%" />
+  <a href="assets/screenshots/life-manager-routines-light.png">
+    <img src="assets/screenshots/life-manager-routines-light.png" alt="Rambo Bot turning a natural-language daily routine into separate planning, connected-app checks, meals, and fitness tasks" width="86%" />
   </a>
 </p>
 

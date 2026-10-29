@@ -50,8 +50,8 @@ Rambo 的界面与交互基于对 **Grok Bot** 桌面端的反编译和界面研
 ### 每日计划与独立任务
 
 <p align="center">
-  <a href="assets/screenshots/life-manager-routines.png">
-    <img src="assets/screenshots/life-manager-routines.png" alt="Rambo Bot 根据一句自然语言创建每日计划、应用巡检、午饭、健身和晚饭等多个独立任务" width="86%" />
+  <a href="assets/screenshots/life-manager-routines-light.png">
+    <img src="assets/screenshots/life-manager-routines-light.png" alt="Rambo Bot 根据一句自然语言创建每日计划、应用巡检、午饭、健身和晚饭等多个独立任务" width="86%" />
   </a>
 </p>
 
