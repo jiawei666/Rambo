@@ -51,6 +51,19 @@ async function waitForBoundTurn(page, chatId) {
   throw new Error(`发送回合没有绑定到当前 thread：${JSON.stringify(observed)}`);
 }
 
+async function clearActiveTurns(page) {
+  await page.evaluate(async () => {
+    const snapshot = await window.rambo.snapshot();
+    await Promise.all(Object.keys(snapshot.activeTurns).map(chatId =>
+      window.rambo.interrupt(chatId).catch(() => undefined)
+    ));
+  });
+  await expect.poll(() => page.evaluate(async () => {
+    const snapshot = await window.rambo.snapshot();
+    return Object.keys(snapshot.activeTurns);
+  }), { message: '清理前置测试留下的活动轮次超时' }).toEqual([]);
+}
+
 async function settleInitialBotTurn(page, botId, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   let lastInterruptAt = 0;
@@ -166,7 +179,7 @@ async function waitForRuntimeProcess(appPid) {
     const runtime = processes.find(line => {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
       return match?.[2] === String(appPid) &&
-        /(?:^|\s)(?:\S*\/)?codex(?:-app-server)?\s+app-server\s+--listen\s+stdio:\/\//u.test(match[3]);
+        /(?:^|\s)(?:\S*\/)?codex-app-server\s+--listen\s+stdio:\/\//u.test(match[3]);
     })?.trim().match(/^(\d+)/)?.[1];
     if (runtime) return Number(runtime);
     await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
@@ -250,6 +263,17 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
     await expect(page).toHaveTitle('Rambo').catch(error => {
       throw new Error(`${error.message}\nElectron stderr:\n${stderr.join('')}`);
     });
+    await expect(page.locator('.sidebar-onboarding')).toBeVisible();
+    await expect(page.locator('[data-sidebar-action="create"]')).toBeVisible();
+    await expect(page.locator('[data-topbar-action="create"]')).toHaveCount(0);
+    await page.getByRole('button', { name: '收起侧栏' }).click();
+    await expect(page.locator('[data-sidebar-action="create"]')).toBeVisible();
+    await page.getByLabel('创建 Bot').click();
+    const compactCreateDialog = page.getByRole('dialog', { name: '创建新 Bot' });
+    await expect(compactCreateDialog).toBeVisible();
+    await compactCreateDialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(compactCreateDialog).toHaveCount(0);
+    await page.getByRole('button', { name: '展开侧栏' }).click();
     await page.getByLabel('创建 Bot').click();
     const dialog = page.getByRole('dialog', { name: '创建新 Bot' });
     await expect(dialog).toBeVisible();
@@ -262,6 +286,10 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
     await dialog.getByRole('button', { name: '创建', exact: true }).click();
     await expect(page.getByText('开始聊天')).toBeVisible();
     await expect(page.getByRole('button', { name: /E2E Pilot/ }).first()).toBeVisible();
+    await expect(page.locator('.sidebar-onboarding')).toHaveCount(0);
+    await expect(page.locator('[data-sidebar-action="create"]')).toHaveCount(0);
+    await expect(page.locator('[data-topbar-action="create"]')).toBeVisible();
+    await expect(page.getByLabel('创建 Bot')).toHaveCount(1);
     await expect(page.getByPlaceholder('发消息给 E2E Pilot')).toBeVisible();
     await expect(page.getByRole('button', { name: '打开 E2E Pilot 设置' })).toBeVisible();
     await page.getByRole('button', { name: '打开 E2E Pilot 设置' }).click();
@@ -296,6 +324,12 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
       avatar: pilot.avatar,
       chatId: snapshot.chats.find(chat => chat.botId === pilot.id)?.id
     };
+
+    const restartedPage = await electron.restart();
+    await expect(restartedPage.locator('.sidebar-onboarding')).toHaveCount(0);
+    await expect(restartedPage.locator('[data-topbar-action="create"]')).toBeVisible();
+    await expect(restartedPage.getByLabel('创建 Bot')).toHaveCount(1);
+    await expect(restartedPage.getByLabel('会话列表').getByText('E2E Pilot')).toBeVisible();
 });
 
 test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', async ({ electron }) => {
@@ -1468,11 +1502,17 @@ test('真实 Electron 对 Live 转写显示文字末尾光标、平滑追加文�
   await page.getByRole('dialog', { name: '创建新 Bot' })
     .getByRole('button', { name: '创建', exact: true }).click();
   await expect(page.getByPlaceholder('发消息给 Voice Transcript Pilot')).toBeVisible();
-  const chat = await page.evaluate(async botName => {
+  const { bot, chat } = await page.evaluate(async botName => {
     const snapshot = await window.rambo.snapshot();
     const bot = snapshot.bots.find(item => item.name === botName);
-    return snapshot.chats.find(item => item.botId === bot.id && !item.groupChatId && !item.archived);
+    return {
+      bot,
+      chat: snapshot.chats.find(item =>
+        item.botId === bot.id && !item.groupChatId && !item.archived
+      )
+    };
   }, 'Voice Transcript Pilot');
+  await settleInitialBotTurn(page, bot.id);
   const messageId = 'e2e-live-transcript-stream';
   const sendMessage = (text, status) => page.evaluate(({ chatId, messageId, text, status }) =>
     window.rambo.injectAcceptanceEvent({
@@ -1745,14 +1785,15 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
     await expect(page.locator('.agent-running-avatar')).toHaveCount(1);
     await expect(page.locator('.agent-running-avatar .bot-avatar')).toHaveCount(1);
     const loadingAvatar = page.locator('.agent-running-avatar agent-robot-avatar');
-    const loadingAvatarState = await loadingAvatar.evaluate(avatar => ({
+    await expect.poll(async () => loadingAvatar.evaluate(avatar => ({
       pointerFollow: avatar._pointerFollowEnabled,
       waiting: Boolean(avatar._waitingFx),
+      sleeping: Boolean(avatar._sleeping),
       motion: avatar.getAttribute('motion')
-    }));
-    expect(loadingAvatarState).toMatchObject({
+    })), { message: '运行头像没有进入等待动画' }).toMatchObject({
       pointerFollow: false,
       waiting: true,
+      sleeping: false,
       motion: 'auto'
     });
     const loadingEyeOrbit = await loadingAvatar.evaluate(avatar => {
@@ -1782,6 +1823,34 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
     const runningBotRow = page.locator('.bot-list-row').filter({ hasText: 'Activity Pilot' });
     await expect(runningBotRow
       .locator('.bot-avatar-wrap')).toHaveCount(1);
+    await expect(runningBotRow).toHaveAttribute('data-running', 'true');
+    await expect(runningBotRow).toHaveAttribute('data-running-kind', 'conversation');
+    const runningSidebarActivity = runningBotRow.locator('.bot-row-summary');
+    await expect(runningSidebarActivity).toHaveText('对话运行中');
+    await expect(runningSidebarActivity).toHaveClass(/sidebar-run-activity/);
+    await expect(runningSidebarActivity).toHaveCSS('animation-name', 'running-shimmer');
+    await expect(runningSidebarActivity).toHaveCSS('animation-duration', '2.2s');
+    await expect(runningSidebarActivity).toHaveCSS('background-clip', 'text');
+    await expect(runningBotRow.locator('.sidebar-run-ring')).toHaveCount(0);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(runningSidebarActivity).toHaveCSS('animation-name', 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.getByRole('button', { name: '收起侧栏' }).click();
+    const compactSidebarRing = runningBotRow.locator('.sidebar-run-ring');
+    await expect(compactSidebarRing).toBeVisible();
+    await expect(compactSidebarRing.locator('svg')).toHaveCSS(
+      'animation-name',
+      'sidebar-run-ring-spin'
+    );
+    await expect.poll(() => compactSidebarRing.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return { width: box.width, height: box.height };
+    })).toEqual({ width: 14, height: 14 });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(compactSidebarRing.locator('svg')).toHaveCSS('animation-name', 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.getByRole('button', { name: '展开侧栏' }).click();
+    await expect(compactSidebarRing).toHaveCount(0);
     await runningBotRow.hover();
     const runningBotBox = await runningBotRow.boundingBox();
     if (!runningBotBox) throw new Error('找不到运行中的 Bot 行');
@@ -1807,6 +1876,9 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
       window.rambo.snapshot().then(snapshot => snapshot.activeTurns[chatId] ?? null),
       chat.id
     )).toBeNull();
+    await expect(runningBotRow).not.toHaveAttribute('data-running', 'true');
+    await expect(runningBotRow.locator('.sidebar-run-activity')).toHaveCount(0);
+    await expect(runningBotRow.locator('.sidebar-run-ring')).toHaveCount(0);
     await expect.poll(async () => {
       const box = await page.locator('.chat-running-dock').boundingBox();
       return box && runningDockBox
@@ -1993,8 +2065,19 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
     expect(Math.abs(settled.overflow)).toBeLessThanOrEqual(1);
     expect(settled.columnLeft).toBeGreaterThan(settled.transcriptLeft);
     expect(settled.runningBottom).toBeLessThanOrEqual(settled.transcriptBottom + 1);
-    await expect(page.locator('.bot-list-row').filter({ hasText: 'Activity Pilot' }).locator('.bot-row-summary'))
-      .toHaveText('检查已经完成。');
+    await page.evaluate(chatId => window.rambo.interrupt(chatId), chat.id);
+    await expect.poll(async () => {
+      const snapshot = await page.evaluate(() => window.rambo.snapshot());
+      return Boolean(snapshot.activeTurns[chat.id] || snapshot.startingTurns[chat.id]);
+    }).toBe(false);
+    await page.evaluate(chatId => window.rambo.injectAcceptanceEvent({
+      type: 'turn', chatId, turnId: null
+    }), chat.id);
+    const finishedBotRow = page.locator('.bot-list-row').filter({ hasText: 'Activity Pilot' });
+    await expect(finishedBotRow).not.toHaveAttribute('data-running', 'true');
+    await expect(finishedBotRow.locator('.sidebar-run-activity')).toHaveCount(0);
+    await expect(finishedBotRow.locator('.sidebar-run-ring')).toHaveCount(0);
+    await expect(finishedBotRow.locator('.bot-row-summary')).toHaveText('检查已经完成。');
     await expect(page.locator('.message-assistant .message-author')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '回到最新' })).toHaveCount(0);
     await expect(page.locator('.message-activities, .message-activity-popover')).toHaveCount(0);
@@ -2464,7 +2547,7 @@ test('真实 Electron 发送失败恢复附件与原始正文', async ({ electro
   await composer.fill(originalDraft);
   await page.getByRole('button', { name: '发送', exact: true }).click();
 
-  await expect(page.getByRole('status')).toContainText('无效的文字参数');
+  await expect(page.locator('.inline-error')).toContainText('无效的文字参数');
   const restoredDraft = await composer.inputValue();
   expect(restoredDraft.length).toBe(originalDraft.length);
   expect(restoredDraft.startsWith('  a')).toBe(true);
@@ -2642,20 +2725,29 @@ test('真实 Electron 新消息提醒只在当前私聊不可见时触发且遵�
     secondChat.id)).toBeNull();
 });
 
-test('账号设置独立承载登录、模型来源与连接测试，常规保留关于我', async ({ electron }) => {
+test('账号设置独立承载运行时、登录、模型来源与连接测试，常规保留关于我', async ({ electron }) => {
     const page = electron.page;
     await page.getByLabel('设置', { exact: true }).click();
     await expect(page.getByRole('tab', { name: '账号', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '关于我' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toHaveCount(0);
     await expect(page.getByText('Rambo 使用本机 Codex 登录状态。')).toHaveCount(0);
     for (const name of ['常规', '账号', '新建 Bot 初值', '资源管理', '定时任务']) {
       await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
     }
     await page.getByRole('tab', { name: '账号', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '账号状态' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '模型来源' })).toBeVisible();
-    await expect(page.getByText(/登录方式：|账号状态来自本机 Codex/).first()).toBeVisible();
-    await expect(page.getByRole('radio', { name: /本机 Codex 配置/ })).toBeChecked();
+    await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '当前配置模式', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '当前模型来源', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '账号状态', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '模型来源', exact: true })).toHaveCount(0);
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
+    await expect(page.locator('.current-source-card')).toContainText('fixture@example.com');
+    await expect(page.getByRole('radio', { name: /持续跟随本机/ })).toBeChecked();
+    await page.getByRole('radio', { name: /独立配置/ }).click();
+    await expect(page.getByRole('radio', { name: /独立配置/ })).toBeChecked();
+    await expect(page.getByRole('button', { name: '更换配置', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
     await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeVisible();
     await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeVisible();
     await page.getByRole('radio', { name: /手动配置 API/ }).click();
@@ -2664,8 +2756,8 @@ test('账号设置独立承载登录、模型来源与连接测试，常规保�
     await expect(page.getByLabel('模型 ID')).toBeVisible();
     await expect(page.getByLabel('API Key')).toHaveAttribute('type', 'password');
     await expect(page.getByText(/不承诺第三方服务完整支持/u)).toBeVisible();
-    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeChecked();
-    await expect(page.getByRole('button', { name: '测试连接与延迟', exact: true })).toBeVisible();
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
+    await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
     await expect(page.getByText(/注册|同步到其他设备|跨设备同步/)).toHaveCount(0);
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     expect(snapshot.settings).not.toHaveProperty('account');
@@ -2695,20 +2787,20 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
   if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
   const secret = 'sk-e2e-manual-secret';
   try {
+    await clearActiveTurns(page);
     await openSystemSettings(page, '账号');
+    await page.getByRole('radio', { name: /独立配置/ }).click();
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
     await page.getByRole('radio', { name: /手动配置 API/ }).click();
     await page.getByLabel('服务名称').fill('E2E Responses');
     await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
     await page.getByLabel('模型 ID').fill('fixture-model');
     await page.getByLabel('API Key').fill(secret);
-    await page.getByRole('button', { name: '保存并测试', exact: true }).click();
-
-    await expect(page.getByRole('status').filter({ hasText: '连接可用 · 首响应' }))
-      .toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot()))
       .toMatchObject({
         modelSource: {
-          kind: 'local',
+          kind: 'manualApi',
           manual: {
             serviceName: 'E2E Responses',
             baseUrl: `http://127.0.0.1:${address.port}/v1`,
@@ -2717,10 +2809,11 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
           hasApiKey: true
         }
       });
-    await expect(page.getByRole('button', { name: '切换为当前来源', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '切换为当前来源', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
-      .toBe('manualApi');
+    await expect(page.getByRole('heading', { name: '手动 API 配置', exact: true })).toHaveCount(0);
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'manualApi');
+    await page.getByRole('button', { name: '测试连接', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '连接可用 · 首响应' }))
+      .toBeVisible({ timeout: 30_000 });
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     expect(JSON.stringify(snapshot)).not.toContain(secret);
     expect(requests).toEqual([
@@ -2735,16 +2828,27 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
       'utf8'
     );
     expect(credentialDatabase).not.toContain(secret);
+    const runtimeConfigPath = join(acceptanceRun.profile, 'codex-home', 'config.toml');
+    await expect.poll(() => readFileSync(runtimeConfigPath, 'utf8'))
+      .toContain('model_provider = "rambo_manual"');
+    const manualConfig = readFileSync(runtimeConfigPath, 'utf8');
+    expect(manualConfig).toContain('model = "fixture-model"');
+    expect(manualConfig).toContain(`base_url = "http://127.0.0.1:${address.port}/v1"`);
 
-    await page.getByRole('radio', { name: /本机 Codex 配置/ }).click();
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
+    await page.getByRole('radio', { name: /本机 Codex 配置副本/ }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
       .toBe('local');
+    await expect.poll(() => {
+      try { return readFileSync(runtimeConfigPath, 'utf8'); }
+      catch { return ''; }
+    }).toBe('model = "local-fixture-model"\n');
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
 });
 
-test('手动 API 保存后连接失败不提供启用入口且保留原来源', async ({ electron }) => {
+test('手动 API 连接测试失败仍保留当前来源', async ({ electron }) => {
   test.setTimeout(60_000);
   const page = electron.page;
   const server = createServer((_request, response) => {
@@ -2756,25 +2860,31 @@ test('手动 API 保存后连接失败不提供启用入口且保留原来源', 
   if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
   try {
     await openSystemSettings(page, '账号');
+    await page.getByRole('radio', { name: /独立配置/ }).click();
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
     await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    if (!(await page.getByLabel('服务名称').isVisible().catch(() => false))) {
+      await expect.poll(() => page.evaluate(() =>
+        window.rambo.snapshot().then(value => value.modelSource.kind)))
+        .toBe('manualApi');
+      await page.getByRole('button', { name: '编辑配置', exact: true }).click();
+    }
     await expect(page.getByLabel('服务名称')).toBeEditable({ timeout: 30_000 });
     await page.getByLabel('服务名称').fill('E2E Rejected');
     await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
     await page.getByLabel('模型 ID').fill('fixture-model');
     await page.getByLabel('API Key').fill('sk-e2e-invalid-secret');
-    await page.getByRole('button', { name: '保存并测试', exact: true }).click();
+    await page.getByRole('button', { name: '保存并使用', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
+      .toBe('manualApi');
+    await page.getByRole('button', { name: '测试连接', exact: true }).click();
 
     await expect(page.getByRole('status').filter({ hasText: '连接失败 · 首响应' }))
       .toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('status').filter({ hasText: 'HTTP 401' })).toBeVisible();
-    await expect(page.getByRole('button', { name: '切换为当前来源', exact: true }))
-      .toHaveCount(0);
-    await expect(page.getByRole('button', { name: '保存配置', exact: true }))
-      .toBeEnabled();
-    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeChecked();
-    await expect(page.getByText('当前生效', { exact: true })).toHaveCount(1);
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'manualApi');
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
-      .toBe('local');
+      .toBe('manualApi');
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -3256,6 +3366,7 @@ test('真实 Electron 一次性 Routine 失败后清理定义并保留失败记�
     };
     await handoffTurn('Once success 的结果没有交回来源 Bot 私聊');
     await handoffTurn('Once failed 的结果没有交回来源 Bot 私聊');
+    await handoffTurn('Once failed 的结果没有完成来源 Bot 私聊交接');
 
     await page.evaluate(routineId =>
       window.rambo.advanceRoutineScheduleForAcceptance(routineId), missed.id);
@@ -3597,6 +3708,15 @@ test('真实 Electron 用户停止本次并暂停后停止独立 Routine 运行'
     expect(firstRun.chatId).not.toBe(secondRun.chatId);
     expect(firstRun.turnId).toBeTruthy();
     expect(secondRun.turnId).toBeTruthy();
+    const routineBotRow = page.getByLabel('会话列表')
+      .locator('.bot-list-row')
+      .filter({ hasText: 'R13 Stop Bot' });
+    await expect(routineBotRow).toHaveAttribute('data-running', 'true');
+    await expect(routineBotRow).toHaveAttribute('data-running-kind', /routine|mixed/);
+    await expect(routineBotRow.locator('.sidebar-run-activity')).toBeVisible();
+    await expect(routineBotRow.locator('.sidebar-run-ring')).toHaveCount(0);
+    await expect(routineBotRow.locator('.bot-row-summary'))
+      .toHaveText(/2 个任务运行中/);
 
     await firstItem.getByRole('button', { name: '停止本次', exact: true }).click();
     await expect(page.getByRole('status').filter({ hasText: '本次执行已停止' })).toBeVisible();
@@ -3613,6 +3733,8 @@ test('真实 Electron 用户停止本次并暂停后停止独立 Routine 运行'
       turnId: firstRun.turnId
     });
     expect(snapshot.routineRuns.find(item => item.id === secondRun.id).status).toBe('running');
+    await expect(routineBotRow.locator('.bot-row-summary'))
+      .toHaveText(/1 个任务运行中/);
     await expect(firstItem).toContainText('已中断');
     await expect.poll(async () => {
       const turns = await page.evaluate(chatId => window.rambo.turns(chatId), sourceChat.id);
@@ -3642,6 +3764,8 @@ test('真实 Electron 用户停止本次并暂停后停止独立 Routine 运行'
       chatId: secondRun.chatId,
       turnId: secondRun.turnId
     });
+    await expect(routineBotRow.locator('.bot-row-summary'))
+      .not.toHaveText(/任务运行中/);
     await expect(secondItem).toContainText('已暂停');
     await expect(secondItem).toContainText('已中断');
 });
@@ -4142,7 +4266,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
 
   await page.getByRole('button', { name: /返回聊天/ }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '常规', exact: true }).click();
+  await page.getByRole('tab', { name: '账号', exact: true }).click();
   const restart = page.getByRole('button', { name: '重启运行时', exact: true });
   await expect(restart).toBeEnabled();
   await restart.click();

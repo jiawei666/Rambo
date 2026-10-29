@@ -8,33 +8,15 @@ async function headFollowTransform(avatar) {
   );
 }
 
-async function avatarMotionState(avatar, region) {
-  return avatar.evaluate((root, regionSelector) => {
-    const area = root.closest(regionSelector) ?? root;
-    const rect = area.getBoundingClientRect();
-    return {
-      transform: root.shadowRoot?.getElementById('headFollow')?.getAttribute('transform') ?? '',
-      pointerFollow: root._pointerFollowEnabled,
-      visible: root._runtimeVisible,
-      pointer: root._pointer,
-      headPose: root._headFollowPose,
-      state: root._state,
-      regionHovered: area.matches(':hover'),
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-    };
-  }, '.avatar-preview-stage, .avatar-large');
-}
-
 async function expectFollowsPointer(page, avatar, region) {
   const box = await region.boundingBox();
   if (!box) throw new Error('找不到头像跟随区域');
-  await page.mouse.move(box.x + 4, box.y + box.height / 2);
-  await page.waitForTimeout(250);
+  await page.mouse.move(box.x + 4, box.y + box.height / 2, { steps: 4 });
+  await expect.poll(() => headFollowTransform(avatar), { timeout: 2_000 }).not.toBe('');
   const leftTransform = await headFollowTransform(avatar);
-  await page.mouse.move(box.x + box.width - 4, box.y + box.height / 2);
-  await page.waitForTimeout(250);
+  await page.mouse.move(box.x + box.width - 4, box.y + box.height / 2, { steps: 4 });
+  await expect.poll(() => headFollowTransform(avatar), { timeout: 2_000 }).not.toBe(leftTransform);
   const rightTransform = await headFollowTransform(avatar);
-  expect(leftTransform, JSON.stringify(await avatarMotionState(avatar, region))).not.toBe('');
   expect(leftTransform).not.toBe(rightTransform);
 }
 
@@ -45,9 +27,12 @@ test('新建和修改 Bot 时头像直接使用当前眼型并跟随鼠标', asy
   const preview = dialog.locator('.avatar-preview agent-robot-avatar');
 
   await expect(preview).toHaveCount(1);
-  const eyeStyle = await dialog.locator('.avatar-eye-cell[aria-pressed="true"]').getAttribute('aria-label');
+  const happyEye = dialog.locator('.avatar-eye-cell[aria-label="开心"]');
+  await happyEye.click();
+  await expect(happyEye).toHaveAttribute('aria-pressed', 'true');
+  const eyeStyle = '开心';
   const eyeStates = { 待机: 'idle', 开心: 'happy', 难过: 'sad', 生气: 'angry', 困倦: 'sleepy', 闭眼: 'sleep', 惊讶: 'surprise' };
-  expect(await preview.evaluate(root => root._state)).toBe(eyeStates[eyeStyle]);
+  await expect.poll(() => preview.evaluate(root => root._state)).toBe(eyeStates[eyeStyle]);
   await expectFollowsPointer(page, preview, dialog.locator('.avatar-preview-stage'));
 
   await page.evaluate(() => {
@@ -65,6 +50,7 @@ test('新建和修改 Bot 时头像直接使用当前眼型并跟随鼠标', asy
   await dialog.getByRole('button', { name: '绿色', exact: true }).click();
 
   await expect(dialog.getByRole('button', { name: '绿色', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => preview.evaluate(root => root._state)).toBe(eyeStates[eyeStyle]);
   const states = await page.evaluate(() => window.__avatarPreviewStates);
   expect(states[0]).toBe(eyeStates[eyeStyle]);
   expect(states).not.toContain('idle');

@@ -62,7 +62,8 @@
         "tests/e2e/private-chat.spec.mjs",
         "tests/e2e/group-chat.spec.mjs",
         "tests/e2e/avatar-picker.spec.mjs",
-        "tests/e2e/media-preview.spec.mjs"
+        "tests/e2e/media-preview.spec.mjs",
+        "tests/e2e/runtime-startup.spec.mjs"
       ],
       "reason": "共享启动、profile 与重启生命周期会影响全部 Electron 流程"
     },
@@ -156,11 +157,22 @@
     },
     {
       "id": "electron-runtime-startup",
-      "label": "本机 Codex 启动和共享登录态",
-      "paths": ["src/main/runtime.ts", "src/main/runtime-home.ts", "tests/e2e/runtime-startup.spec.mjs"],
+      "label": "内置 Codex App Server、独立更新和 Codex Home 复制",
+      "paths": [
+        "src/main/runtime.ts",
+        "src/main/runtime-home.ts",
+        "scripts/prepare-runtime.mjs",
+        "scripts/sign-mac.mjs",
+        "package.json",
+        "tests/e2e/runtime-startup.spec.mjs",
+        "tests/e2e/packaged-app.spec.mjs"
+      ],
       "checks": ["electron-e2e"],
-      "e2eTargets": ["tests/e2e/runtime-startup.spec.mjs"],
-      "reason": "真实 Electron 验证本机二进制路径、共享账号状态和运行时重启"
+      "e2eTargets": [
+        "tests/e2e/runtime-startup.spec.mjs",
+        "tests/e2e/packaged-app.spec.mjs"
+      ],
+      "reason": "真实 Electron 验证内置运行时、单独更新、白名单复制、账号状态和运行时重启"
     },
     {
       "id": "main-host-runtime",

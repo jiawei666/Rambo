@@ -47,3 +47,28 @@ test('Playwright test paths follow a stable grep option and separator', () => {
     'Playwright 的 --grep 必须使用稳定子串、位于测试文件参数之前，并用 -- 分隔目标'
   );
 });
+
+test('shared Electron fixture changes keep every harness E2E target', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/change-checks.mjs', '--paths', 'tests/e2e/fixtures/electron-app.mjs'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, NODE_OPTIONS: '' }
+    }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  const e2e = plan.plan.find(item => item.check === 'electron-e2e');
+  assert.ok(e2e);
+  for (const target of [
+    'tests/e2e/private-chat.spec.mjs',
+    'tests/e2e/group-chat.spec.mjs',
+    'tests/e2e/avatar-picker.spec.mjs',
+    'tests/e2e/media-preview.spec.mjs',
+    'tests/e2e/runtime-startup.spec.mjs'
+  ]) {
+    assert.ok(e2e.targets.includes(target), `缺少 Electron 目标：${target}`);
+  }
+});

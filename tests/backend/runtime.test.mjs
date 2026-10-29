@@ -203,132 +203,217 @@ test('Runtime forwards a configured proxy only to its Codex child and keeps loop
   });
 });
 
-test('Runtime resolves a locally installed standalone app server before cache or download', async () => {
+test('Runtime uses the newest managed package across bundled and separately updated copies', async () => {
   await withRuntime(async (_CodexRuntime, resolveRuntimeLayout, directory) => {
     const home = join(directory, 'home');
-    const nativeRoot = join(home, '.codex/packages/app-server-daemon/releases');
-    installFixtureRuntime(nativeRoot, '0.164.0');
-    installFixtureRuntime(nativeRoot, '0.163.0');
+    installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.166.0');
+    installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.163.0', 'bin/codex');
     const cacheRoot = join(directory, 'profile/runtime/codex');
-    installFixtureRuntime(cacheRoot, '0.165.0');
-    let downloads = 0;
+    const packagedRoot = join(directory, 'resource/runtime/codex');
+    installFixtureRuntime(cacheRoot, '0.164.0');
+    installFixtureRuntime(packagedRoot, '0.165.0');
     const layout = await resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
-      homeDirectory: home,
-      download: async () => { downloads += 1; return ''; }
+      homeDirectory: home
     });
-    assert.equal(layout.source, 'native');
-    assert.equal(layout.version, '0.164.0');
-    assert.equal(layout.binary, join(nativeRoot, '0.164.0/bin/codex-app-server'));
-    assert.equal(downloads, 0);
+    assert.equal(layout.source, 'packaged');
+    assert.equal(layout.version, '0.165.0');
+    assert.equal(layout.binary, join(packagedRoot, '0.165.0/bin/codex-app-server'));
+
+    installFixtureRuntime(cacheRoot, '0.166.0');
+    const updated = await resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
+      homeDirectory: home
+    });
+    assert.equal(updated.source, 'cache');
+    assert.equal(updated.version, '0.166.0');
+    assert.equal(updated.binary, join(cacheRoot, '0.166.0/bin/codex-app-server'));
   });
 });
 
-test('Runtime reuses the native bin/codex before a cached standalone app server', async () => {
+test('Rambo app updates do not replace a separately updated app server', async () => {
   await withRuntime(async (_CodexRuntime, resolveRuntimeLayout, directory) => {
-    const home = join(directory, 'home');
-    const nativeRoot = join(home, '.codex/packages/app-server-daemon/releases');
-    installFixtureRuntime(nativeRoot, '0.164.0', 'bin/codex');
     const cacheRoot = join(directory, 'profile/runtime/codex');
-    installFixtureRuntime(cacheRoot, '0.163.0');
-    let downloads = 0;
-    const layout = await resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
-      homeDirectory: home,
-      download: async () => { downloads += 1; return ''; }
-    });
-    assert.equal(layout.source, 'native');
-    assert.equal(layout.version, '0.164.0');
-    assert.equal(layout.binary, join(nativeRoot, '0.164.0/bin/codex'));
-    assert.equal(downloads, 0);
+    const packagedRoot = join(directory, 'resource/runtime/codex');
+    installFixtureRuntime(cacheRoot, '0.166.0');
+    writeFileSync(join(cacheRoot, '0.166.0/rambo-runtime.json'), JSON.stringify({
+      version: '0.166.0',
+      updateChannel: 'manual',
+      sessionSource: 'app-server'
+    }));
+    installFixtureRuntime(packagedRoot, '0.168.0');
+    const layout = await resolveRuntimeLayout(
+      join(directory, 'resource'),
+      join(directory, 'profile'),
+      { homeDirectory: join(directory, 'home') }
+    );
+    assert.equal(layout.source, 'cache');
+    assert.equal(layout.version, '0.166.0');
+    assert.equal(layout.binary, join(cacheRoot, '0.166.0/bin/codex-app-server'));
   });
 });
 
-test('Runtime downloads the pinned standalone app server when neither native nor cache exists', async () => {
+test('Runtime never downloads implicitly when no managed app server exists', async () => {
   await withRuntime(async (_CodexRuntime, resolveRuntimeLayout, directory) => {
-    const cacheRoot = join(directory, 'profile/runtime/codex');
-    let requested = '';
-    const layout = await resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
+    await assert.rejects(
+      resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
+        homeDirectory: join(directory, 'home')
+      }),
+      /未找到可用的 Codex App Server/
+    );
+  });
+});
+
+test('Runtime manually updates to a newer app server and reports real download progress', async () => {
+  await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
+    const resourceRoot = join(directory, 'resource');
+    const workingDirectory = join(directory, 'profile');
+    const cacheRoot = join(workingDirectory, 'runtime/codex');
+    mkdirSync(workingDirectory);
+    installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.165.0');
+    const runtime = new CodexRuntime(resourceRoot, workingDirectory, spawn, {
       homeDirectory: join(directory, 'home'),
-      download: async (version, destination) => {
-        requested = `${version}:${destination}`;
+      latestRuntimeRelease: async () => ({
+        version: '0.166.0',
+        archiveUrl: 'https://example.invalid/runtime.tar.gz',
+        sha256: 'a'.repeat(64),
+        publishedAt: null
+      }),
+      downloadRuntime: async (version, destination, onProgress) => {
+        onProgress?.({ phase: 'downloading', downloadedBytes: 0, totalBytes: 10 });
+        onProgress?.({ phase: 'downloading', downloadedBytes: 5, totalBytes: 10 });
+        onProgress?.({ phase: 'downloading', downloadedBytes: 10, totalBytes: 10 });
         installFixtureRuntime(cacheRoot, version);
         return destination;
       }
     });
-    assert.equal(requested, `0.164.0:${join(cacheRoot, '0.164.0')}`);
-    assert.equal(layout.source, 'cache');
-    assert.equal(layout.version, '0.164.0');
-    assert.equal(layout.binary, join(cacheRoot, '0.164.0/bin/codex-app-server'));
+    const progress = [];
+    runtime.on('state', state => {
+      if (state.progress?.phase === 'downloading') progress.push(state.progress);
+    });
+    try {
+      await runtime.start();
+      assert.equal(runtime.state.version, '0.165.0');
+      assert.equal(runtime.state.source, 'packaged');
+      const result = await runtime.updateRuntime();
+      assert.deepEqual(progress, [
+        { phase: 'downloading', downloadedBytes: 0, totalBytes: null },
+        { phase: 'downloading', downloadedBytes: 0, totalBytes: 10 },
+        { phase: 'downloading', downloadedBytes: 5, totalBytes: 10 },
+        { phase: 'downloading', downloadedBytes: 10, totalBytes: 10 }
+      ]);
+      assert.deepEqual(result, {
+        status: 'updated',
+        previousVersion: '0.165.0',
+        version: '0.166.0',
+        source: 'cache'
+      });
+      assert.equal(runtime.state.status, 'ready');
+      assert.equal(runtime.state.version, '0.166.0');
+      assert.equal(runtime.state.source, 'cache');
+      assert.equal(runtime.state.progress, null);
+      const metadata = JSON.parse(readFileSync(
+        join(cacheRoot, '0.166.0/rambo-runtime.json'),
+        'utf8'
+      ));
+      assert.equal(metadata.updateChannel, 'manual');
+    } finally {
+      await runtime.stop();
+    }
   });
 });
 
 test('Runtime does not trust a downloaded directory with the wrong package layout', async () => {
-  await withRuntime(async (_CodexRuntime, resolveRuntimeLayout, directory) => {
-    const cacheRoot = join(directory, 'profile/runtime/codex');
-    await assert.rejects(
-      resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
-        homeDirectory: join(directory, 'home'),
-        download: async version => {
-          installFixtureRuntime(cacheRoot, version, 'bin/codex');
-          return '';
-        }
+  await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
+    const resourceRoot = join(directory, 'resource');
+    const profile = join(directory, 'profile');
+    const cacheRoot = join(profile, 'runtime/codex');
+    mkdirSync(profile);
+    installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.165.0');
+    const runtime = new CodexRuntime(resourceRoot, profile, spawn, {
+      homeDirectory: join(directory, 'home'),
+      latestRuntimeRelease: async () => ({
+        version: '0.166.0',
+        archiveUrl: 'https://example.invalid/runtime.tar.gz',
+        sha256: 'a'.repeat(64),
+        publishedAt: null
       }),
-      /下载的 Codex 运行时布局无效/
+      downloadRuntime: async (version, _destination) => {
+        installFixtureRuntime(cacheRoot, version, 'bin/codex');
+        return '';
+      }
+    });
+    await runtime.start();
+    await assert.rejects(
+      runtime.updateRuntime(),
+      /下载的 Codex App Server 布局无效/
     );
+    assert.equal(runtime.state.status, 'ready');
+    assert.equal(runtime.state.version, '0.165.0');
+    await runtime.stop();
   });
 });
 
-test('Runtime propagates runtime download and checksum failures without spawning', async () => {
+test('Runtime propagates App Server update download failures without replacing the running process', async () => {
   await withRuntime(async (CodexRuntime, resolveRuntimeLayout, directory) => {
     const spawnCalls = [];
+    const resourceRoot = join(directory, 'resource');
+    const profile = join(directory, 'profile');
+    mkdirSync(profile);
+    installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.165.0');
     const spawnProcess = (command, args, options) => {
       spawnCalls.push({ command, args, options });
-      throw new Error('spawn must not run');
+      return spawn(command, args, options);
     };
-    await assert.rejects(
-      resolveRuntimeLayout(join(directory, 'resource'), join(directory, 'profile'), {
-        homeDirectory: join(directory, 'home'),
-        download: async () => { throw new Error('Codex 运行时 SHA-256 不匹配'); }
-      }),
-      /SHA-256 不匹配/
-    );
     const runtime = new CodexRuntime(
-      join(directory, 'resource'),
-      join(directory, 'profile'),
+      resourceRoot,
+      profile,
       spawnProcess,
       {
         homeDirectory: join(directory, 'home'),
-        download: async () => { throw new Error('Codex 运行时 SHA-256 不匹配'); }
+        latestRuntimeRelease: async () => ({
+          version: '0.166.0',
+          archiveUrl: 'https://example.invalid/runtime.tar.gz',
+          sha256: 'a'.repeat(64),
+          publishedAt: null
+        }),
+        downloadRuntime: async () => { throw new Error('Codex 运行时 SHA-256 不匹配'); }
       }
     );
-    await assert.rejects(runtime.start(), /SHA-256 不匹配/);
-    assert.equal(spawnCalls.length, 0);
+    await runtime.start();
+    const firstPid = spawnCalls.length;
+    await assert.rejects(runtime.updateRuntime(), /SHA-256 不匹配/);
+    assert.equal(spawnCalls.length, firstPid);
+    assert.equal(runtime.state.status, 'ready');
+    assert.equal(runtime.state.version, '0.165.0');
+    await runtime.stop();
   });
 });
 
-test('Runtime exposes download failures as an error state', async () => {
+test('Runtime reports a missing managed app server as an error without downloading', async () => {
   await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
     const root = join(directory, 'resource');
     const home = join(directory, 'home');
     const storeDirectory = join(directory, 'store');
     mkdirSync(storeDirectory, { recursive: true });
     const runtime = new CodexRuntime(root, storeDirectory, spawn, {
-      homeDirectory: home,
-      exists: path => path === storeDirectory ? true : false,
-      download: async () => { throw new Error('网络不可用'); }
+      homeDirectory: home
     });
-    await assert.rejects(runtime.start(), /网络不可用/);
+    await assert.rejects(runtime.start(), /未找到可用的 Codex App Server/);
     assert.equal(runtime.state.status, 'error');
-    assert.equal(runtime.state.error, '网络不可用');
+    assert.match(runtime.state.error, /未找到可用的 Codex App Server/);
   });
 });
 
 
-test('Runtime launches the exact native CLI with an independent home and explicit SQLite override', async () => {
+test('Runtime copies native config into an independent home and keeps the app-server entrypoint', async () => {
   await withRuntime(async (CodexRuntime, _resolve, directory) => {
     const home = join(directory, 'native-user');
-    const binary = installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.164.0', 'bin/codex');
+    const nativeHome = join(home, '.codex');
+    mkdirSync(nativeHome, { recursive: true });
+    writeFileSync(join(nativeHome, 'config.toml'), 'model="native-model"');
+    writeFileSync(join(nativeHome, 'auth.json'), '{"auth_mode":"chatgpt"}');
     const profile = join(directory, 'profile');
     mkdirSync(profile);
+    installFixtureRuntime(join(profile, 'runtime/codex'), '0.164.0');
     let call;
     const runtime = new CodexRuntime(join(directory, 'resource'), profile, (command, args, options) => {
       call = { command, args, options };
@@ -336,31 +421,32 @@ test('Runtime launches the exact native CLI with an independent home and explici
     }, { homeDirectory: home });
     try {
       await Promise.all([runtime.start(), runtime.start()]);
-      assert.equal(call.command, binary);
-      assert.deepEqual(call.args.slice(0, 3), ['app-server', '--listen', 'stdio://']);
-      assert.ok(!call.args.includes('--session-source'));
+      assert.match(call.command, /profile\/runtime\/codex\/0\.164\.0\/bin\/codex-app-server$/);
+      assert.deepEqual(call.args.slice(0, 4), ['--listen', 'stdio://', '--session-source', 'app-server']);
       assert.equal(call.options.env.CODEX_HOME, join(profile, 'codex-home'));
       assert.ok(call.args.includes(`sqlite_home=${JSON.stringify(join(profile, 'codex-home'))}`));
+      assert.equal(readFileSync(join(profile, 'codex-home/config.toml'), 'utf8'), 'model="native-model"');
+      assert.equal(readFileSync(join(profile, 'codex-home/auth.json'), 'utf8'), '{"auth_mode":"chatgpt"}');
+      assert.equal(runtime.homeSyncState.mode, 'follow');
+      assert.equal(runtime.homeSyncState.sourceDetected, true);
+      assert.ok(runtime.homeSyncState.lastSyncedAt);
+    } finally {
       await runtime.stop();
-      const updatedBinary = installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.165.0', 'bin/codex');
-      await runtime.start();
-      assert.equal(runtime.state.status, 'ready');
-      assert.equal(call.command, updatedBinary);
-    } finally { await runtime.stop(); }
+      runtime.dispose();
+    }
   });
 });
 
 test('Runtime applies model-source overrides and injects the API key only into its Codex child', async () => {
   await withRuntime(async (CodexRuntime, _resolve, directory) => {
-    const home = join(directory, 'native-user');
-    installFixtureRuntime(join(home, '.codex/packages/app-server-daemon/releases'), '0.164.0', 'bin/codex');
     const profile = join(directory, 'profile');
     mkdirSync(profile);
+    installFixtureRuntime(join(profile, 'runtime/codex'), '0.164.0');
     let call;
     const runtime = new CodexRuntime(join(directory, 'resource'), profile, (command, args, options) => {
       call = { command, args, options };
       return spawn(command, args, options);
-    }, { homeDirectory: home });
+    }, { homeDirectory: join(directory, 'native-user') });
     try {
       runtime.setModelSourceConfig([
         '-c', 'model_provider="rambo_manual"',
@@ -377,6 +463,9 @@ test('Runtime applies model-source overrides and injects the API key only into i
       await runtime.start();
       assert.ok(!call.args.includes('model_provider="rambo_manual"'));
       assert.equal(call.options.env.RAMBO_MANUAL_API_KEY, undefined);
-    } finally { await runtime.stop(); }
+    } finally {
+      await runtime.stop();
+      runtime.dispose();
+    }
   });
 });

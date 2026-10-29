@@ -91,9 +91,11 @@ const api: RamboAPI = {
   setModelSource: kind => invoke('setModelSource', kind),
   saveManualModelSource: input => invoke('saveManualModelSource', input),
   testModelConnection: source => invoke('testModelConnection', source),
+  setCodexHomeSyncMode: mode => invoke('setCodexHomeSyncMode', mode),
   startVoice: (id, offerSdp) => invoke('startVoice', id, offerSdp),
   stopVoice: (id, reason) => invoke('stopVoice', id, reason),
   restartRuntime: () => invoke('restartRuntime'),
+  updateRuntime: () => invoke('updateRuntime'),
   onEvent(callback) {
     const listener = (_: unknown, event: AppEvent) => callback(event);
     ipcRenderer.on('rambo:event', listener);

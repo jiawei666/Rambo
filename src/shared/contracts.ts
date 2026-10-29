@@ -318,7 +318,37 @@ export interface TurnActivity {
   id: string; chatId: string; turnId: string | null; itemId: string; kind: ActivityKind;
   status: ActivityStatus; title: string; detail: string; createdAt: string; updatedAt: string;
 }
-export interface RuntimeState { status: 'stopped' | 'starting' | 'ready' | 'error'; version: string; error: string | null }
+export interface RuntimeProgress {
+  phase: 'downloading';
+  downloadedBytes: number;
+  totalBytes: number | null;
+}
+export type RuntimeSource = 'cache' | 'packaged';
+export interface RuntimeState {
+  status: 'stopped' | 'starting' | 'ready' | 'error';
+  version: string;
+  source?: RuntimeSource | null;
+  error: string | null;
+  progress?: RuntimeProgress | null;
+}
+export interface RuntimeUpdateResult {
+  status: 'updated' | 'up-to-date';
+  previousVersion: string;
+  version: string;
+  source: RuntimeSource;
+}
+export type CodexHomeSyncMode = 'follow' | 'independent';
+export interface CodexHomeSyncState {
+  mode: CodexHomeSyncMode;
+  sourceDetected: boolean;
+  sourcePath: string | null;
+  lastSyncedAt: string | null;
+  pending: boolean;
+  syncing: boolean;
+  decisionRequired: boolean;
+  warning: string | null;
+  error: string | null;
+}
 export interface ManualApiConfig {
   serviceName: string;
   baseUrl: string;
@@ -353,6 +383,12 @@ export interface AccountState {
   /** Online account lookup failure. Local auth may still be usable. */
   statusError?: string | null;
 }
+export interface AccountLoginStart {
+  authUrl: string;
+  loginId: string | null;
+  browserOpened?: boolean;
+  browserOpenError?: string | null;
+}
 export interface ModelOption { id: string; label: string; isDefault: boolean }
 export interface PlaywrightVerificationResult { verifiedAt: string }
 export interface Memory { id: string; botId: string | null; text: string; approved: boolean; createdAt: string }
@@ -383,6 +419,8 @@ export interface TurnRecord {
 export interface Snapshot {
   /** Dedicated Codex home used by the Rambo-owned App Server process. */
   codexHome: string;
+  /** Independent Codex Home copy/follow state. */
+  codexHomeSync: CodexHomeSyncState;
   /** Manual proxy applied to the Rambo-owned Codex App Server process. */
   runtimeProxy: string;
   /** Application-level model service selection. It never contains secrets. */
@@ -428,6 +466,7 @@ export type AppEvent =
   | { type: 'connectorAuthProgress'; connectionId: string; phase: string; message: string; canFinishCapture?: boolean; canContinueCapture?: boolean }
   | { type: 'playwrightVerificationProgress'; phase: string; message: string }
   | { type: 'runtime'; state: RuntimeState }
+  | { type: 'codexHomeSync'; state: CodexHomeSyncState }
   | { type: 'message'; message: Message }
   | { type: 'botReplyNotification'; chatId: string; botId: string; preview: string; notificationId?: string; visibleAndFocused?: boolean }
   | { type: 'routineRunFinished'; runId: string }
@@ -544,14 +583,16 @@ export interface RamboAPI {
   loginItemSystemChangesAllowed(): Promise<boolean>;
   injectAcceptanceEvent(event: unknown): Promise<void>;
   account(): Promise<AccountState>;
-  login(): Promise<void>;
+  login(): Promise<AccountLoginStart>;
   models(): Promise<ModelOption[]>;
   setModelSource(kind: ModelSourceKind): Promise<ModelSourceState>;
   saveManualModelSource(input: ManualApiConfig & { apiKey?: string }): Promise<ModelSourceState>;
   testModelConnection(source?: ModelSourceKind): Promise<ModelConnectionTestResult>;
+  setCodexHomeSyncMode(mode: CodexHomeSyncMode): Promise<CodexHomeSyncState>;
   startVoice(chatId: string, offerSdp: string): Promise<{ chatId: string; threadId: string }>;
   stopVoice(chatId: string, reason?: string): Promise<void>;
   restartRuntime(): Promise<void>;
+  updateRuntime(): Promise<RuntimeUpdateResult>;
   onEvent(callback: (event: AppEvent) => void): () => void;
 }
 declare global { interface Window { rambo: RamboAPI } }

@@ -139,20 +139,24 @@ const needsE2E = explicitE2e || matchedAreas.has('electron-file-preview') ||
   e2eMapping.some(mapping => mapping.areas.some(area => matchedE2eAreas.has(area)) &&
     mapping.trigger.test(changedDiff)));
 if (needsE2E) {
-  const targets = e2eMapping
-    .filter(mapping =>
-      (explicitE2e && mapping.areas.includes('electron-avatar-picker')) ||
-      mapping.areas.includes('electron-file-preview') && matchedAreas.has('electron-file-preview') ||
-      mapping.trigger.test(changedDiff)
-    )
-    .map(mapping => mapping.target);
+  const existing = byCheck.get('electron-e2e');
+  const targets = [...new Set([
+    ...(existing?.targets ?? []),
+    ...e2eMapping
+      .filter(mapping =>
+        (explicitE2e && mapping.areas.includes('electron-avatar-picker')) ||
+        mapping.areas.includes('electron-file-preview') && matchedAreas.has('electron-file-preview') ||
+        mapping.trigger.test(changedDiff)
+      )
+      .map(mapping => mapping.target)
+  ])];
   byCheck.set('electron-e2e', {
     check: 'electron-e2e',
     area: 'escalation',
     reason: '改动涉及真实 Electron 用户流程',
     paths: [...paths],
     targets,
-    areas: ['renderer']
+    areas: [...new Set([...(existing?.areas ?? []), 'renderer'])]
   });
 }
 
@@ -187,8 +191,8 @@ console.log(JSON.stringify({
 
 if (values.run) {
   for (const item of checks) {
-    const command = item.command.map(value =>
-      value === '{targets}' ? item.targets.join(' ') : value
+    const command = item.command.flatMap(value =>
+      value === '{targets}' ? item.targets : value
     );
     const [bin, ...args] = command;
     const result = spawnSync(bin, args, { cwd: root, stdio: 'inherit' });

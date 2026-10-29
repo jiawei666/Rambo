@@ -56,13 +56,15 @@ export function needsInitialSetup(
   snapshot: Pick<ModelSourceState, 'kind' | 'manual' | 'hasApiKey'> & {
     runtimeReady: boolean;
     executionDefaultsReady: boolean;
+    accountReady?: boolean | null;
   }
 ): boolean {
-  if (snapshot.runtimeReady) return false;
+  if (!snapshot.runtimeReady) return true;
   if (snapshot.kind === 'manualApi') {
     return !(snapshot.manual.baseUrl && snapshot.manual.model && snapshot.hasApiKey);
   }
-  return snapshot.kind !== 'chatgpt' && !snapshot.executionDefaultsReady;
+  if (snapshot.accountReady === false) return true;
+  return !snapshot.executionDefaultsReady;
 }
 
 export function manualModelSourceAvailable(state: ModelSourceState): boolean {

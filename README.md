@@ -62,7 +62,7 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 ## Highlights
 
 - **Runs locally on macOS.** Bots, chats, routines, settings, and memory stay on your Mac in a dedicated local data directory.
-- **Uses your existing Codex account.** Rambo starts and manages its own Codex App Server process and reuses your local Codex authentication instead of requiring a separate Rambo account.
+- **Uses your Codex account without a Rambo account.** Sign in to ChatGPT directly in Rambo, copy a local Codex configuration, or configure a compatible API. Rambo keeps its own isolated Codex Home.
 - **Chat with connected apps.** Use QQ Mail and Gmail, and connect to a local WeChat environment when its permissions and local database access are available.
 - **Plan work on your behalf.** Create one-time and recurring routines in natural language, with reminders, run history, retries, and catch-up behavior.
 - **Bring multiple Bots into one conversation.** Bots can work in a shared group chat while keeping their own private chat, memory, model, and permission settings.
@@ -148,11 +148,11 @@ Dragging a file into the composer inserts its absolute path. It does not upload 
 │  process                                    │
 └──────────────────────┬──────────────────────┘
                        │
-             local Codex authentication
-             and local tool resources
+             isolated Codex configuration,
+             authentication, and tool resources
 ```
 
-Rambo does not bundle the Codex App Server in the application package. It prefers the Codex runtime already installed on the Mac, falls back to a verified cache or package when needed, and keeps its product data in a local application data directory. Authentication is shared through the local Codex configuration; Rambo does not create a second account system.
+Rambo bundles a verified macOS arm64 `codex-app-server` `0.165.0` baseline, so a clean installation can start without downloading a runtime. The app always launches its own stdio child process and keeps product data, chats, and runtime state in an isolated Codex Home. If a local Codex configuration exists, Rambo can copy the supported configuration and resource files into that isolated space. App Server updates are explicit and independent from app updates.
 
 ## Installation
 
@@ -161,7 +161,7 @@ Download the latest macOS arm64 build from [GitHub Releases](https://github.com/
 1. Unzip the downloaded archive.
 2. Move `Rambo.app` to your Applications folder.
 3. Because the app is not Developer ID signed or notarized, macOS Gatekeeper will block the first launch. Open **System Settings → Privacy & Security** and allow the app, or Control-click the app in Finder and choose **Open**.
-4. Make sure a local Codex installation and authentication are available. Rambo will use the local runtime when possible.
+4. Open the app and sign in to ChatGPT, copy a local Codex configuration, or configure a compatible API. A separate local Codex installation is not required for the bundled runtime.
 
 The app has an ad-hoc local signature only. It is not a warning-free install and it does not carry a Developer ID certificate.
 
@@ -171,7 +171,7 @@ Requirements:
 
 - macOS on Apple Silicon
 - Node.js and npm
-- A local Codex installation for the agent runtime
+- Network access for dependency installation and initial runtime preparation
 
 ```sh
 npm install
@@ -187,11 +187,11 @@ npm run typecheck      # TypeScript checks
 npm run verify:fast    # Backend, acceptance, catalog, and ledger checks
 ```
 
-Rambo uses an isolated app data directory for its Codex home while reusing the local Codex authentication and required configuration. It does not copy credentials or merge its conversations into the normal Codex history list.
+Rambo uses an isolated Codex Home for its own configuration, authentication, sessions, and state. A local Codex Home is never shared in place; only explicitly supported configuration and resource files can be copied into Rambo's copy. Rambo conversations do not merge into the normal Codex history list.
 
 ## Project status
 
-The current release is **v0.1.6**. The acceptance catalog tracks **148 product rules**, **237 local test cases**, **118 executable cases**, and **119 explicit implementation gaps**.
+The current release is **v0.1.8**. The acceptance catalog tracks **155 product rules**, **267 local test cases**, **142 executable cases**, and **125 explicit implementation gaps**.
 
 The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
 

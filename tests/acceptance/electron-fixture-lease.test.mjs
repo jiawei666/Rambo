@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
-import { acquireElectronFixtureLease } from '../e2e/fixtures/electron-app.mjs';
+import {
+  acquireElectronFixtureLease,
+  cleanupRunProcesses
+} from '../e2e/fixtures/electron-app.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const acceptanceRuns = join(root, 'acceptance-runs');
@@ -76,3 +80,56 @@ test('第二个 Playwright 命令在开窗前因验收锁而失败', () => {
     lease();
   }
 });
+
+test('验收清理只结束指定 run 的残留进程', async () => {
+  mkdirSync(acceptanceRuns, { recursive: true });
+  const run = mkdtempSync(join(acceptanceRuns, 'cleanup-fixture-'));
+  const targetScript = join(run, 'fixture-process.mjs');
+  writeFileSync(targetScript, 'setInterval(() => {}, 1 << 30);\n');
+  const target = spawn(process.execPath, ['fixture-process.mjs'], {
+    cwd: run,
+    detached: true,
+    stdio: 'ignore'
+  });
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30);'], {
+    cwd: root,
+    detached: true,
+    stdio: 'ignore'
+  });
+  target.unref();
+  unrelated.unref();
+
+  const targetExit = waitForChildExit(target);
+  const unrelatedExit = waitForChildExit(unrelated);
+  try {
+    await delay(100);
+    assert.equal(processAlive(target.pid), true);
+    assert.equal(processAlive(unrelated.pid), true);
+
+    cleanupRunProcesses(run);
+    await targetExit;
+
+    assert.equal(processAlive(target.pid), false);
+    assert.equal(processAlive(unrelated.pid), true);
+  } finally {
+    target.kill('SIGKILL');
+    unrelated.kill('SIGKILL');
+    await Promise.all([targetExit, unrelatedExit]);
+    rmSync(run, { recursive: true, force: true });
+  }
+});
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitForChildExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', resolve));
+}

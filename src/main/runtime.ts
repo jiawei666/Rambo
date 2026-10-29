@@ -7,9 +7,16 @@ import { access, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
-import { prepareRuntimeHome } from './runtime-home';
-import type { RuntimeState } from '../shared/contracts';
+import { Readable, Transform } from 'node:stream';
+import { RuntimeHomeManager } from './runtime-home';
+import type {
+  CodexHomeSyncMode,
+  CodexHomeSyncState,
+  RuntimeProgress,
+  RuntimeSource,
+  RuntimeState,
+  RuntimeUpdateResult
+} from '../shared/contracts';
 
 interface RequestOutcome<T> { result?: T; error?: Error }
 interface RequestOptions<T> {
@@ -34,7 +41,14 @@ export type RuntimeLayout = {
   binary: string;
   pathDirectory: string;
   version: string;
-  source: 'native' | 'cache';
+  source: RuntimeSource;
+};
+
+export type RuntimeRelease = {
+  version: string;
+  archiveUrl: string;
+  sha256: string;
+  publishedAt: string | null;
 };
 
 export type RuntimeResolverDeps = {
@@ -43,8 +57,12 @@ export type RuntimeResolverDeps = {
   arch?: string;
   exists?: (path: string) => boolean;
   isExecutable?: (path: string) => Promise<boolean>;
-  download?: (version: string, destination: string) => Promise<string>;
-  now?: () => number;
+  downloadRuntime?: (
+    version: string,
+    destination: string,
+    onProgress?: (progress: RuntimeProgress) => void
+  ) => Promise<string>;
+  latestRuntimeRelease?: () => Promise<RuntimeRelease>;
   nativeCodexHome?: string;
   ownedThreadIds?: () => readonly string[];
   /** Manual proxy supplied by the app; applied only to the Codex child process. */
@@ -55,8 +73,8 @@ export type RuntimeResolverDeps = {
   environment?: () => Readonly<Record<string, string>>;
 };
 
-const DEFAULT_RUNTIME_VERSION = '0.164.0';
-const RUNTIME_ARCHIVE_SHA256 = '7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0';
+const RUNTIME_RELEASE_API = 'https://api.github.com/repos/openai/codex/releases/latest';
+const RUNTIME_ASSET_NAME = 'codex-app-server-package-aarch64-apple-darwin.tar.gz';
 
 function compareVersions(left: string, right: string): number {
   const parse = (value: string) => (value.match(/^\d+\.\d+\.\d+/) ?? [value])[0]
@@ -93,7 +111,7 @@ function readManagedRuntime(
     const binary = join(candidate, String(manifest.entrypoint ?? 'bin/codex'));
     const pathDirectory = join(candidate, String(manifest.pathDir ?? 'codex-path'));
     if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-    if (binaryName !== 'codex-app-server' && !(source === 'native' && binaryName === 'codex')) return null;
+    if (binaryName !== 'codex-app-server') return null;
     return { binary, pathDirectory, version, source };
   } catch {
     return null;
@@ -105,43 +123,53 @@ export async function resolveRuntimeLayout(
   storeDirectory: string,
   deps: RuntimeResolverDeps = {}
 ): Promise<RuntimeLayout> {
-  const home = deps.homeDirectory ?? homedir();
-  const managedRoot = join(deps.nativeCodexHome ?? (deps.homeDirectory ? join(home, '.codex') : process.env.CODEX_HOME || join(home, '.codex')), 'packages/app-server-daemon/releases');
   const cacheRoot = join(storeDirectory, 'runtime/codex');
-  const candidates: Array<{ root: string; source: 'native' | 'cache' }> = [];
-  if (deps.exists ? deps.exists(managedRoot) : existsSync(managedRoot)) {
-    const entries = await readDirectory(managedRoot);
-    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
-      candidates.push({ root: join(managedRoot, entry), source: 'native' });
-    }
-  }
-  if (deps.exists ? deps.exists(cacheRoot) : existsSync(cacheRoot)) {
-    const entries = await readDirectory(cacheRoot);
-    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
-      candidates.push({ root: join(cacheRoot, entry), source: 'cache' });
-    }
-  }
   const packaged = join(resourceRoot, 'runtime/codex');
-  if (deps.exists ? deps.exists(packaged) : existsSync(packaged)) {
-    const entries = await readDirectory(packaged);
-    for (const entry of entries.sort((a, b) => compareVersions(b, a))) {
-      candidates.push({ root: join(packaged, entry), source: 'cache' });
+  const candidates: Array<{
+    root: string;
+    source: RuntimeSource;
+    version: string;
+    manuallyUpdated: boolean;
+  }> = [];
+  for (const [root, source] of [[cacheRoot, 'cache'], [packaged, 'packaged']] as const) {
+    if (!(deps.exists ? deps.exists(root) : existsSync(root))) continue;
+    for (const version of await readDirectory(root)) {
+      if (!/^\d+\.\d+\.\d+$/.test(version)) continue;
+      const runtimeRoot = join(root, version);
+      let manuallyUpdated = false;
+      const metadataPath = join(runtimeRoot, 'rambo-runtime.json');
+      if (source === 'cache' && (deps.exists ? deps.exists(metadataPath) : existsSync(metadataPath))) {
+        try {
+          manuallyUpdated = JSON.parse(readFileSync(metadataPath, 'utf8')).updateChannel === 'manual';
+        } catch {
+          manuallyUpdated = false;
+        }
+      }
+      candidates.push({ root: runtimeRoot, source, version, manuallyUpdated });
     }
   }
+  candidates.sort((left, right) => compareVersions(right.version, left.version));
+  const available: Array<{ layout: RuntimeLayout; manuallyUpdated: boolean }> = [];
+  const executable = deps.isExecutable ?? isExecutable;
   for (const candidate of candidates) {
     const layout = readManagedRuntime(candidate.root, deps, candidate.source);
     if (!layout) continue;
-    const executable = deps.isExecutable ?? isExecutable;
     if (!(await executable(layout.binary))) continue;
-    return layout;
+    available.push({ layout, manuallyUpdated: candidate.manuallyUpdated });
   }
-  const version = DEFAULT_RUNTIME_VERSION;
-  const destination = join(cacheRoot, version);
-  const download = deps.download ?? downloadRuntime;
-  await download(version, destination);
-  const layout = readManagedRuntime(destination, deps, 'cache');
-  if (!layout) throw new Error(`下载的 Codex 运行时布局无效：${destination}`);
-  return layout;
+  const manual = available.filter(item =>
+    item.layout.source === 'cache' && item.manuallyUpdated
+  )[0];
+  if (manual) return manual.layout;
+  const packagedLayout = available.find(item => item.layout.source === 'packaged')?.layout;
+  const cachedLayout = available.find(item => item.layout.source === 'cache')?.layout;
+  if (cachedLayout && (!packagedLayout ||
+      compareVersions(cachedLayout.version, packagedLayout.version) > 0)) {
+    return cachedLayout;
+  }
+  if (packagedLayout) return packagedLayout;
+  if (cachedLayout) return cachedLayout;
+  throw new Error('未找到可用的 Codex App Server，请重新安装 Rambo 或点击“更新 App Server”');
 }
 
 async function readDirectory(path: string): Promise<string[]> {
@@ -152,33 +180,122 @@ async function readDirectory(path: string): Promise<string[]> {
   }
 }
 
-async function downloadRuntime(version: string, destination: string): Promise<string> {
+export async function fetchLatestRuntimeRelease(): Promise<RuntimeRelease> {
+  const response = await fetch(RUNTIME_RELEASE_API, {
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': 'Rambo-Codex-Runtime-Updater'
+    }
+  });
+  if (!response.ok) throw new Error(`检查 App Server 更新失败：${response.status}`);
+  const release: any = await response.json();
+  const tag = typeof release?.tag_name === 'string' ? release.tag_name : '';
+  const match = tag.match(/^rust-v(\d+\.\d+\.\d+)$/);
+  if (!match) throw new Error(`Codex 最新发布标签无效：${tag || '未知'}`);
+  const asset = Array.isArray(release.assets)
+    ? release.assets.find((candidate: any) => candidate?.name === RUNTIME_ASSET_NAME)
+    : null;
+  if (!asset || typeof asset.browser_download_url !== 'string') {
+    throw new Error(`Codex ${match[1]} 没有 macOS ARM64 App Server 包`);
+  }
+  const digest = typeof asset.digest === 'string' ? asset.digest : '';
+  const sha256 = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : '';
+  if (!/^[a-f\d]{64}$/i.test(sha256)) {
+    throw new Error(`Codex ${match[1]} 的 App Server SHA-256 缺失或无效`);
+  }
+  return {
+    version: match[1],
+    archiveUrl: asset.browser_download_url,
+    sha256,
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : null
+  };
+}
+
+async function installRuntimeRelease(
+  release: RuntimeRelease,
+  version: string,
+  destination: string,
+  onProgress?: (progress: RuntimeProgress) => void
+): Promise<string> {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error(`当前没有适用于 ${process.platform}-${process.arch} 的已校验 Codex 运行时`);
   }
-  const expectedSha = version === DEFAULT_RUNTIME_VERSION ? RUNTIME_ARCHIVE_SHA256 : null;
-  if (!expectedSha) throw new Error(`没有可校验的 Codex 运行时版本：${version}`);
+  if (!/^[a-f\d]{64}$/i.test(release.sha256)) throw new Error('Codex 运行时 SHA-256 格式无效');
   const temporary = await mkdtemp(join(tmpdir(), 'rambo-runtime-'));
   try {
     const archive = join(temporary, 'runtime.tar.gz');
-    const url = `https://github.com/openai/codex/releases/download/rust-v${version}/codex-app-server-package-aarch64-apple-darwin.tar.gz`;
+    const url = release.archiveUrl;
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      throw new Error('Codex 运行时下载地址无效');
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error('Codex 运行时下载地址必须使用 http:// 或 https://');
+    }
     const response = await fetch(url);
     if (!response.ok || !response.body) throw new Error(`下载 Codex 运行时失败：${response.status}`);
-    await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), createWriteStream(archive));
+    const contentLength = Number(response.headers.get('content-length'));
+    const totalBytes = Number.isSafeInteger(contentLength) && contentLength > 0
+      ? contentLength
+      : null;
+    let downloadedBytes = 0;
+    let lastProgressAt = 0;
+    const reportProgress = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastProgressAt < 100) return;
+      lastProgressAt = now;
+      onProgress?.({ phase: 'downloading', downloadedBytes, totalBytes });
+    };
+    const progress = new Transform({
+      transform(chunk, _encoding, callback) {
+        downloadedBytes += chunk.length;
+        reportProgress(downloadedBytes === totalBytes);
+        callback(null, chunk);
+      }
+    });
+    reportProgress(true);
+    await pipeline(
+      Readable.fromWeb(response.body as import('node:stream/web').ReadableStream),
+      progress,
+      createWriteStream(archive)
+    );
+    reportProgress(true);
     const digest = createHash('sha256');
     for await (const chunk of createReadStream(archive)) digest.update(chunk);
-    if (digest.digest('hex') !== expectedSha) throw new Error('Codex 运行时 SHA-256 不匹配');
+    if (digest.digest('hex') !== release.sha256) throw new Error('Codex 运行时 SHA-256 不匹配');
     const extracted = join(temporary, 'extracted');
     await mkdir(extracted);
+    const listing = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean);
+    if (listing.some(entry => entry.startsWith('/') || entry.split('/').includes('..'))) {
+      throw new Error('Codex 运行时归档路径不安全');
+    }
     execFileSync('tar', ['-xzf', archive, '-C', extracted]);
-    if (!existsSync(join(extracted, 'codex-package.json'))) throw new Error('Codex 运行时归档布局无效');
+    const manifestPath = join(extracted, 'codex-package.json');
+    if (!existsSync(manifestPath)) throw new Error('Codex 运行时归档布局无效');
+    let manifest: any;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      throw new Error('Codex 运行时 manifest 无法解析');
+    }
+    if (
+      manifest?.version !== version ||
+      manifest?.variant !== 'codex-app-server' ||
+      manifest?.entrypoint !== 'bin/codex-app-server'
+    ) {
+      throw new Error(`Codex 运行时 manifest 与 ${version} 不匹配`);
+    }
     await mkdir(dirname(destination), { recursive: true });
     await rm(destination, { recursive: true, force: true });
     await rename(extracted, destination);
     await writeFile(join(destination, 'rambo-runtime.json'), JSON.stringify({
       version,
-      sha256: expectedSha,
+      sha256: release.sha256,
       source: `openai/codex rust-v${version}`,
+      updateChannel: 'manual',
       sessionSource: 'app-server'
     }, null, 2));
     return destination;
@@ -212,20 +329,72 @@ function runtimeProxyEnv(proxyUrl: string | null | undefined): Record<string, st
 }
 
 export class CodexRuntime extends EventEmitter {
-  state: RuntimeState = { status: 'stopped', version: '', error: null };
+  state: RuntimeState = {
+    status: 'stopped',
+    version: '',
+    source: null,
+    error: null,
+    progress: null
+  };
+  private readonly homeManager: RuntimeHomeManager;
   private process: ChildProcessWithoutNullStreams | null = null;
   private pending = new Map<number, Pending>();
   private lateResponses = new Map<number, (outcome: RequestOutcome<any>) => void>();
   private nextId = 1;
   private starting: Promise<void> | null = null;
   private stopping: Promise<void> | null = null;
+  private updating = false;
 
   constructor(
     private readonly resourceRoot: string,
     private readonly workingDirectory: string,
     private readonly spawnProcess: RuntimeProcessSpawner = spawn,
     private readonly resolverDeps: RuntimeResolverDeps = {}
-  ) { super(); }
+  ) {
+    super();
+    const nativeHome = resolverDeps.nativeCodexHome ?? (resolverDeps.homeDirectory
+      ? join(resolverDeps.homeDirectory, '.codex')
+      : process.env.CODEX_HOME || join(homedir(), '.codex'));
+    this.homeManager = new RuntimeHomeManager(
+      nativeHome,
+      workingDirectory,
+      () => resolverDeps.ownedThreadIds?.() ?? [],
+      {
+        onState: state => this.emit('homeSync', state)
+      }
+    );
+  }
+
+  get homeSyncState(): CodexHomeSyncState {
+    return this.homeManager.snapshot();
+  }
+
+  async setHomeSyncMode(
+    mode: CodexHomeSyncMode,
+    restart = true
+  ): Promise<CodexHomeSyncState> {
+    const state = await this.homeManager.setMode(mode);
+    if (restart && mode === 'follow' && this.state.status === 'ready') {
+      await this.stop();
+      await this.start();
+    }
+    return state;
+  }
+
+  async applyPendingHomeSync(): Promise<CodexHomeSyncState> {
+    const before = this.homeManager.snapshot();
+    if (before.mode !== 'follow' || !before.pending) return before;
+    await this.homeManager.applyPending();
+    if (this.state.status === 'ready') {
+      await this.stop();
+      await this.start();
+    }
+    return this.homeManager.snapshot();
+  }
+
+  dispose(): void {
+    this.homeManager.dispose();
+  }
 
   setProxyUrl(proxyUrl: string | null | undefined): void {
     this.resolverDeps.proxyUrl = proxyUrl?.trim() || null;
@@ -239,9 +408,125 @@ export class CodexRuntime extends EventEmitter {
     this.resolverDeps.environment = () => environment;
   }
 
-  private setState(status: RuntimeState['status'], error: string | null = null): void {
-    this.state = { ...this.state, status, error };
+  private setState(
+    status: RuntimeState['status'],
+    error: string | null = null,
+    progress: RuntimeProgress | null = null
+  ): void {
+    this.state = { ...this.state, status, error, progress };
     this.emit('state', this.state);
+  }
+
+  private setProgress(progress: RuntimeProgress | null): void {
+    this.state = { ...this.state, progress };
+    this.emit('state', this.state);
+  }
+
+  async updateRuntime(beforeRestart?: () => void): Promise<RuntimeUpdateResult> {
+    if (this.updating) throw new Error('App Server 正在更新，请等待当前更新完成');
+    this.updating = true;
+    try {
+      const release = await (this.resolverDeps.latestRuntimeRelease ?? fetchLatestRuntimeRelease)();
+      if (!/^\d+\.\d+\.\d+$/.test(release.version)) {
+        throw new Error(`Codex App Server 版本无效：${release.version || '未知'}`);
+      }
+      let current = this.state.status === 'ready' && this.state.version
+        ? { version: this.state.version, source: this.state.source ?? null }
+        : null;
+      if (!current) {
+        const layout = await resolveRuntimeLayout(
+          this.resourceRoot,
+          this.workingDirectory,
+          this.resolverDeps
+        ).catch(() => null);
+        if (layout) current = { version: layout.version, source: layout.source };
+      }
+      const previousVersion = current?.version ?? '';
+      if (current && compareVersions(release.version, current.version) <= 0) {
+        return {
+          status: 'up-to-date',
+          previousVersion,
+          version: current.version,
+          source: current.source ?? 'packaged'
+        };
+      }
+
+      const destination = join(this.workingDirectory, 'runtime/codex', release.version);
+      const existing = readManagedRuntime(destination, this.resolverDeps, 'cache');
+      const executable = this.resolverDeps.isExecutable ?? isExecutable;
+      const alreadyInstalled = Boolean(
+        existing &&
+        existing.version === release.version &&
+        await executable(existing.binary)
+      );
+      if (!alreadyInstalled) {
+        this.setProgress({ phase: 'downloading', downloadedBytes: 0, totalBytes: null });
+        const download = this.resolverDeps.downloadRuntime ?? ((
+          version: string,
+          target: string,
+          onProgress?: (progress: RuntimeProgress) => void
+        ) => installRuntimeRelease(release, version, target, onProgress));
+        await download(release.version, destination, this.setProgress.bind(this));
+        const installed = readManagedRuntime(destination, this.resolverDeps, 'cache');
+        if (!installed || !(await executable(installed.binary))) {
+          throw new Error(`下载的 Codex App Server 布局无效：${destination}`);
+        }
+      }
+      this.setProgress(null);
+      const installed = readManagedRuntime(destination, this.resolverDeps, 'cache');
+      if (!installed || installed.version !== release.version || !(await executable(installed.binary))) {
+        throw new Error(`下载的 Codex App Server 布局无效：${destination}`);
+      }
+      // A custom downloader may only install the extracted package. Mark the
+      // directory here so later Rambo updates keep honoring the manual choice.
+      await writeFile(join(destination, 'rambo-runtime.json'), JSON.stringify({
+        version: release.version,
+        sha256: release.sha256,
+        source: `openai/codex rust-v${release.version}`,
+        updateChannel: 'manual',
+        sessionSource: 'app-server'
+      }, null, 2));
+
+      beforeRestart?.();
+      const wasReady = this.state.status === 'ready';
+      if (this.process || this.state.status === 'ready' || this.state.status === 'starting') {
+        await this.stop();
+      }
+      try {
+        await this.start();
+      } catch (error) {
+        await rm(destination, { recursive: true, force: true }).catch(() => {});
+        if (wasReady) {
+          await this.start().catch(() => {});
+        }
+        if (!wasReady) {
+          const fallback = await resolveRuntimeLayout(
+            this.resourceRoot,
+            this.workingDirectory,
+            this.resolverDeps
+          ).catch(() => null);
+          this.state = {
+            ...this.state,
+            version: fallback?.version ?? '',
+            source: fallback?.source ?? null,
+            progress: null
+          };
+          this.emit('state', this.state);
+        }
+        throw new Error(`App Server 更新启动失败，已恢复原运行时：${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
+      return {
+        status: 'updated',
+        previousVersion,
+        version: this.state.version || release.version,
+        source: this.state.source ?? 'cache'
+      };
+    } finally {
+      this.updating = false;
+      if (this.state.progress) this.setProgress(null);
+    }
   }
 
   async start(): Promise<void> {
@@ -276,18 +561,13 @@ export class CodexRuntime extends EventEmitter {
     }
     let codexHome: string;
     try {
-      const nativeHome = this.resolverDeps.nativeCodexHome ?? (this.resolverDeps.homeDirectory
-        ? join(this.resolverDeps.homeDirectory, '.codex')
-        : process.env.CODEX_HOME || join(homedir(), '.codex'));
-      codexHome = await prepareRuntimeHome(nativeHome, this.workingDirectory, this.resolverDeps.ownedThreadIds?.());
+      codexHome = await this.homeManager.prepare();
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error));
       throw error;
     }
-    this.state = { ...this.state, version: layout.version };
-    const args = basename(layout.binary) === 'codex'
-      ? ['app-server', '--listen', 'stdio://']
-      : ['--listen', 'stdio://', '--session-source', 'app-server'];
+    this.state = { ...this.state, version: layout.version, source: layout.source };
+    const args = ['--listen', 'stdio://', '--session-source', 'app-server'];
     args.push(
       '-c', 'cli_auth_credentials_store="file"',
       '-c', `sqlite_home=${JSON.stringify(codexHome)}`,

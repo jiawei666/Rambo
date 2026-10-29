@@ -18,7 +18,7 @@ flowchart TD
     MAIN[桌面主进程：窗口、系统事件、生命周期]
     HOST[Rambo 本机宿主服务]
     DB[(SQLite 与文件存储)]
-    CODEX[本机优先/缓存/按需下载\n独立 app-server 子进程]
+    CODEX[内置基线/用户手动更新\n独立 app-server 子进程]
     AUDIO[音频与本地唤醒适配]
     MCP[已分配的 MCP、邮件工具和 Skills]
     CU[Codex Computer Use 组件\n独立分发与连接待验证]
@@ -46,35 +46,38 @@ flowchart TD
 
 ## 2. 打包、启动与退出
 
-2026-10-26 当前方案按 [Q147](decision-followups.md#q147)：直接使用本机同一份 `bin/codex app-server`，由 Rambo 启动独立进程；使用 `<userData>/codex-home` 保存独立会话与状态数据库，通过符号链接共享本机 `auth.json`、配置及所需资源，不复制凭据。显式覆盖 `CODEX_HOME`、`CODEX_SQLITE_HOME` 与 `sqlite_home`，避免共享配置把状态库写回本机目录。当前文件认证已实现，Keychain/auto 模式明确报不兼容。旧会话只按 Store 登记的 thread ID 复制，保留源文件、不覆盖更新历史，迁移记录防止删除后再次导入。以下关于必须选择独立 App Server、共享 CODEX_HOME 或专属来源的文字属于 Q147 前的历史方案，已由此段替代；缓存和经校验下载仍仅作为本机入口缺失时的回退。
+2026-10-29 当前方案按 [Q196](decision-followups.md#q196)：Rambo 使用自己的运行时管理/下载组件和独立 `codex-home`，不再软链接本机 Codex 二进制、认证或配置。首次检测到本机 Codex Home 且 Rambo 尚未形成独立配置时，默认复制白名单快照（配置、文件认证、Skills、Plugins、rules 等），不复制会话、归档、SQLite 状态库、日志或缓存；随后默认“持续跟随本机”，也可切换“保持独立”。持续跟随只做本机 Codex → Rambo 的单向复制，执行中轮次结束后再原子替换并重启运行时。显式覆盖 `CODEX_HOME`、`CODEX_SQLITE_HOME` 与 `sqlite_home`，避免状态写回本机目录。Keychain/auto 认证没有可复制文件时明确报错并要求独立登录；旧会话仍只按 Store 登记的 thread ID 迁移，保留源文件作回退。
 
 ### 包中是什么
 
-不把上游独立 App Server package 随安装包分发。二进制来源与进程归属分别处理：Rambo 可以启动本机 `bin/codex app-server`，但必须仍是 Rambo 自己的 stdio 子进程，并满足 A04。当前本机 0.164.0 CLI 把来源固定为 VSCode，不能设置专属来源，因此在 A04 不变时跳过该入口；解析优先级为“兼容 A04 的本机 App Server 入口 → Rambo 缓存 → 下载并校验固定回退版本”。独立发行物及历史隔离证据见 [历史隔离方案](history-isolation-plan.md)。不是把 Codex 桌面 GUI 或模型权重放进包。已核实本机 npm 的 `codex` 入口是 JS 启动器；复用它时还须定位完整原生发行物及依赖，不能只复制 npm 启动器。[本机核对](app-server-evidence.md)
+安装包内置上游运行时，但不软链接本机 Codex 二进制。当前固定基线为 macOS ARM64 `codex-app-server` `0.165.0`，归档 SHA-256 为 `db80061560c75c440efe11d347f5bebcf78aa895b40e38ca47623d8a37b41cd7`，发布时复制到 `Contents/Resources/runtime/codex/0.165.0`。Rambo 启动包内或用户手动更新的 `codex-app-server --listen stdio:// --session-source app-server` 子进程；不连接本机 daemon，不使用本机 `codex app-server`。基础包与 Voice 可选组件必须使用同一版本/目标架构，Computer Use 继续作为独立组件处理。官方独立包、完整 CLI 包和 Voice 资源差异见 [历史隔离方案](history-isolation-plan.md) 与 [App Server 证据](app-server-evidence.md)；不是把 Codex 桌面 GUI 或模型权重放进包。
 
-Rambo 缓存使用 `<userData>/runtime/codex/<version>/`，按独立 package 的 manifest 保留其全部相对布局；现有 CLI 平台包包含 `bin`、`codex-resources`、`codex-path`，由版本清单记录架构、校验和及协议快照。下载回退固定 0.164.0，归档 SHA-256 为 `7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0`；解包前校验，且只接受 manifest 入口为 `codex-app-server` 的布局。本机 0.163.0 arm64 原生目录约 325.0 MiB，其中 Voice 配套整目录约 20.18 MiB；这不是最终应用/压缩安装包大小，Computer Use 配套也不在此清单。来源见 [CLI 发行物清单](evidence/codex-0.163.0-darwin-arm64-inventory.json)。独立 App Server package 压缩约 97.26 MiB、逻辑大小约 249.15 MiB，4 个文件，包含 Code Mode Host 和 rg，但没有 Voice Host 或 Computer Use 服务，见 [独立包清单](evidence/codex-app-server-0.163.0-darwin-arm64-inventory.json)。该体积现在是按需下载与缓存成本，不再计入 `.app` 安装包。
+Rambo 的内置运行时位于 `<Resources>/runtime/codex/<version>/`，用户手动更新的运行时位于 `<userData>/runtime/codex/<version>/`，均按独立 package 的 manifest 保留全部相对布局。现有独立包包含 `bin/codex-app-server`、`bin/codex-code-mode-host`、`codex-path/rg` 和 `codex-package.json`。用户目录中带 `updateChannel: "manual"` 的版本优先，应用更新带来的新内置基线不得自动覆盖；损坏或缺失时回退到仍可用的内置基线。独立包本身没有 Voice Host 或 Computer Use 服务；Voice 需作为同版本可选组件补齐，Computer Use 需独立服务。相关体积和资源清单见 [独立包清单](evidence/codex-app-server-0.163.0-darwin-arm64-inventory.json)。
+
+首次启动直接解析内置基线，不自动联网。系统设置“更新 App Server”按钮才触发最新发布检查；下载期间运行时状态携带 `downloading`、已下载字节和可选总字节，主进程约每 100ms 及完成时推送一次。响应没有 `Content-Length` 时使用不定量进度并显示已下载量。只有归档 SHA-256、安全解包、manifest/入口和 App Server `initialize` 均成功后，状态才进入 `ready`；更新失败保留原版本。验收模式可把归档 URL 与 SHA-256 指向本机慢速 HTTP 夹具，仅用于真实 Electron 进度测试。
 
 ### 生命周期
 
 1. 启动桌面主进程，打开产品数据库并执行可回滚的迁移。
-2. 启动 Rambo 宿主，按运行时解析结果拉起 Rambo 自己的 App Server 子进程；独立入口使用 `codex-app-server --listen stdio:// --session-source app-server`。若使用兼容的本机 `bin/codex`，则启动 `codex app-server --listen stdio://`，仍须证明新 thread 的来源满足 A04；当前 0.164.0 固定为 VSCode，不能选用。
+2. 启动 Rambo 宿主，由独立运行时管理器拉起 Rambo 自己的 `codex-app-server --listen stdio:// --session-source app-server` 子进程；不读取或复用本机 `bin/codex`。
 3. 完成 `initialize` / `initialized`，建立请求 ID、事件分发及断线状态。
-4. 读取账号状态、可用模型及资源目录；已认证不重复登录，未认证按 A03 使用 Codex 登录流程。
+4. 读取 Rambo 独立 `codex-home` 的账号状态、可用模型及资源目录；首次持续跟随同步完成后按真实状态检查，未认证按 A03 在 Rambo 内登录。
 5. 恢复队列和计划，再按已保存开关恢复唤醒；首次未启用的唤醒不自行开启。
 6. 关闭窗口时保留主进程和后台宿主；`⌘Q` 则退出并收尾本应用拥有的服务。
 
 只使用自己拉起的进程句柄及 PID 管理启停，不按进程名杀死其他 Codex 客户端。stderr 进入脱敏诊断日志，stdout 专用于协议。stdio 请求失败、初始化失败和后台崩溃都要显示真实状态，不能把“进程存在”显示为“Agent 可用”。
 
-升级沿 A05/A06：应用和运行时缓存分别管理，运行时来源按 A02 解析；待当前轮次结束再切换，队列、计划和本地数据保留。版本迁移失败使用升级前备份，不能通过清空用户数据解决兼容问题。
+升级沿 A02/A05/A06：应用更新只替换安装包内置基线，用户手动更新的 App Server 目录独立保留并优先；运行时不随应用更新自动切换，用户点击“更新 App Server”后待当前轮次结束再切换，队列、计划和本地数据保留。持续跟随配置/资源也在无活动轮次时应用；版本迁移或同步失败使用上一份可用副本，不能通过清空用户数据解决兼容问题。
 
 ## 3. 认证、配置及历史隔离
 
 ### 复用与覆盖
 
-- 按 A03 使用本机同一 `CODEX_HOME` 的 Codex 认证与配置，不复制认证文件到项目或备份包。
+- 按 A03 使用 Rambo 自己的 `codex-home`。首次检测到本机 Codex Home 时复制白名单快照；默认“持续跟随本机”只单向复制配置、文件认证和资源，不复制会话或状态数据库。
 - 只把 Rambo 自身的设置写入产品数据库。Bot 模型、当前线程权限和可用工具集合以线程参数/进程参数覆盖，不为了一个 Bot 改写全局配置。
 - 用户在应用里明确新增的共享 MCP 或导入的共享 Skill 属于已批准的资源管理动作；其写入范围需在资源适配层集中处理。
-- 共享认证意味着在 Rambo 里改变登录状态可能影响其他客户端；不承诺有独立账号或独立凭据生命周期。
+- 独立副本意味着 Rambo 登录/配置变化默认不影响本机 Codex；持续跟随模式下本机是白名单资源来源，Rambo 内修改可能被下一次同步覆盖，切换“保持独立”后才停止跟随。
+- 手动 API 只把非敏感的顶层 `model`、`model_provider` 与 `[model_providers.rambo_manual]` 写入 Rambo 自己的 `codex-home/config.toml`；写入前保存基础配置，切回本机配置时恢复，原文件不存在时记录标记并在切回时删除临时配置。API Key 不进入 TOML、SQLite 设置快照或日志，只通过子进程环境变量注入。账号页先选择“持续跟随本机 / 独立配置”：持续跟随只使用本机副本；独立配置内再选择本机副本、ChatGPT 或手动 API，同一时间只有一个来源生效。账号身份绑定当前来源，只有来源真实可用时才标记“当前生效”，空的本机配置显示“尚未可用”；连接测试只作用于当前来源，失败不自动切换。
 
 ### 三层身份
 
@@ -176,11 +179,13 @@ Codex 自带记忆与本产品记忆的衔接需核实，确保真实写入可�
 
 决定回复的 Bot 在自己的执行会话中发言，宿主把公开进度和结果投影回群；具体协作任务仍由该任务发起者汇总。新成员可见加入前的近期群上下文，更早群历史按需查找，仍不自动取得其他 Bot 私聊。
 
-按 Q182/G14，每个群有唯一群主 Bot，并作为群管理授权角色而非路由角色。手动创建时成员列表第一位为群主，Bot 创建时创建者直接成为群主。群主可通过 Tool 维护当前群职责并增删成员；群身份只从当前执行上下文对应的群与 Bot 校验，不能跨群操作。每轮群成员上下文注入群主、群职责和成员职责目录。群主不会改变普通消息各自判断及无固定默认 Bot 兜底的规则；群主转移和群主失效后的接管策略仍待设计。
+按 Q182/Q188 与 G14，每个群有唯一群主 Bot，并作为群管理授权角色而非路由角色。手动创建时成员列表第一位为群主，Bot 创建时创建者直接成为群主。群主可通过 Tool 维护当前群职责并增删成员；群身份只从当前执行上下文对应的群与 Bot 校验，不能跨群操作。每轮群成员上下文注入群主、群职责和成员职责目录。群主、群职责与成员管理统一在群详情/设置中展示，群聊聊天页不常驻渲染群主/群职责横幅。群主不会改变普通消息各自判断及无固定默认 Bot 兜底的规则；群主转移和群主失效后的接管策略仍待设计。
 
 按 Q183–Q185/G15，创建群聊时必须同时落库群级职责。群创建成功后由群主发布真实 `@everyone` 公告；公告作为群主消息持久化，但不伪造群主发言。Bot 的私聊 thread 与新群的成员 thread 相互独立，Bot 建群后直接为群主启动群成员会话中的公告 turn，不等待创建者私聊 turn 结束；只有同一群成员 thread 已有活动 turn 时才 steer 或排队。群主通过群消息 Tool 发布公告后，宿主把同一 `@everyone` 分发给发送者之外的全部活跃成员，各成员以判断模式启动自己的回合并按需回复；没有有效补充时可内部不回复，且不记为失败。真实公告或成员调用失败不回滚群聊或成员关系，并按既有群运行状态报告。
 
-按 Q186/G16，同一群消息 Tool 暴露 `targetBotId` 与 `everyone` 两种目标。`everyone` 由宿主写入一条绑定发送者身份的群消息，再按稳定消息/投递 ID 向发送者之外的活跃成员投递并各自启动判断回合；发送者不自我投递。所有目标来自当前群成员会话，不允许跨群。`@everyone` 的 Fan-out 纳入 G08 委派链跟踪，记录根消息和祖先集，限制连续转派 4 次并拒绝回派祖先。
+按 Q186/Q189/G16，同一群消息 Tool 暴露 `targetBotId` 与 `everyone` 两种目标。`everyone` 由宿主写入一条绑定发送者身份的群消息，再按稳定消息/投递 ID 向发送者之外的活跃成员投递并各自启动判断回合；发送者不自我投递。所有目标来自当前群成员会话，不允许跨群。群消息投递链记录根消息、祖先集、深度和直接发送者；模型点名当前直接发送者时按逐轮对答回复处理，不增加深度，也不被“回派祖先”拒绝；向其他成员发起新协作仍限制连续转派 4 次并拒绝回派祖先。定向目标正忙时，宿主等待其当前回合结束后再启动排队回合，并在确认未被停止后重新登记该成员的群运行态，避免 `turn/started` 被误判为已停止的孤儿轮。宿主在写入 `@名字` 时去掉模型正文开头重复的同一提及，只保留一次。
+
+按 Q191/G03，群成员内部不回复、定向轮没有正式回复或短暂启动冲突只写入隐藏成员会话的失败活动和主进程日志，不生成群系统时间线气泡。群聊读取投影会隐藏旧版本产生的同类系统提示而不删除 SQLite 原记录；点名已归档成员等用户可处理的管理错误仍保留可见提示。
 
 当前 `src/main/host.ts` 的 `sendGroup` 不再调用集中路由器或默认 Bot；旧 `defaultBotId` 字段只作为迁移数据保留，不参与 responder 选择。源码状态不等于当前构建的全部群聊行为已经验收通过。
 

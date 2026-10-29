@@ -27,11 +27,15 @@ import {
 } from './robot-avatar';
 import { runGroupCreateAction } from './group-create-actions';
 import {
+  ACTIVITY_LABELS,
   partitionBots,
   privateChatForBot,
   selectedPrivateChat,
+  sidebarBotRunState,
   shouldShowReturnToChat,
-  sidebarConversations
+  sidebarConversations,
+  sidebarPrimaryAction,
+  sidebarGroupRunState
 } from './chat-list-model';
 import { runAfterExplicitConfirmation } from './management-actions';
 import { MessageContentView } from './message-content';
@@ -55,6 +59,8 @@ import type {
   BotResource,
   Chat,
   ComposerAttachment,
+  CodexHomeSyncMode,
+  CodexHomeSyncState,
   ConnectorAuthChallenge,
   ConnectorCategory,
   ConnectorConnection,
@@ -91,6 +97,10 @@ import {
 } from '../shared/composer-attachments';
 import { botExecutionConfigError } from '../shared/execution-config';
 import { needsInitialSetup as shouldOpenInitialSetup } from '../main/model-source';
+import {
+  accountSourceLabel,
+  deriveAccountSettingsState
+} from '../shared/account-settings';
 
 type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
 type SystemSettingsTab = 'general' | 'account' | 'model' | 'resources' | 'routines';
@@ -109,6 +119,17 @@ type VoiceErrorPresentation = {
 
 const EMPTY_SNAPSHOT: Snapshot = {
   codexHome: '',
+  codexHomeSync: {
+    mode: 'follow',
+    sourceDetected: false,
+    sourcePath: null,
+    lastSyncedAt: null,
+    pending: false,
+    syncing: false,
+    decisionRequired: false,
+    warning: null,
+    error: null
+  },
   runtimeProxy: '',
   modelSource: {
     kind: 'local',
@@ -128,7 +149,7 @@ const EMPTY_SNAPSHOT: Snapshot = {
   archivedGroups: [],
   routines: [],
   routineRuns: [],
-  runtime: { status: 'stopped', version: '', error: null },
+  runtime: { status: 'stopped', version: '', source: null, error: null },
   activeTurns: {},
   startingTurns: {},
   groupRuntimes: {},
@@ -238,6 +259,16 @@ function GroupAvatar({ group, bots, size = 'small' }: { group: GroupChat; bots: 
       ))}
       {members.length > 3 && <span className="group-avatar-count">+{members.length - 3}</span>}
       {members.length === 0 && <Icon name="users" size={14} />}
+    </span>
+  );
+}
+
+function SidebarRunRing() {
+  return (
+    <span className="sidebar-run-ring" aria-hidden="true">
+      <svg viewBox="0 0 14 14">
+        <circle cx="7" cy="7" r="5.15" />
+      </svg>
     </span>
   );
 }
@@ -533,6 +564,12 @@ function App() {
   const [loadingGroupMessages, setLoadingGroupMessages] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [accountReady, setAccountReady] = useState<boolean | null>(null);
+  const accountReadGenerationRef = useRef(0);
+  const updateAccountReady = useCallback((account: AccountState) => {
+    accountReadGenerationRef.current += 1;
+    setAccountReady(!account.requiresLogin || Boolean(account.localLoginDetected));
+  }, []);
   const [view, setView] = useState<View>('chat');
   const [systemSettingsTab, setSystemSettingsTab] = useState<SystemSettingsTab>('general');
   const [groupCreateReturnView, setGroupCreateReturnView] = useState<View>('chat');
@@ -655,6 +692,48 @@ function App() {
     const timer = window.setTimeout(() => setSidebarNotice(null), 2_400);
     return () => window.clearTimeout(timer);
   }, [sidebarNotice]);
+
+  useEffect(() => {
+    let active = true;
+    if (!snapshot || snapshot.runtime.status !== 'ready') {
+      setAccountReady(false);
+      return () => { active = false; };
+    }
+    if (snapshot.modelSource.kind === 'manualApi') {
+      setAccountReady(Boolean(
+        snapshot.modelSource.manual.baseUrl.trim() &&
+        snapshot.modelSource.manual.model.trim() &&
+        snapshot.modelSource.hasApiKey
+      ));
+      return () => { active = false; };
+    }
+    setAccountReady(null);
+    const readAccount = async () => {
+      const generation = ++accountReadGenerationRef.current;
+      try {
+        const account = await window.rambo.account();
+        if (active && generation === accountReadGenerationRef.current) {
+          setAccountReady(!account.requiresLogin || Boolean(account.localLoginDetected));
+        }
+      } catch {
+        if (active && generation === accountReadGenerationRef.current) setAccountReady(false);
+      }
+    };
+    void readAccount();
+    const onFocus = () => { void readAccount(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [
+    snapshot?.runtime.status,
+    snapshot?.runtime.version,
+    snapshot?.modelSource.kind,
+    snapshot?.modelSource.manual.baseUrl,
+    snapshot?.modelSource.manual.model,
+    snapshot?.modelSource.hasApiKey
+  ]);
 
   const loadMessages = useCallback(async (
     chatId: string,
@@ -833,14 +912,24 @@ function App() {
         setSnapshot(keepVisibleChatRead(next));
         if (!initializedRef.current) {
           initializedRef.current = true;
+          let accountReady: boolean | null = null;
+          if (next.runtime.status === 'ready' && next.modelSource.kind !== 'manualApi') {
+            try {
+              const account = await window.rambo.account();
+              accountReady = !account.requiresLogin || Boolean(account.localLoginDetected);
+            } catch {
+              accountReady = false;
+            }
+          }
           if (!firstRunSettingsRef.current && shouldOpenInitialSetup({
             ...next.modelSource,
             runtimeReady: next.runtime.status === 'ready',
-            executionDefaultsReady: next.executionDefaults.ready
+            executionDefaultsReady: next.executionDefaults.ready,
+            accountReady
           }) && next.settings.initialSetupPrompted !== 'true') {
             firstRunSettingsRef.current = true;
             await window.rambo.setSetting('initialSetupPrompted', 'true');
-            setSystemSettingsTab('general');
+            setSystemSettingsTab('account');
             setView('settings');
           }
           const firstBot = next.bots.find(bot => !bot.archived);
@@ -969,6 +1058,8 @@ function App() {
         }
       } else if (event.type === 'runtime') {
         setSnapshot(current => current ? { ...current, runtime: event.state } : current);
+      } else if (event.type === 'codexHomeSync') {
+        setSnapshot(current => current ? { ...current, codexHomeSync: event.state } : current);
       } else if (event.type === 'focusBot') {
         const bot = botsRef.current.find(item => item.id === event.botId);
         if (bot) void chooseBot(bot);
@@ -1199,6 +1290,21 @@ function App() {
   const archivedBots = botSections.archived;
   const archivedGroups = currentSnapshot.archivedGroups ?? [];
   const visibleConversations = sidebarConversations(currentSnapshot.bots, currentSnapshot.groups);
+  const hasSidebarConversations = visibleConversations.length > 0;
+  const primarySidebarAction = sidebarPrimaryAction({
+    runtimeStatus: currentSnapshot.runtime.status,
+    executionDefaultsReady: currentSnapshot.executionDefaults.ready,
+    modelSource: currentSnapshot.modelSource,
+    accountReady
+  });
+  const onboardingTitle = primarySidebarAction.kind === 'create'
+    ? '创建你的第一个 Bot'
+    : primarySidebarAction.kind === 'checking'
+      ? '正在检查配置'
+      : '先连接 Codex';
+  const onboardingDescription = primarySidebarAction.kind === 'create'
+    ? '给它一个名字，之后可以随时调整职责与能力。'
+    : primarySidebarAction.description;
   const currentBot = activeBots.find(bot => bot.id === selectedBotId) ?? null;
   const currentBotExecutionError = currentBot ? botExecutionConfigError(currentBot) : null;
   const settingsBot = currentSnapshot.bots.find(bot => bot.id === selectedBotId) ?? null;
@@ -1551,10 +1657,25 @@ function App() {
               onClick={openSearch}>
               <Icon name="search" size={17} />
             </button>
-            <button type="button" className="toolbar-button" aria-label="创建 Bot" title="创建 Bot"
-              onClick={() => setCreateOpen(true)}>
-              <Icon name="plus" size={18} />
-            </button>
+            {hasSidebarConversations && (
+              <button
+                type="button"
+                className="toolbar-button sidebar-topbar-primary"
+                data-topbar-action={primarySidebarAction.kind}
+                aria-label={primarySidebarAction.label}
+                title={primarySidebarAction.label}
+                aria-busy={primarySidebarAction.kind === 'checking' || undefined}
+                disabled={primarySidebarAction.kind === 'checking'}
+                onClick={() => {
+                  if (primarySidebarAction.kind === 'create') setCreateOpen(true);
+                  else if (primarySidebarAction.kind === 'configure') openSettings('account');
+                }}
+              >
+                {primarySidebarAction.kind === 'checking'
+                  ? <span className="toolbar-spinner" aria-hidden="true" />
+                  : <Icon name={primarySidebarAction.kind === 'create' ? 'plus' : 'settings'} size={17} />}
+              </button>
+            )}
             <button type="button" className="toolbar-button" aria-label="新建群聊" title="新建群聊"
               onClick={() => { setGroupCreateReturnView(view); setView('group-create'); setAppError(null); }}>
               <Icon name="users" size={17} />
@@ -1566,14 +1687,52 @@ function App() {
             <div className="sidebar-hint">正在读取…</div>
           ) : (
             <>
+              {!hasSidebarConversations && (
+                <section className="sidebar-onboarding" aria-label="开始使用 Rambo">
+                  <span className="sidebar-onboarding-art" aria-hidden="true">
+                    <img src={appAvatarUrl} alt="" />
+                    <span className="sidebar-onboarding-badge">
+                      {primarySidebarAction.kind === 'checking'
+                        ? <span className="sidebar-onboarding-spinner" />
+                        : <Icon name={primarySidebarAction.kind === 'create' ? 'plus' : 'settings'} size={12} />}
+                    </span>
+                  </span>
+                  <div className="sidebar-onboarding-copy">
+                    <strong>{onboardingTitle}</strong>
+                    <p>{onboardingDescription}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="sidebar-onboarding-action"
+                    data-sidebar-action={primarySidebarAction.kind}
+                    aria-label={primarySidebarAction.label}
+                    aria-busy={primarySidebarAction.kind === 'checking' || undefined}
+                    disabled={primarySidebarAction.kind === 'checking'}
+                    onClick={() => {
+                      if (primarySidebarAction.kind === 'create') setCreateOpen(true);
+                      else if (primarySidebarAction.kind === 'configure') openSettings('account');
+                    }}
+                  >
+                    <span>{primarySidebarAction.label}</span>
+                    <Icon name="arrow" size={13} />
+                  </button>
+                </section>
+              )}
               <div className="bot-list" aria-label="会话列表">
                 {visibleConversations.map(item => {
                   if (item.kind === 'bot') {
                     const bot = item.bot;
                     const chat = privateChatForBot(currentSnapshot.chats, bot.id);
-                    const running = Boolean(chat && (
-                      currentSnapshot.activeTurns[chat.id] || currentSnapshot.startingTurns[chat.id]
-                    ));
+                    const unreadCount = chat
+                      ? currentSnapshot.unreadCounts[chat.id] ?? 0
+                      : 0;
+                    const runState = sidebarBotRunState(
+                      bot.id,
+                      chat?.id ?? null,
+                      currentSnapshot.activeTurns,
+                      currentSnapshot.startingTurns,
+                      currentSnapshot.routineRuns
+                    );
                     const preview = chat ? currentSnapshot.recentMessages[chat.id]?.trim() : '';
                     return (
                       <div
@@ -1583,17 +1742,27 @@ function App() {
                         <div className={'bot-list-row' + (bot.pinnedAt ? ' pinned' : '') + (selectedBotId === bot.id && view === 'chat' ? ' selected' : '')}
                           data-pinned={bot.pinnedAt ? 'true' : undefined}
                           data-avatar-follow-region=""
-                          data-running={running ? 'true' : undefined}
+                          data-running={runState.running ? 'true' : undefined}
+                          data-running-kind={runState.kind ?? undefined}
                           onContextMenu={event => openSidebarMenu(event, { kind: 'bot', bot, chat })}>
                           <button type="button" className="bot-select" onClick={() => void chooseBot(bot)}
                             aria-current={selectedBotId === bot.id && view === 'chat' ? 'true' : undefined}>
                             <span className="bot-avatar-wrap">
                               <Avatar value={bot.avatar} size="sidebar" followOnHover />
-                              <UnreadBadge count={chat ? currentSnapshot.unreadCounts[chat.id] ?? 0 : 0} />
+                              {compactSidebar && runState.running && unreadCount === 0 && (
+                                <SidebarRunRing />
+                              )}
+                              <UnreadBadge count={unreadCount} />
                             </span>
                             <span className="bot-card-copy">
                               <span className="bot-row-name"><span>{bot.name}</span></span>
-                              <span className="bot-row-summary">{preview || bot.role.trim() || '开始聊天'}</span>
+                              <span className={
+                                'bot-row-summary' + (runState.running ? ' sidebar-run-activity' : '')
+                              }>
+                                {runState.running
+                                  ? runState.label
+                                  : preview || bot.role.trim() || '开始聊天'}
+                              </span>
                             </span>
                           </button>
                         </div>
@@ -1602,6 +1771,9 @@ function App() {
                   }
                   const group = item.group;
                   const members = group.memberIds.map(id => currentSnapshot.bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
+                  const runState = sidebarGroupRunState(
+                    currentSnapshot.groupRuntimes[group.id]?.members ?? []
+                  );
                   return (
                     <div
                       className="bot-group"
@@ -1609,13 +1781,26 @@ function App() {
                     >
                       <div className={'bot-list-row' + (group.pinnedAt ? ' pinned' : '') + (selectedGroupId === group.id && view === 'group-chat' ? ' selected' : '')}
                         data-pinned={group.pinnedAt ? 'true' : undefined}
+                        data-running={runState.running ? 'true' : undefined}
+                        data-running-kind={runState.running ? 'group' : undefined}
                         onContextMenu={event => openSidebarMenu(event, { kind: 'group', group })}>
                         <button type="button" className="bot-select" onClick={() => openGroup(group)}
                           aria-current={selectedGroupId === group.id && view === 'group-chat' ? 'page' : undefined}>
-                          <GroupAvatar group={group} bots={currentSnapshot.bots} />
+                          <span className="group-avatar-wrap">
+                            <GroupAvatar group={group} bots={currentSnapshot.bots} />
+                            {compactSidebar && runState.running && members.length <= 3 && (
+                              <SidebarRunRing />
+                            )}
+                          </span>
                           <span className="bot-card-copy">
                             <span className="bot-row-name"><span>{group.title}</span></span>
-                            <span className="bot-row-summary">{members.map(bot => bot.name).join('、') || '群聊'}</span>
+                            <span className={
+                              'bot-row-summary' + (runState.running ? ' sidebar-run-activity' : '')
+                            }>
+                              {runState.running
+                                ? runState.label
+                                : members.map(bot => bot.name).join('、') || '群聊'}
+                            </span>
                           </span>
                         </button>
                       </div>
@@ -1792,8 +1977,10 @@ function App() {
           <AccountSettingsPage
             activeTab={systemSettingsTab}
             onTabChange={setSystemSettingsTab}
+            onAccountStateChange={updateAccountReady}
             runtime={currentSnapshot.runtime}
             codexHome={currentSnapshot.codexHome}
+            codexHomeSync={currentSnapshot.codexHomeSync}
             runtimeProxy={currentSnapshot.runtimeProxy}
             modelSource={currentSnapshot.modelSource}
             notificationUnavailable={currentSnapshot.notifications.unavailableMessage}
@@ -1863,6 +2050,11 @@ function App() {
               const source = await window.rambo.setModelSource(kind);
               setSnapshot(await window.rambo.snapshot());
               return source;
+            }}
+            onSetCodexHomeSyncMode={async mode => {
+              const state = await window.rambo.setCodexHomeSyncMode(mode);
+              setSnapshot(await window.rambo.snapshot());
+              return state;
             }}
             onSaveManualModelSource={async input => {
               const source = await window.rambo.saveManualModelSource(input);
@@ -3524,7 +3716,6 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
   const members = group.memberIds
     .map(id => bots.find(bot => bot.id === id))
     .filter((bot): bot is Bot => Boolean(bot));
-  const owner = bots.find(bot => bot.id === group.ownerBotId);
   const activeMembers = members.filter(bot => !bot.archived);
   const hasUnreadyMembers = activeMembers.some(bot => botExecutionConfigError(bot) !== null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -3581,10 +3772,6 @@ function GroupChatPage({ group, bots, messages, runtime, enteringMessageIds, loa
 
   return (
       <section className="chat-workspace group-workspace" aria-label={group.title}>
-      <div className="group-purpose-banner">
-        <span className="group-purpose-owner">群主 {owner?.name ?? '不可用'}</span>
-        <p>{group.purpose || '尚未设置群职责'}</p>
-      </div>
       <div className="transcript-scroll" ref={scrollRef} aria-label="群聊消息"
         onScroll={event => {
           const element = event.currentTarget;
@@ -3690,6 +3877,20 @@ function runtimeLabel(status: RuntimeState['status']): string {
   return 'Codex 未启动';
 }
 
+function formatRuntimeBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.max(0, bytes)} B`;
+}
+
+function runtimeDownloadLabel(progress: NonNullable<RuntimeState['progress']>): string {
+  if (progress.totalBytes) {
+    const percent = Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+    return `正在更新 App Server ${percent}%（${formatRuntimeBytes(progress.downloadedBytes)} / ${formatRuntimeBytes(progress.totalBytes)}）`;
+  }
+  return `正在更新 App Server（已下载 ${formatRuntimeBytes(progress.downloadedBytes)}）`;
+}
+
 function timestampLabel(value: string | null): string {
   if (!value) return '未知';
   const date = new Date(value);
@@ -3711,19 +3912,6 @@ function MessageHoverTime({ value, align }: { value: string; align: 'left' | 'ri
     </time>
   );
 }
-
-const ACTIVITY_LABELS: Record<TurnActivity['kind'], string> = {
-  reasoning: '正在思考',
-  command: '正在运行命令',
-  file: '正在处理文件',
-  web: '正在搜索网页',
-  mcp: '正在调用工具',
-  tool: '正在调用工具',
-  plan: '正在整理计划',
-  image: '正在生成图片',
-  collab: '正在协作',
-  other: '正在处理'
-};
 
 function AgentRunningRow({
   bots,
@@ -4783,35 +4971,93 @@ function RuntimeProxySetting({
   onChange: (value: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(value);
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<AutoSaveState>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const draftRef = useRef(draft);
+  const persistedRef = useRef(value.trim());
+  const editedRef = useRef(false);
+  const savingRef = useRef(false);
+  const saveSequenceRef = useRef(0);
+  const saveTimerRef = useRef<number | null>(null);
+  const onChangeRef = useRef(onChange);
 
   useEffect(() => {
-    if (!saving) setDraft(value);
-  }, [value, saving]);
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 2400);
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    persistedRef.current = value.trim();
+    if (!editedRef.current && !savingRef.current) setDraft(value);
+  }, [value]);
+
+  useEffect(() => {
+    if (saveState !== 'saved') return;
+    const timer = window.setTimeout(() => setSaveState('idle'), 2400);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [saveState]);
 
-  const save = async () => {
-    const proxy = draft.trim();
-    setSaving(true);
+  const clearPendingSave = useCallback(() => {
+    if (saveTimerRef.current === null) return;
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+  }, []);
+
+  const save = useCallback(async (proxy: string) => {
+    if (savingRef.current || proxy === persistedRef.current) return;
+    clearPendingSave();
+    const sequence = ++saveSequenceRef.current;
+    savingRef.current = true;
+    setSaveState('saving');
     setError(null);
-    setNotice(null);
     try {
-      await onChange(proxy);
+      await onChangeRef.current(proxy);
+      if (sequence !== saveSequenceRef.current) return;
+      editedRef.current = false;
+      persistedRef.current = proxy;
       setDraft(proxy);
-      setNotice(proxy ? '代理已保存，Codex 已重启。' : '代理已清除，Codex 已重启。');
+      setSaveState('saved');
     } catch (issue) {
+      if (sequence !== saveSequenceRef.current) return;
+      setSaveState('error');
       setError(toError(issue));
     } finally {
-      setSaving(false);
+      if (sequence === saveSequenceRef.current) savingRef.current = false;
     }
+  }, [clearPendingSave]);
+
+  useEffect(() => {
+    const proxy = draft.trim();
+    if (proxy === persistedRef.current) {
+      if (editedRef.current && !savingRef.current) {
+        editedRef.current = false;
+        setSaveState('idle');
+        setError(null);
+      }
+      return;
+    }
+    if (!editedRef.current || busy || savingRef.current) return;
+    setSaveState('pending');
+    const timer = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void save(proxy);
+    }, 650);
+    saveTimerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (saveTimerRef.current === timer) saveTimerRef.current = null;
+    };
+  }, [busy, draft, save]);
+
+  const flush = () => {
+    const proxy = draftRef.current.trim();
+    if (!editedRef.current || busy || savingRef.current || proxy === persistedRef.current) return;
+    void save(proxy);
   };
+  const saving = saveState === 'saving';
 
   return (
     <div className="runtime-proxy-setting">
@@ -4827,21 +5073,24 @@ function RuntimeProxySetting({
           placeholder="http://127.0.0.1:10808"
           value={draft}
           disabled={busy || saving}
-          onChange={event => setDraft(event.target.value)}
+          onChange={event => {
+            editedRef.current = true;
+            setDraft(event.target.value);
+            setError(null);
+            setSaveState('pending');
+          }}
+          onBlur={flush}
           onKeyDown={event => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              void save();
+              flush();
             }
           }}
         />
-        <span className="field-hint">可留空；填写后仅传给 Rambo 启动的 Codex，不影响系统代理。保存时会重启运行时。</span>
+        <span className="field-hint">可留空；填写后仅传给 Rambo 启动的 Codex，不影响系统代理。停止输入或离开输入框后自动保存并重启运行时。</span>
       </label>
       <div className="runtime-proxy-actions">
-        <AutoSaveIndicator state={saving ? 'saving' : error ? 'error' : notice ? 'saved' : 'idle'} error={error} />
-        {notice && !error && <span className="autosave-indicator autosave-complete" role="status">{notice}</span>}
-        <button type="button" className="secondary-button" disabled={busy || saving || draft.trim() === value.trim()}
-          onClick={() => void save()}>{saving ? '保存并重启…' : '保存代理'}</button>
+        <AutoSaveIndicator state={saveState} error={error} />
       </div>
     </div>
   );
@@ -5576,8 +5825,10 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
 function AccountSettingsPage({
   activeTab,
   onTabChange,
+  onAccountStateChange,
   runtime,
   codexHome,
+  codexHomeSync,
   runtimeProxy,
   modelSource,
   notificationUnavailable,
@@ -5606,6 +5857,7 @@ function AccountSettingsPage({
   onCancelPlaywrightVerification,
   onSetLaunchAtLogin,
   onSetRuntimeProxy,
+  onSetCodexHomeSyncMode,
   onSetModelSource,
   onSaveManualModelSource,
   onTestModelConnection,
@@ -5615,8 +5867,10 @@ function AccountSettingsPage({
 }: {
   activeTab: SystemSettingsTab;
   onTabChange: (tab: SystemSettingsTab) => void;
+  onAccountStateChange: (account: AccountState) => void;
   runtime: RuntimeState;
   codexHome: string;
+  codexHomeSync: CodexHomeSyncState;
   runtimeProxy: string;
   modelSource: ModelSourceState;
   notificationUnavailable: string | null;
@@ -5645,6 +5899,7 @@ function AccountSettingsPage({
   onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
   onSetRuntimeProxy: (value: string) => Promise<void>;
+  onSetCodexHomeSyncMode: (mode: CodexHomeSyncMode) => Promise<CodexHomeSyncState>;
   onSetModelSource: (kind: ModelSourceKind) => Promise<ModelSourceState>;
   onSaveManualModelSource: (input: {
     serviceName: string; baseUrl: string; model: string; apiKey?: string;
@@ -5658,6 +5913,7 @@ function AccountSettingsPage({
   const [appVersion, setAppVersion] = useState('未知');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [codexHomeSyncBusy, setCodexHomeSyncBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [globalModelDraft, setGlobalModelDraft] = useState(globalModel);
@@ -5679,16 +5935,22 @@ function AccountSettingsPage({
   const [manualBaseUrl, setManualBaseUrl] = useState(modelSource.manual.baseUrl);
   const [manualModel, setManualModel] = useState(modelSource.manual.model);
   const [manualApiKey, setManualApiKey] = useState('');
-  const [draftModelSource, setDraftModelSource] = useState<ModelSourceKind>(modelSource.kind);
-  const [manualEditorOpen, setManualEditorOpen] = useState(modelSource.kind === 'manualApi');
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+  const [manualEditorOpen, setManualEditorOpen] = useState(false);
   const [modelSourceBusy, setModelSourceBusy] = useState(false);
   const [modelSourceNotice, setModelSourceNotice] = useState<string | null>(null);
   const [modelSourceError, setModelSourceError] = useState<string | null>(null);
   const [manualSaveState, setManualSaveState] = useState<AutoSaveState>('idle');
   const [connectionTest, setConnectionTest] = useState<ModelConnectionTestResult | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [loginPending, setLoginPending] = useState(false);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [runtimeRestartNotice, setRuntimeRestartNotice] = useState<string | null>(null);
   const [runtimeRestartError, setRuntimeRestartError] = useState<string | null>(null);
+  const [runtimeUpdating, setRuntimeUpdating] = useState(false);
+  const [runtimeUpdateNotice, setRuntimeUpdateNotice] = useState<string | null>(null);
+  const [runtimeUpdateError, setRuntimeUpdateError] = useState<string | null>(null);
   const modelWriteSequenceRef = useRef(0);
   const modelWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const permissionWriteSequenceRef = useRef(0);
@@ -5718,8 +5980,8 @@ function AccountSettingsPage({
   }, [modelSource.manual.serviceName, modelSource.manual.baseUrl, modelSource.manual.model]);
 
   useEffect(() => {
-    setDraftModelSource(modelSource.kind);
-    if (modelSource.kind === 'manualApi') setManualEditorOpen(true);
+    setSourcePickerOpen(false);
+    setManualEditorOpen(false);
   }, [modelSource.kind]);
 
   useEffect(() => {
@@ -5755,10 +6017,10 @@ function AccountSettingsPage({
       window.rambo.account().then(result => {
         if (active) {
           setAccount(result);
-          setError(null);
+          setAccountError(null);
         }
       }).catch(issue => {
-        if (active) setError(toError(issue));
+        if (active) setAccountError(toError(issue));
       }).finally(() => {
         if (active) setLoading(false);
       });
@@ -5771,7 +6033,44 @@ function AccountSettingsPage({
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [codexHomeSync.mode, codexHomeSync.lastSyncedAt, modelSource.kind, onAccountStateChange]);
+
+  useEffect(() => {
+    if (!loginPending) return;
+    let active = true;
+    let timer: number | undefined;
+    const startedAt = Date.now();
+    const checkLogin = async () => {
+      try {
+        const next = await window.rambo.account();
+        if (!active) return;
+        onAccountStateChange(next);
+        setAccount(next);
+        setAccountError(null);
+        if (!next.requiresLogin) {
+          setLoginPending(false);
+          setLoginUrl(null);
+          setNotice('ChatGPT 登录已完成，账号已连接。');
+          return;
+        }
+      } catch (issue) {
+        if (!active) return;
+        if (Date.now() - startedAt > 30_000) setAccountError(toError(issue));
+      }
+      if (!active) return;
+      if (Date.now() - startedAt < 10 * 60_000) {
+        timer = window.setTimeout(() => void checkLogin(), 1_500);
+      } else {
+        setLoginPending(false);
+        setNotice('登录尚未完成。可以重新点击“登录 ChatGPT”，或使用下方链接重新打开登录页。');
+      }
+    };
+    void checkLogin();
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [loginPending, onAccountStateChange]);
 
   const updateGlobalModel = async (value: string) => {
     const sequence = ++modelWriteSequenceRef.current;
@@ -5841,13 +6140,22 @@ function AccountSettingsPage({
 
   const login = async () => {
     setBusy(true);
-    setError(null);
+    setAccountError(null);
     setNotice(null);
+    setLoginUrl(null);
     try {
-      await window.rambo.login();
-      setNotice('登录流程已启动。完成后可重新打开此页查看账号状态。');
+      if (modelSource.kind !== 'chatgpt') {
+        await onSetModelSource('chatgpt');
+      }
+      const result = await window.rambo.login();
+      setLoginPending(true);
+      setLoginUrl(result.authUrl);
+      setNotice(result.browserOpened === false
+        ? '未能自动打开系统浏览器。请使用下方链接完成授权，此页会自动更新账号状态。'
+        : '登录页已在浏览器中打开。完成授权后，此页会自动更新账号状态。');
     } catch (issue) {
-      setError(toError(issue));
+      setLoginPending(false);
+      setAccountError(toError(issue));
     } finally {
       setBusy(false);
     }
@@ -5857,6 +6165,8 @@ function AccountSettingsPage({
     setBusy(true);
     setRuntimeRestartError(null);
     setRuntimeRestartNotice(null);
+    setRuntimeUpdateError(null);
+    setRuntimeUpdateNotice(null);
     try {
       await window.rambo.restartRuntime();
       setRuntimeRestartNotice('已请求重启 Codex。');
@@ -5867,14 +6177,55 @@ function AccountSettingsPage({
     }
   };
 
+  const updateRuntime = async () => {
+    setRuntimeUpdating(true);
+    setRuntimeUpdateError(null);
+    setRuntimeUpdateNotice(null);
+    setRuntimeRestartError(null);
+    setRuntimeRestartNotice(null);
+    try {
+      const result = await window.rambo.updateRuntime();
+      setRuntimeUpdateNotice(result.status === 'up-to-date'
+        ? `App Server 已是最新版本（${result.version}）。`
+        : `App Server 已从 ${result.previousVersion || '未知版本'} 更新到 ${result.version}。`);
+    } catch (issue) {
+      setRuntimeUpdateError(toError(issue));
+    } finally {
+      setRuntimeUpdating(false);
+    }
+  };
+
+  const switchCodexHomeSync = async (mode: CodexHomeSyncMode) => {
+    if (mode === codexHomeSync.mode) return;
+    setCodexHomeSyncBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await onSetCodexHomeSyncMode(mode);
+      setSourcePickerOpen(false);
+      setManualEditorOpen(false);
+      setNotice(mode === 'follow'
+        ? '已开启持续跟随本机 Codex；后续配置和资源会在空闲时同步。'
+        : '已保持独立；Rambo 不再跟随本机 Codex 的后续变化。');
+    } catch (issue) {
+      setError(toError(issue));
+    } finally {
+      setCodexHomeSyncBusy(false);
+    }
+  };
+
   const switchModelSource = async (kind: ModelSourceKind) => {
-    setDraftModelSource(kind);
-    if (kind === 'manualApi') setManualEditorOpen(true);
-    if (kind === modelSource.kind) return;
     if (kind === 'manualApi' && !(modelSource.manual.baseUrl && modelSource.manual.model && modelSource.hasApiKey)) {
       setModelSourceError(null);
       setModelSourceNotice(null);
       setConnectionTest(null);
+      setSourcePickerOpen(false);
+      setManualEditorOpen(true);
+      return;
+    }
+    if (kind === modelSource.kind) {
+      setSourcePickerOpen(false);
+      setManualEditorOpen(false);
       return;
     }
     setModelSourceBusy(true);
@@ -5883,16 +6234,17 @@ function AccountSettingsPage({
     setConnectionTest(null);
     try {
       await onSetModelSource(kind);
+      setSourcePickerOpen(false);
+      setManualEditorOpen(false);
       setModelSourceNotice('模型来源已切换，Codex 运行时已重启。');
     } catch (issue) {
-      setDraftModelSource(modelSource.kind);
       setModelSourceError(toError(issue));
     } finally {
       setModelSourceBusy(false);
     }
   };
 
-  const saveManualSource = async (withTest: boolean) => {
+  const saveManualSource = async () => {
     setManualSaveState('saving');
     setModelSourceError(null);
     setModelSourceNotice(null);
@@ -5905,35 +6257,28 @@ function AccountSettingsPage({
         ...(manualApiKey.trim() ? { apiKey: manualApiKey.trim() } : {})
       });
       setManualApiKey('');
-      setManualSaveState('saved');
-      setDraftModelSource('manualApi');
-      setManualEditorOpen(true);
-      setModelSourceNotice(modelSource.kind === 'manualApi'
-        ? '手动 API 配置已加密保存。'
-        : '手动 API 配置已加密保存；请切换“手动配置 API”使其生效。');
-      if (withTest) {
-        setTestingConnection(true);
-        const result = await onTestModelConnection('manualApi');
-        setConnectionTest(result);
+      if (modelSource.kind !== 'manualApi') {
+        setModelSourceBusy(true);
+        await onSetModelSource('manualApi');
       }
+      setManualSaveState('saved');
+      setManualEditorOpen(false);
+      setSourcePickerOpen(false);
+      setModelSourceNotice('手动 API 配置已加密保存，并设为当前来源。');
     } catch (issue) {
       setManualSaveState('error');
       setModelSourceError(toError(issue));
-      if (withTest) {
-        const result = await onTestModelConnection('manualApi').catch(() => null);
-        if (result) setConnectionTest(result);
-      }
     } finally {
-      setTestingConnection(false);
+      setModelSourceBusy(false);
       window.setTimeout(() => setManualSaveState('idle'), 2400);
     }
   };
 
   const testConnection = async () => {
+    if (testingConnection) return;
     setTestingConnection(true);
     setModelSourceError(null);
     setModelSourceNotice(null);
-    setConnectionTest(null);
     try {
       const result = await onTestModelConnection();
       setConnectionTest(result);
@@ -5961,6 +6306,47 @@ function AccountSettingsPage({
       resource.name, resource.description, resource.source,
       RESOURCE_KIND_LABELS[resource.kind]
     ].some(value => value.toLocaleLowerCase().includes(resourceQuery.trim().toLocaleLowerCase()))));
+  const accountSettings = deriveAccountSettingsState({
+    syncMode: codexHomeSync.mode,
+    sourceDetected: codexHomeSync.sourceDetected,
+    modelSource,
+    account,
+    accountLoading: loading,
+    accountError
+  });
+  const currentSourceReady = accountSettings.activeSourceStatus === 'ready';
+  const showCurrentSourceCard = accountSettings.effectiveMode === 'follow' ||
+    accountSettings.anySourceReady ||
+    accountSettings.activeSourceStatus === 'checking';
+  const currentSourceTitle = accountSettings.activeSource === 'manualApi'
+    ? modelSource.manual.serviceName.trim() || '手动配置 API'
+    : accountSourceLabel(accountSettings.activeSource);
+  const currentSourceDetail = accountSettings.activeSource === 'manualApi'
+    ? [
+        modelSource.manual.model.trim(),
+        modelSource.manual.baseUrl.trim()
+      ].filter(Boolean).join(' · ') || '尚未填写 Base URL、模型 ID 和 API Key'
+    : accountSettings.activeSourceStatus === 'checking'
+      ? '正在读取独立 Codex Home 的登录状态…'
+      : accountError
+        ? '无法读取独立 Codex Home 的账号状态'
+        : account?.requiresLogin && !account.localLoginDetected
+          ? '独立 Codex Home 中没有可用的登录态'
+          : account?.email || (account?.localLoginDetected ? '检测到本机登录态' : '已连接 ChatGPT');
+  const currentSourceStatusLabel = accountSettings.activeSourceStatus === 'checking'
+    ? '正在检查'
+    : accountSettings.activeSourceStatus === 'ready'
+      ? accountSettings.activeSource === 'manualApi' ? '已配置' : '已连接'
+      : accountSettings.activeSource === 'manualApi' ? '未配置' : '不可用';
+  const currentSourceMeta = accountSettings.effectiveMode === 'follow'
+    ? codexHomeSync.lastSyncedAt
+      ? `持续跟随本机 · 最近同步 ${timestampLabel(codexHomeSync.lastSyncedAt)}`
+      : '持续跟随本机'
+    : accountSettings.activeSource === 'local'
+      ? '独立 Codex Home 中的本机配置副本'
+      : accountSettings.activeSource === 'chatgpt'
+        ? '使用独立 Codex Home 中的 ChatGPT 登录'
+        : 'Codex Responses API 兼容配置';
 
   return (
     <section className="settings-page system-settings-page" aria-label="系统设置">
@@ -6008,18 +6394,70 @@ function AccountSettingsPage({
           </div>
           <MemoryManager botId={null} title="关于我"
             description="所有 Bot 可参考的共用个人资料。此处条目与各 Bot 的专属记忆分开管理。" />
+          {(error || notice) && (
+            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+              {error ?? notice}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'account' && (
+        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-account" aria-labelledby="system-tab-account">
           <div className="settings-section">
             <div className="settings-section-title">
-              <div><h2>Codex 运行时</h2><p>使用本机 Codex，登录态共用，会话独立保存。</p></div>
+              <div>
+                <h2>Codex 运行时</h2>
+                <p>Rambo 内置一份 Codex App Server，首次启动无需下载；也可以在这里单独更新，不随 Rambo 更新覆盖。</p>
+              </div>
             </div>
             <div className="runtime-card">
               <div className="runtime-card-status">
                 <span className={'status-dot status-' + runtime.status} />
-                <strong>{runtimeLabel(runtime.status)}</strong>
-                <span className="runtime-version">版本 {runtime.version || '未知'}</span>
-                <button type="button" className="secondary-button runtime-restart-button" disabled={busy || runtime.status === 'starting'}
-                  onClick={() => void restart()}>{busy ? '处理中…' : '重启运行时'}</button>
+                <strong>{runtimeUpdating || runtime.progress?.phase === 'downloading'
+                  ? '正在更新 App Server'
+                  : runtimeLabel(runtime.status)}</strong>
+                <span className="runtime-version">
+                  版本 {runtime.version || '未知'}
+                  {runtime.source === 'cache'
+                    ? ' · 单独更新'
+                    : runtime.source === 'packaged' ? ' · 内置' : ''}
+                </span>
+                <div className="runtime-card-actions">
+                  <button type="button" className="secondary-button" disabled={busy || runtimeUpdating || runtime.status === 'starting'}
+                    onClick={() => void updateRuntime()}>
+                    {runtimeUpdating ? '更新中…' : '更新 App Server'}
+                  </button>
+                  <button type="button" className="secondary-button runtime-restart-button" disabled={busy || runtimeUpdating || runtime.status === 'starting'}
+                    onClick={() => void restart()}>{busy ? '处理中…' : '重启运行时'}</button>
+                </div>
               </div>
+              {runtime.progress?.phase === 'downloading' && (
+                <div className="runtime-download-progress">
+                  <div
+                    className={'runtime-progress-track' +
+                      (runtime.progress.totalBytes ? '' : ' indeterminate')}
+                    role="progressbar"
+                    aria-label="App Server 更新进度"
+                    aria-valuemin={runtime.progress.totalBytes ? 0 : undefined}
+                    aria-valuemax={runtime.progress.totalBytes ?? undefined}
+                    aria-valuenow={runtime.progress.totalBytes
+                      ? runtime.progress.downloadedBytes
+                      : undefined}
+                    aria-valuetext={runtimeDownloadLabel(runtime.progress)}
+                  >
+                    <span
+                      className="runtime-progress-fill"
+                      style={runtime.progress.totalBytes ? {
+                        transform: `scaleX(${Math.max(0, Math.min(1,
+                          runtime.progress.downloadedBytes / runtime.progress.totalBytes))})`
+                      } : undefined}
+                    />
+                  </div>
+                  <span>{runtimeDownloadLabel(runtime.progress)}</span>
+                </div>
+              )}
               <div className="runtime-home-row" aria-label="Codex Home">
                 <span className="runtime-home-label">Codex Home</span>
                 <code className="runtime-home-path" title={codexHome}>{codexHome || '未知'}</code>
@@ -6033,77 +6471,331 @@ function AccountSettingsPage({
                 <div className="runtime-notification-status" role="status">{notificationUnavailable}</div>
               )}
               {runtime.error && <div className="runtime-error">{runtime.error}</div>}
-              {(runtimeRestartError || runtimeRestartNotice) && (
-                <div className={runtimeRestartError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-                  {runtimeRestartError ?? runtimeRestartNotice}
+              {(runtimeRestartError || runtimeRestartNotice || runtimeUpdateError || runtimeUpdateNotice) && (
+                <div className={(runtimeRestartError || runtimeUpdateError) ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+                  {runtimeRestartError ?? runtimeUpdateError ?? runtimeRestartNotice ?? runtimeUpdateNotice}
                 </div>
               )}
             </div>
           </div>
-          {(error || notice) && (
-            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-              {error ?? notice}
-            </div>
-          )}
-        </div>
-      )}
 
-      {activeTab === 'account' && (
-        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
-          id="system-panel-account" aria-labelledby="system-tab-account">
-          <div className="settings-section account-status-section">
-            <div className="settings-section-title">
-              <div><h2>账号状态</h2><p>Rambo 不创建产品账号；登录与凭证只在本机使用。</p></div>
-            </div>
-            <div className="account-card">
-              <div className="account-avatar">C</div>
-              <div className="account-copy">
-                <strong>{loading ? '正在读取账号状态…' : error ? '无法读取账号状态' : account?.requiresLogin ? '尚未登录 ChatGPT' : account?.email || account?.type || (account?.localLoginDetected ? '检测到本机登录' : '已连接账号')}</strong>
-                <span>{account?.type ? '登录方式：' + account.type : account?.localLoginDetected ? '账号状态：本机认证存在，在线状态暂不可用' : '账号状态来自本机 Codex'}</span>
-                {account?.statusError && <small>在线账号状态读取失败：{account.statusError}</small>}
-              </div>
-              {account?.requiresLogin && (
-                <button type="button" className="secondary-button" disabled={busy}
-                  onClick={() => void login()}>登录 ChatGPT</button>
-              )}
-            </div>
-          </div>
-
-          <div className="settings-section">
+          <div className="settings-section configuration-mode-section">
             <div className="settings-section-title">
               <div>
-                <h2>模型来源</h2>
-                <p>应用级三选一，同一时间只有一个来源生效。切换不会改写已有 Bot 的模型和权限。</p>
+                <h2>当前配置模式</h2>
+                <p>先决定是否跟随本机 Codex，再在当前模式下选择实际使用的模型来源。</p>
               </div>
             </div>
-            <div className="model-source-options" role="radiogroup" aria-label="模型来源">
+            <div className="configuration-mode-options" role="radiogroup" aria-label="当前配置模式">
               {([
-                ['local', '本机 Codex 配置', '沿用本机 config.toml 与认证，修改后由后续运行时启动生效。'],
-                ['chatgpt', 'ChatGPT 登录', '使用本机共享的 ChatGPT 登录状态。'],
-                ['manualApi', '手动配置 API', 'Rambo 启动的 Codex 使用独立 Responses API 配置。']
-              ] as Array<[ModelSourceKind, string, string]>).map(([kind, title, description]) => (
-                <label className={`model-source-option${draftModelSource === kind ? ' selected' : ''}`} key={kind}>
-                  <input type="radio" name="model-source" value={kind}
-                    checked={draftModelSource === kind}
-                    disabled={modelSourceBusy || runtime.status === 'starting'}
-                    onChange={() => void switchModelSource(kind)} />
-                  <span className="model-source-copy">
-                    <strong>{title}</strong>
-                    <small>{description}</small>
-                  </span>
-                  {modelSource.kind === kind && <span className="model-source-active">当前生效</span>}
-                </label>
-              ))}
+                [
+                  'follow',
+                  '持续跟随本机',
+                  accountSettings.followAvailable
+                    ? '持续复制本机 Codex 的登录、配置和资源；Rambo 不反向修改本机。'
+                    : '未检测到本机 Codex。此模式保留，但当前不可选择。'
+                ],
+                [
+                  'independent',
+                  '独立配置',
+                  'Rambo 使用自己的 Codex Home，可登录 ChatGPT 或配置 API。'
+                ]
+              ] as Array<[CodexHomeSyncMode, string, string]>).map(([mode, title, description]) => {
+                const selected = accountSettings.effectiveMode === mode;
+                const disabled = codexHomeSyncBusy ||
+                  runtime.status === 'starting' ||
+                  (mode === 'follow' && !accountSettings.followAvailable);
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className={'configuration-mode-option' + (selected ? ' selected' : '')}
+                    disabled={disabled}
+                    onClick={() => void switchCodexHomeSync(mode)}
+                  >
+                    <span className="configuration-mode-radio" aria-hidden="true" />
+                    <span className="configuration-mode-copy">
+                      <strong>{title}</strong>
+                      <small>{description}</small>
+                    </span>
+                    {selected && <span className="configuration-mode-current">当前</span>}
+                  </button>
+                );
+              })}
             </div>
-            <p className="field-hint model-source-compat-note">
-              手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
-            </p>
+            <div className="configuration-mode-status" role="status">
+              <span className={'status-dot status-' + (codexHomeSync.sourceDetected ? 'ready' : 'stopped')} />
+              <span>
+                {codexHomeSync.sourceDetected
+                  ? '已检测到本机 Codex；跟随同步只会覆盖配置与资源白名单。'
+                  : '未检测到本机 Codex；Rambo 使用自己的独立 Codex Home。'}
+              </span>
+            </div>
+            {codexHomeSync.sourcePath && (
+              <div className="codex-home-sync-detail">
+                <span>本机路径</span>
+                <code title={codexHomeSync.sourcePath}>{codexHomeSync.sourcePath}</code>
+              </div>
+            )}
+            {codexHomeSync.decisionRequired && (
+              <div className="codex-home-sync-notice" role="status">
+                Rambo 已有独立配置。为避免覆盖，当前保持独立；请明确选择“持续跟随本机”后再复制。
+              </div>
+            )}
+            {codexHomeSync.syncing && (
+              <div className="codex-home-sync-notice" role="status">正在复制本机 Codex 配置与资源…</div>
+            )}
+            {!codexHomeSync.syncing &&
+              accountSettings.effectiveMode === 'follow' &&
+              codexHomeSync.pending && (
+              <div className="codex-home-sync-notice" role="status">
+                已检测到本机变化，会在当前任务结束后应用并重启运行时。
+              </div>
+            )}
+            {codexHomeSync.warning && (
+              <div className="codex-home-sync-warning" role="status">{codexHomeSync.warning}</div>
+            )}
+            {codexHomeSync.error && (
+              <div className="runtime-error">{codexHomeSync.error}</div>
+            )}
           </div>
 
-          {manualEditorOpen && (
-            <div className="settings-section">
+          {showCurrentSourceCard && (
+            <div className="settings-section current-source-section">
               <div className="settings-section-title">
-                <div><h2>手动 API 配置</h2><p>API Key 使用 Rambo 本地加密凭证库保存，不写入设置快照或日志。</p></div>
+                <div>
+                  <h2>当前模型来源</h2>
+                  <p>账号身份与当前来源绑定；连接测试只作用于这里显示的来源。</p>
+                </div>
+              </div>
+              <div
+                className={'current-source-card' + (currentSourceReady ? ' ready' : ' unavailable')}
+                data-source={accountSettings.activeSource}
+                data-ready={currentSourceReady ? 'true' : 'false'}
+              >
+                <div className="current-source-main">
+                  <div className="current-source-mark" aria-hidden="true">
+                    {accountSettings.activeSource === 'manualApi' ? 'API' : 'C'}
+                  </div>
+                  <div className="current-source-copy">
+                    <div className="current-source-title">
+                      <strong>{currentSourceTitle}</strong>
+                      <span className={
+                        'current-source-badge ' + accountSettings.activeSourceStatus
+                      }>{currentSourceStatusLabel}</span>
+                    </div>
+                    <span>{currentSourceMeta}</span>
+                    <span className="current-source-detail">{currentSourceDetail}</span>
+                    {account?.statusError && accountSettings.showAccountStatus && (
+                      <small>在线账号状态读取失败：{account.statusError}</small>
+                    )}
+                  </div>
+                  {accountSettings.effectiveMode === 'independent' && (
+                    <div className="current-source-actions">
+                      {accountSettings.activeSource === 'manualApi' && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={modelSourceBusy || runtime.status === 'starting'}
+                          onClick={() => {
+                            setManualEditorOpen(true);
+                            setSourcePickerOpen(false);
+                            setModelSourceError(null);
+                          }}
+                        >编辑配置</button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button current-source-change"
+                        disabled={modelSourceBusy || runtime.status === 'starting'}
+                        onClick={() => setSourcePickerOpen(open => !open)}
+                      >
+                        {sourcePickerOpen ? '收起选择' : '更换配置'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {accountSettings.effectiveMode === 'follow' && !currentSourceReady && (
+                  <div className="current-source-alert" role="status">
+                    <span>本机配置不可用。请切换到独立配置后登录 ChatGPT 或配置 API。</span>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={codexHomeSyncBusy || runtime.status === 'starting'}
+                      onClick={() => void switchCodexHomeSync('independent')}
+                    >切换到独立配置</button>
+                  </div>
+                )}
+                {accountSettings.effectiveMode === 'independent' && !currentSourceReady && (
+                  <div className="current-source-alert" role="status">
+                    当前来源不可用，请更换配置。
+                  </div>
+                )}
+                <div className="current-source-test-row">
+                  <div>
+                    <strong>连接与延迟</strong>
+                    <span>发送一次真实最小请求；失败不会自动切换当前来源。</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button connection-test-button"
+                    disabled={
+                      !currentSourceReady ||
+                      testingConnection ||
+                      modelSourceBusy ||
+                      runtime.status === 'starting'
+                    }
+                    aria-busy={testingConnection || undefined}
+                    onClick={() => void testConnection()}
+                  >
+                    {testingConnection && <span className="connection-test-spinner" aria-hidden="true" />}
+                    <span>测试连接</span>
+                  </button>
+                </div>
+                {connectionTest && (
+                  <div className={connectionTest.ok ? 'model-test-result success' : 'model-test-result error'} role="status">
+                    <strong>{connectionTest.ok ? '连接可用' : '连接失败'} · 首响应 {connectionTest.latencyMs} ms</strong>
+                    <span>{connectionTest.message}</span>
+                    {connectionTest.configMayBeStale &&
+                      (connectionTest.source === 'local' || connectionTest.source === 'chatgpt') && (
+                      <button type="button" className="secondary-button" disabled={busy}
+                        onClick={() => void restart()}>重启运行时后重试</button>
+                    )}
+                  </div>
+                )}
+                {!manualEditorOpen && (modelSourceError || modelSourceNotice) && (
+                  <div className={modelSourceError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+                    {modelSourceError ?? modelSourceNotice}
+                  </div>
+                )}
+              </div>
+
+              {sourcePickerOpen && accountSettings.effectiveMode === 'independent' && (
+                <div className="source-picker" aria-label="更换模型来源">
+                  <div className="source-picker-heading">
+                    <strong>更换模型来源</strong>
+                    <span>切换后 Rambo 会重启独立 Codex 运行时；已有 Bot 的模型和权限不会被改写。</span>
+                  </div>
+                  <div className="source-picker-options" role="radiogroup" aria-label="模型来源">
+                    {([
+                      ['local', '本机 Codex 配置副本', '使用 Rambo 独立 Codex Home 中从本机复制的配置与登录态。'],
+                      ['chatgpt', 'ChatGPT 登录', '在 Rambo 独立 Codex Home 中使用 ChatGPT 登录。'],
+                      ['manualApi', '手动配置 API', '使用 Codex Responses API 兼容服务。']
+                    ] as Array<[ModelSourceKind, string, string]>).map(([kind, title, description]) => {
+                      const status = kind === 'local'
+                        ? accountSettings.localCopyStatus
+                        : kind === 'chatgpt'
+                          ? accountSettings.chatgptStatus
+                          : accountSettings.manualApiStatus;
+                      const selected = accountSettings.activeSource === kind;
+                      const unavailable = status !== 'ready';
+                      return (
+                        <button
+                          key={kind}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          className={'source-picker-option' + (selected ? ' selected' : '')}
+                          disabled={
+                            modelSourceBusy ||
+                            runtime.status === 'starting' ||
+                            (unavailable && kind !== 'manualApi')
+                          }
+                          onClick={() => {
+                            if (kind === 'manualApi' && unavailable) {
+                              setSourcePickerOpen(false);
+                              setManualEditorOpen(true);
+                              setModelSourceError(null);
+                              setModelSourceNotice(null);
+                              return;
+                            }
+                            void switchModelSource(kind);
+                          }}
+                        >
+                          <span className="source-picker-radio" aria-hidden="true" />
+                          <span className="source-picker-copy">
+                            <strong>{title}</strong>
+                            <small>{description}</small>
+                          </span>
+                          <span className={'source-picker-status ' + status}>
+                            {status === 'checking'
+                              ? '检查中'
+                              : status === 'ready'
+                                ? kind === 'manualApi' ? '已配置' : '可用'
+                                : kind === 'manualApi' ? '去配置' : '不可用'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="field-hint model-source-compat-note">
+                    手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {accountSettings.showConfigurationEntry && (
+            <div className="settings-section source-empty-section">
+              <div className="settings-section-title">
+                <div>
+                  <h2>选择配置方式</h2>
+                  <p>独立 Codex Home 中还没有可用配置。选择一种方式后即可开始使用 Rambo。</p>
+                </div>
+              </div>
+              <div className="source-empty-card">
+                <div className="source-empty-copy">
+                  <strong>尚未配置模型来源</strong>
+                  <span>登录 ChatGPT 会写入 Rambo 的独立 Codex Home；也可以使用自己的 API 服务。</span>
+                  {accountError && <small>{accountError}</small>}
+                  {loginPending && loginUrl && (
+                    <div className="login-fallback" role="status">
+                      <span>浏览器没有打开或页面已关闭？</span>
+                      <a href={loginUrl} target="_blank" rel="noreferrer">重新打开登录页面</a>
+                    </div>
+                  )}
+                </div>
+                <div className="source-empty-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={busy || loginPending}
+                    onClick={() => void login()}
+                  >{loginPending ? '等待授权…' : '登录 ChatGPT'}</button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={modelSourceBusy}
+                    onClick={() => {
+                      setManualEditorOpen(true);
+                      setModelSourceError(null);
+                      setModelSourceNotice(null);
+                    }}
+                  >配置 API</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {manualEditorOpen && (
+            <div className="settings-section manual-source-section">
+              <div className="settings-section-title">
+                <div>
+                  <h2>手动 API 配置</h2>
+                  <p>保存后会加密 API Key、切换为手动 API 来源并收起此表单。</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={manualSaveState === 'saving'}
+                  onClick={() => {
+                    setManualEditorOpen(false);
+                    setModelSourceError(null);
+                  }}
+                >取消</button>
               </div>
               <div className="manual-model-form">
                 <label className="settings-field">
@@ -6137,53 +6829,32 @@ function AccountSettingsPage({
                 </label>
                 <div className="manual-model-actions">
                   <AutoSaveIndicator state={manualSaveState} error={modelSourceError} />
-                  <button type="button" className="secondary-button"
-                    disabled={modelSourceBusy || manualSaveState === 'saving' ||
-                      !manualBaseUrl.trim() || !manualModel.trim() || (!modelSource.hasApiKey && !manualApiKey.trim())}
-                    onClick={() => void saveManualSource(false)}>保存配置</button>
-                  <button type="button" className="primary-button"
-                    disabled={modelSourceBusy || manualSaveState === 'saving' || testingConnection ||
-                      !manualBaseUrl.trim() || !manualModel.trim() || (!modelSource.hasApiKey && !manualApiKey.trim())}
-                    onClick={() => void saveManualSource(true)}>
-                    {testingConnection ? '正在测试…' : '保存并测试'}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={
+                      modelSourceBusy ||
+                      manualSaveState === 'saving' ||
+                      !manualBaseUrl.trim() ||
+                      !manualModel.trim() ||
+                      (!modelSource.hasApiKey && !manualApiKey.trim())
+                    }
+                    onClick={() => void saveManualSource()}
+                  >
+                    {modelSourceBusy ? '正在切换…' : '保存并使用'}
                   </button>
                 </div>
               </div>
+              <p className="field-hint model-source-compat-note">
+                手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
+              </p>
             </div>
           )}
-
-          <div className="settings-section">
-            <div className="settings-section-title">
-              <div><h2>连接测试</h2><p>使用当前生效来源发送真实最小请求，并记录首响应延迟。</p></div>
+          {(error || notice) && (
+            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+              {error ?? notice}
             </div>
-            <div className="model-connection-test">
-              <button type="button" className="secondary-button" disabled={testingConnection || modelSourceBusy}
-                onClick={() => void testConnection()}>{testingConnection ? '正在测试…' : '测试连接与延迟'}</button>
-              {connectionTest && (
-                <div className={connectionTest.ok ? 'model-test-result success' : 'model-test-result error'} role="status">
-                  <strong>{connectionTest.ok ? '连接可用' : '连接失败'} · 首响应 {connectionTest.latencyMs} ms</strong>
-                  <span>{connectionTest.message}</span>
-                  {connectionTest.ok && connectionTest.source === 'manualApi' &&
-                    connectionTest.sourcePending && (
-                    <button type="button" className="secondary-button"
-                      disabled={modelSourceBusy}
-                      onClick={() => void switchModelSource('manualApi')}>
-                      切换为当前来源
-                    </button>
-                  )}
-                  {connectionTest.configMayBeStale && connectionTest.source === 'local' && (
-                    <button type="button" className="secondary-button" disabled={busy}
-                      onClick={() => void restart()}>重启运行时后重试</button>
-                  )}
-                </div>
-              )}
-            </div>
-            {(modelSourceError || modelSourceNotice) && modelSource.kind !== 'manualApi' && (
-              <div className={modelSourceError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-                {modelSourceError ?? modelSourceNotice}
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 

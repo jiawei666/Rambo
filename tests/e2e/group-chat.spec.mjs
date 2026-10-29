@@ -4,6 +4,33 @@ const test = createElectronTest('playwright-group');
 
 test.describe.configure({ mode: 'serial' });
 
+async function readButtonRowMetrics(locator) {
+  return locator.evaluateAll(rows =>
+    rows.map(row => {
+      const style = getComputedStyle(row);
+      const buttons = [...row.querySelectorAll('button')].map(button => {
+        const rect = button.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      });
+      return { gap: style.gap, buttons };
+    })
+  );
+}
+
+function expectButtonRowSpacing(rows, expectedRows) {
+  expect(rows).toHaveLength(expectedRows);
+  for (const row of rows) {
+    expect(row.gap).toBe('10px');
+    expect(row.buttons).toHaveLength(2);
+    const [first, second] = row.buttons;
+    if (Math.abs(first.top - second.top) < 1) {
+      expect(first.right).toBeLessThanOrEqual(second.left - 9);
+    } else {
+      expect(second.top).toBeGreaterThanOrEqual(first.bottom + 9);
+    }
+  }
+}
+
 test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', async ({ electron }) => {
     const page = electron.page;
 
@@ -43,6 +70,9 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
     expect(memberCheckboxStyle.borderRadius).toBe('5px');
     expect(memberCheckboxStyle.background).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
     expect(memberCheckboxStyle.checkOpacity).toBe('1');
+    expectButtonRowSpacing(await readButtonRowMetrics(
+      page.locator('section[aria-label="创建群聊"] .settings-save-row')
+    ), 1);
     await page.getByRole('button', { name: '创建群聊', exact: true }).click();
     await expect(page.getByRole('combobox', { name: '群聊消息输入框' })).toBeVisible();
     await expect(page.getByRole('img', { name: '群聊成员头像：Group Alpha、Group Beta' }).first()).toBeVisible();
@@ -55,15 +85,15 @@ test('真实 Electron 群聊与单聊共用入口样式并使用组合头像', a
       before.bots.find(bot => bot.name === 'Group Alpha')?.id
     );
     expect(createdGroup?.purpose).toBe('共同整理群聊测试资料。');
-    await expect(page.getByText('群主 Group Alpha')).toBeVisible();
-    await expect(page.getByText('共同整理群聊测试资料。')).toBeVisible();
+    await expect(page.locator('.group-purpose-banner')).toHaveCount(0);
     await page.getByRole('button', { name: '群聊成员设置' }).click();
     await expect(page.getByRole('heading', { name: '群主与职责' })).toBeVisible();
     await expect(page.getByText('Group Alpha · 群主')).toBeVisible();
+    expectButtonRowSpacing(await readButtonRowMetrics(page.locator('.settings-save-row')), 2);
     await page.getByLabel('群聊职责').fill('更新后的群聊协作职责。');
     await page.getByRole('button', { name: '保存群聊职责' }).click();
     await page.getByRole('button', { name: '返回群聊' }).first().click();
-    await expect(page.getByText('更新后的群聊协作职责。')).toBeVisible();
+    await expect(page.locator('.group-purpose-banner')).toHaveCount(0);
     await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
       .groups.find(item => item.id === createdGroup.id)?.purpose)
       .toBe('更新后的群聊协作职责。');
@@ -192,7 +222,14 @@ test('真实 Electron 群聊成员阶段覆盖同一气泡并在新用户消息�
       purpose: 'Validate grouped member stage bubbles.',
       botIds: ids
     }), bots.map(bot => bot.id));
+  const groupMemberSummary = group.memberIds
+    .map(id => bots.find(bot => bot.id === id)?.name)
+    .filter(Boolean)
+    .join('、');
   await page.getByLabel('会话列表').getByRole('button', { name: /Group Stage E2E/ }).click();
+  const groupSidebarRow = page.getByLabel('会话列表')
+    .locator('.bot-list-row')
+    .filter({ hasText: 'Group Stage E2E' });
 
   const memberChats = await page.evaluate(groupId =>
     window.rambo.groupMemberChats(groupId), group.id);
@@ -225,6 +262,17 @@ test('真实 Electron 群聊成员阶段覆盖同一气泡并在新用户消息�
     };
     return window.rambo.injectAcceptanceEvent({ type: 'groupRuntime', groupId, runtime });
   }, { groupId: group.id, memberChats });
+  await expect(groupSidebarRow).toHaveAttribute('data-running', 'true');
+  await expect(groupSidebarRow).toHaveAttribute('data-running-kind', 'group');
+  const groupSidebarActivity = groupSidebarRow.locator('.bot-row-summary');
+  await expect(groupSidebarActivity).toHaveText('2 位成员协作中');
+  await expect(groupSidebarActivity).toHaveClass(/sidebar-run-activity/);
+  await expect(groupSidebarActivity).toHaveCSS('animation-name', 'running-shimmer');
+  await expect(groupSidebarRow.locator('.sidebar-run-ring')).toHaveCount(0);
+  await page.getByRole('button', { name: '收起侧栏' }).click();
+  await expect(groupSidebarRow.locator('.sidebar-run-ring')).toBeVisible();
+  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await expect(groupSidebarRow.locator('.sidebar-run-ring')).toHaveCount(0);
   await page.evaluate(message =>
     window.rambo.injectAcceptanceEvent({ type: 'groupMessage', groupId: message.groupId, message }),
   stageOne);
@@ -261,6 +309,7 @@ test('真实 Electron 群聊成员阶段覆盖同一气泡并在新用户消息�
       }]
     }
   }), { groupId: group.id, chatId: alphaChat.id, botId: alpha.id });
+  await expect(groupSidebarRow.locator('.bot-row-summary')).toHaveText('正在搜索网页');
   await expect(runningLabel).toHaveText('正在搜索网页');
   await expect(runningLabel).not.toContainText('正在核对文档差异');
   await expect(assistantBubble).toContainText('差异集中在文档开头。');
@@ -319,9 +368,17 @@ test('真实 Electron 群聊成员阶段覆盖同一气泡并在新用户消息�
     return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
   })).toBeLessThanOrEqual(1);
 
+  await page.evaluate(groupId => window.rambo.interruptGroup(groupId), group.id);
+  await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
+    .groupRuntimes[group.id] ?? null, { timeout: 20_000 }).toBeNull();
   await page.evaluate(({ groupId }) => window.rambo.injectAcceptanceEvent({
     type: 'groupRuntime', groupId, runtime: null
   }), { groupId: group.id });
+  await expect(groupSidebarRow).not.toHaveAttribute('data-running', 'true');
+  await expect(groupSidebarRow.locator('.sidebar-run-activity')).toHaveCount(0);
+  await expect(groupSidebarRow.locator('.sidebar-run-ring')).toHaveCount(0);
+  await expect(groupSidebarRow.locator('.bot-row-summary'))
+    .toHaveText(groupMemberSummary);
   await expect(page.locator('.agent-running-row')).toHaveClass(/agent-running-row-hidden/);
   await expect(page.locator('.agent-running-row')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.locator('.message-assistant')).toHaveCount(1);
@@ -531,7 +588,7 @@ test('真实 Electron 群聊运行中在发送旁显示独立停止按钮', asyn
 
   await expect(page.getByRole('button', { name: '停止任务' })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送' })).toBeVisible();
-  await page.getByRole('button', { name: '停止任务' }).click();
+  await page.getByRole('button', { name: '停止任务' }).dispatchEvent('click');
   await page.evaluate(groupId =>
     window.rambo.injectAcceptanceEvent({ type: 'groupRuntime', groupId, runtime: null }), group.id);
   await expect(page.getByRole('button', { name: '停止任务' })).toHaveCount(0);

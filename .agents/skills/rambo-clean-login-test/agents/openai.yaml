@@ -1,0 +1,3 @@
+interface:
+  display_name: "Rambo 干净环境登录测试"
+  short_description: "隔离启动候选应用并验证首次 ChatGPT 登录与清理"

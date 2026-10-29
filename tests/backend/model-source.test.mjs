@@ -99,13 +99,33 @@ test('initial setup opens only when both runtime and selected model source are u
   });
 
   assert.equal(module.needsInitialSetup(state()), true);
-  assert.equal(module.needsInitialSetup(state({ runtimeReady: true })), false);
-  assert.equal(module.needsInitialSetup(state({ executionDefaultsReady: true })), false);
-  assert.equal(module.needsInitialSetup(state({ kind: 'chatgpt' })), false);
+  assert.equal(module.needsInitialSetup(state({ runtimeReady: true })), true);
+  assert.equal(module.needsInitialSetup(state({
+    runtimeReady: true,
+    executionDefaultsReady: true
+  })), false);
+  assert.equal(module.needsInitialSetup(state({
+    runtimeReady: true,
+    executionDefaultsReady: true,
+    accountReady: false
+  })), true);
+  assert.equal(module.needsInitialSetup(state({
+    kind: 'chatgpt',
+    runtimeReady: true,
+    executionDefaultsReady: true,
+    accountReady: false
+  })), true);
+  assert.equal(module.needsInitialSetup(state({
+    kind: 'chatgpt',
+    runtimeReady: true,
+    executionDefaultsReady: true,
+    accountReady: true
+  })), false);
   assert.equal(module.needsInitialSetup(state({ kind: 'manualApi' })), true);
   assert.equal(module.needsInitialSetup(state({
     kind: 'manualApi',
     manual: { serviceName: '网关', baseUrl: 'https://api.example.com/v1', model: 'model-a' },
-    hasApiKey: true
+    hasApiKey: true,
+    runtimeReady: true
   })), false);
 });

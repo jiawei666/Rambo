@@ -28,6 +28,204 @@ const appExecutables = {
   Keynote: '/Applications/Keynote.app/Contents/MacOS/Keynote'
 };
 
+function installAcceptanceRuntime(profile) {
+  const runtimeRoot = join(profile, 'runtime/codex/0.165.0');
+  mkdirSync(join(runtimeRoot, 'bin'), { recursive: true });
+  mkdirSync(join(runtimeRoot, 'codex-path'), { recursive: true });
+  writeFileSync(join(runtimeRoot, 'bin/codex-app-server'), `#!/usr/bin/env node
+const { randomUUID } = require('node:crypto');
+const readline = require('node:readline');
+const input = readline.createInterface({ input: process.stdin });
+const turns = new Map();
+const autoCompletes = new Map();
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + '\\n');
+}
+
+function notify(method, params) {
+  send({ method, params });
+}
+
+function completeTurn(threadId, turnId, status = 'completed', delay = 30) {
+  setTimeout(() => {
+    notify('turn/completed', {
+      threadId,
+      turn: { id: turnId, status, error: null }
+    });
+  }, delay).unref();
+}
+
+function clearAutoComplete(threadId, turnId) {
+  const key = threadId + ':' + turnId;
+  const timer = autoCompletes.get(key);
+  if (timer) clearTimeout(timer);
+  autoCompletes.delete(key);
+}
+
+function resultFor(method, params) {
+  if (method === 'initialize') {
+    return {
+      userAgent: 'codex_cli_rs/0.165.0',
+      platformFamily: 'unix',
+      platformOs: 'macos'
+    };
+  }
+  if (method === 'config/read') {
+    return {
+      config: {
+        model: 'fixture-model',
+        mcp_servers: {},
+        features: { apps: false, plugins: false }
+      }
+    };
+  }
+  if (method === 'model/list') {
+    return {
+      data: [{
+        id: 'fixture-model',
+        model: 'fixture-model',
+        displayName: 'Fixture Model',
+        isDefault: true
+      }, {
+        id: 'fixture-model-alt',
+        model: 'fixture-model-alt',
+        displayName: 'Fixture Model Alt',
+        isDefault: false
+      }],
+      nextCursor: null
+    };
+  }
+  if (method === 'account/read') {
+    return { account: { type: 'chatgpt', email: 'fixture@example.com' } };
+  }
+  if (method === 'account/login/start') {
+    return { authUrl: 'https://example.com/rambo-fixture-login' };
+  }
+  if (method === 'skills/extraRoots/set') return {};
+  if (method === 'skills/list') {
+    return {
+      data: (params?.cwds ?? ['/tmp']).map(cwd => ({ cwd, skills: [], errors: [] }))
+    };
+  }
+  if (method === 'thread/start') {
+    const threadId = randomUUID();
+    turns.set(threadId, []);
+    return { thread: { id: threadId }, model: 'fixture-model', modelProvider: 'openai' };
+  }
+  if (method === 'thread/resume') {
+    const threadId = typeof params?.threadId === 'string' ? params.threadId : randomUUID();
+    if (!turns.has(threadId)) turns.set(threadId, []);
+    return { thread: { id: threadId }, model: 'fixture-model', modelProvider: 'openai' };
+  }
+  if (method === 'thread/delete') {
+    turns.delete(params?.threadId);
+    return {};
+  }
+  if (method === 'thread/turns/list') {
+    return { data: [...(turns.get(params?.threadId) ?? [])] };
+  }
+  if (method === 'turn/start') {
+    const threadId = typeof params?.threadId === 'string' ? params.threadId : '';
+    const turnId = randomUUID();
+    const text = Array.isArray(params?.input)
+      ? params.input.map(item => item?.text ?? '').join('\\n')
+      : '';
+    const entry = { id: turnId, status: 'inProgress', items: [] };
+    const list = turns.get(threadId) ?? [];
+    list.push(entry);
+    turns.set(threadId, list);
+    if (text.includes('隐藏问候 seed') || !text.trim()) {
+      const delay = text.trim() ? 2500 : 40;
+      const timer = setTimeout(() => {
+        autoCompletes.delete(threadId + ':' + turnId);
+        entry.status = 'completed';
+        notify('turn/started', { threadId, turn: entry });
+        completeTurn(threadId, turnId, 'completed', 40);
+      }, delay);
+      timer.unref();
+      autoCompletes.set(threadId + ':' + turnId, timer);
+    }
+    return { turn: entry };
+  }
+  if (method === 'turn/steer') {
+    clearAutoComplete(params?.threadId, params?.expectedTurnId);
+    return { turnId: params?.expectedTurnId };
+  }
+  if (method === 'turn/interrupt') {
+    clearAutoComplete(params?.threadId, params?.turnId);
+    const entry = (turns.get(params?.threadId) ?? [])
+      .find(turn => turn.id === params?.turnId);
+    if (entry) entry.status = 'interrupted';
+    if (entry) completeTurn(params.threadId, entry.id, 'interrupted', 20);
+    return {};
+  }
+  if (method === 'thread/realtime/start') {
+    return { realtimeSessionId: randomUUID() };
+  }
+  return {};
+}
+
+input.on('line', line => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (message.id === undefined || !message.method) return;
+  try {
+    send({ id: message.id, result: resultFor(message.method, message.params) });
+  } catch (error) {
+    send({
+      id: message.id,
+      error: { code: -32603, message: error instanceof Error ? error.message : String(error) }
+    });
+  }
+});
+
+setInterval(() => {}, 1 << 30);
+`, { mode: 0o755 });
+  writeFileSync(join(runtimeRoot, 'codex-package.json'), JSON.stringify({
+    layoutVersion: 1,
+    version: '0.165.0',
+    target: 'aarch64-apple-darwin',
+    variant: 'codex-app-server',
+    entrypoint: 'bin/codex-app-server',
+    resourcesDir: 'codex-resources',
+    pathDir: 'codex-path'
+  }));
+  writeFileSync(join(runtimeRoot, 'rambo-runtime.json'), JSON.stringify({
+    version: '0.165.0',
+    updateChannel: 'manual',
+    sessionSource: 'app-server'
+  }));
+}
+
+function installConfiguredNativeCodexHome(home) {
+  const nativeHome = join(home, '.codex');
+  mkdirSync(nativeHome, { recursive: true });
+  writeFileSync(join(nativeHome, 'config.toml'), 'model = "local-fixture-model"\n');
+  writeFileSync(join(nativeHome, 'auth.json'), JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: { access_token: 'fixture-not-a-real-token' }
+  }));
+  const computerUseManifest = join(
+    nativeHome,
+    'plugins/cache/openai-bundled/computer-use/1.0.0/.codex-plugin'
+  );
+  mkdirSync(computerUseManifest, { recursive: true });
+  writeFileSync(join(computerUseManifest, 'plugin.json'), JSON.stringify({
+    name: 'computer-use',
+    description: 'Deterministic Computer Use plugin fixture.',
+    interface: {
+      displayName: 'Computer Use',
+      shortDescription: '操作本机应用与桌面的确定性验收插件。'
+    }
+  }));
+  return nativeHome;
+}
+
 function osascript(script) {
   return execFileSync('osascript', ['-e', script], {
     encoding: 'utf8',
@@ -163,6 +361,71 @@ function terminateProcess(processId) {
   }
 }
 
+function processRows() {
+  try {
+    return execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .map(line => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
+      .filter(Boolean)
+      .map(match => ({
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: match[3]
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function referencesRun(command, run) {
+  let index = command.indexOf(run);
+  while (index >= 0) {
+    const before = command[index - 1] ?? '';
+    const after = command[index + run.length] ?? '';
+    if ((!before || /[\s"'=]/u.test(before)) && (!after || /[/\s"']/u.test(after))) {
+      return true;
+    }
+    index = command.indexOf(run, index + 1);
+  }
+  return false;
+}
+
+function processWorkingDirectories() {
+  try {
+    const output = execFileSync('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8'
+    });
+    const directories = new Map();
+    let processId = null;
+    for (const line of output.split('\n')) {
+      if (line.startsWith('p')) processId = Number(line.slice(1));
+      else if (line.startsWith('n') && Number.isInteger(processId)) {
+        directories.set(processId, line.slice(1));
+      }
+    }
+    return directories;
+  } catch {
+    return new Map();
+  }
+}
+
+function isWithinRun(path, run) {
+  if (!path) return false;
+  return path === run || path.startsWith(`${run}/`);
+}
+
+export function cleanupRunProcesses(run) {
+  const marker = resolve(run);
+  const workingDirectories = processWorkingDirectories();
+  const pids = processRows()
+    .filter(row => row.pid !== process.pid &&
+      (referencesRun(row.command, marker) ||
+        isWithinRun(workingDirectories.get(row.pid), marker)))
+    .map(row => row.pid);
+  for (const processId of pids) terminateProcess(processId);
+  return pids;
+}
+
 export function acquireElectronFixtureLease(runs) {
   const path = join(runs, '.electron-fixture-active');
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -244,12 +507,21 @@ export function createElectronTest(prefix) {
       const profile = join(run, 'profile');
       mkdirSync(profile);
       mkdirSync(join(run, 'chromium'));
+      const home = join(run, 'home');
+      mkdirSync(home);
+      installAcceptanceRuntime(profile);
+      const nativeCodexHome = installConfiguredNativeCodexHome(home);
       writeFileSync(join(run, 'run.json'), JSON.stringify({
         schema: 'rambo.acceptance.run.v1',
         runId,
         project: root
       }));
-      const env = { ...process.env, RAMBO_ACCEPTANCE_RUN: run };
+      const env = {
+        ...process.env,
+        RAMBO_ACCEPTANCE_RUN: run,
+        HOME: home,
+        CODEX_HOME: nativeCodexHome
+      };
       delete env.NODE_OPTIONS;
       delete env.ELECTRON_RUN_AS_NODE;
       const evidence = {};
@@ -260,6 +532,8 @@ export function createElectronTest(prefix) {
           run,
           runId,
           profile,
+          home,
+          nativeCodexHome,
           env,
           evidence,
           externalBefore: before,
@@ -273,6 +547,7 @@ export function createElectronTest(prefix) {
             closeFinderWindows([windowId]);
           }
         }
+        cleanupRunProcesses(run);
         rmSync(run, { recursive: true, force: true });
       }
     }, { scope: 'worker' }],

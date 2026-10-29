@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -8,11 +8,26 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const version = '0.164.0';
-const sha256 = '7fcd5f0346c9338dd45f1af7c53115a29f651ac61a4264e2dbca49b7aa064ac0';
+const version = '0.165.0';
+const sha256 = 'db80061560c75c440efe11d347f5bebcf78aa895b40e38ca47623d8a37b41cd7';
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('当前已固定校验的运行时仅支持 macOS arm64');
 const dest = resolve('runtime/codex', version);
-if (existsSync(join(dest, 'bin/codex-app-server'))) { console.log(`运行时已准备：${dest}`); process.exit(0); }
+const preparedManifest = (() => {
+  try {
+    return JSON.parse(readFileSync(join(dest, 'codex-package.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+})();
+if (
+  preparedManifest?.version === version &&
+  preparedManifest?.variant === 'codex-app-server' &&
+  preparedManifest?.entrypoint === 'bin/codex-app-server' &&
+  existsSync(join(dest, 'bin/codex-app-server'))
+) {
+  console.log(`运行时已准备：${dest}`);
+  process.exit(0);
+}
 const temporary = await mkdtemp(join(tmpdir(), 'rambo-runtime-'));
 try {
   let archive = `/tmp/rambo-app-server-package-${version}-aarch64-apple-darwin.tar.gz`;
@@ -30,8 +45,15 @@ try {
   const extracted = join(temporary, 'extracted');
   await mkdir(extracted);
   execFileSync('tar', ['-xzf', archive, '-C', extracted]);
-  if (!existsSync(join(extracted, 'bin/codex-app-server'))) throw new Error('归档布局与固定版本不匹配');
+  const manifest = JSON.parse(readFileSync(join(extracted, 'codex-package.json'), 'utf8'));
+  if (
+    manifest.version !== version ||
+    manifest.variant !== 'codex-app-server' ||
+    manifest.entrypoint !== 'bin/codex-app-server' ||
+    !existsSync(join(extracted, 'bin/codex-app-server'))
+  ) throw new Error('归档布局与固定版本不匹配');
   await mkdir(resolve('runtime/codex'), { recursive: true });
+  await rm(dest, { recursive: true, force: true });
   await rename(extracted, dest);
   await writeFile(join(dest, 'rambo-runtime.json'), JSON.stringify({ version, sha256, source: `openai/codex rust-v${version}`, sessionSource: 'app-server' }, null, 2));
   console.log(`已准备独立 App Server ${version}：${dest}`);

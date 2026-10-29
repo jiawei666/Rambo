@@ -19,6 +19,11 @@ type Row = Record<string, unknown>;
 const generatedImageLabel = '生成文件：';
 const generatedImageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif']);
 
+function isInternalGroupResponseFailure(text: string): boolean {
+  return text.includes('未能生成正式回复（返回了内部不回复标记）') ||
+    text.includes('未能开始回复：上一条消息正在发送，请稍后');
+}
+
 function generatedImagePaths(detail: string, threadId: string): string[] {
   const legacyPathMarker = `${sep}generated_images${sep}${threadId}${sep}`;
   return detail.split(/\r?\n/u).flatMap(line => {
@@ -2116,7 +2121,13 @@ export class Store {
         return message.content || !paths.length
           ? message
           : { ...message, content: generatedImageContent(paths[0]) };
-      });
+      })
+      .filter(message =>
+        message.role !== 'assistant' || message.text.trim() !== '' || message.content !== null
+      )
+      .filter(message =>
+        message.role !== 'system' || !isInternalGroupResponseFailure(message.text)
+      );
   }
   addGroupMessage(groupId: string, role: GroupMessage['role'], text: string, options: {
     senderBot?: Bot | null; senderName?: string | null; status?: MessageStatus; itemId?: string | null;

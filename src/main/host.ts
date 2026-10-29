@@ -3,12 +3,12 @@ import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, rea
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
-  ActivityKind, ActivityStatus, AppEvent, AccountState, Bot, GroupChat, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
+  ActivityKind, ActivityStatus, AppEvent, AccountLoginStart, AccountState, Bot, GroupChat, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
   ConnectorConnection, ModelOption, Message, QuestionMessageContent, ResultCardMessageContent,
   PermissionMode, Snapshot, TurnActivity, TurnModelSource, TurnPermissionSnapshot, TurnRecord,
   RoutineDefinition, RoutineRun, TurnStatus, VoiceSessionState, BotResource,
   ModelSourceState, ModelConnectionTestResult, McpElicitationAction, McpElicitationPrompt,
-  SecretCapturePrompt
+  SecretCapturePrompt, ModelSourceKind
 } from '../shared/contracts';
 import { botExecutionConfigError } from '../shared/execution-config';
 import {
@@ -89,6 +89,7 @@ type GroupDelegationChain = {
   rootMessageId: string;
   ancestorBotIds: string[];
   depth: number;
+  senderBotId?: string;
 };
 type SecretToolMode = 'manage' | 'runtime' | 'none';
 type PendingSecretCapture = {
@@ -754,6 +755,17 @@ function isGroupNoReply(text: string): boolean {
   return text.trim() === NO_GROUP_REPLY_TOKEN;
 }
 
+function groupMentionText(name: string, text: string): string {
+  const marker = `@${name}`;
+  let body = text.trim();
+  while (body.startsWith(marker)) {
+    const following = body[marker.length];
+    if (following && !/[\s,，:：]/u.test(following)) break;
+    body = body.slice(marker.length).replace(/^[\s,，:：]+/u, '');
+  }
+  return `${marker} ${body}`.trim();
+}
+
 function toUnixSeconds(iso: string): number { return Math.floor(Date.parse(iso) / 1000); }
 
 function turnStartedAt(turn: any): number | null {
@@ -939,6 +951,8 @@ export class Host {
   private routineDeliveryQueues = new Map<string, Promise<void>>();
   private groupSessionsByChat = new Map<string, GroupSessionBinding>();
   private groupDelegationsByChat = new Map<string, GroupDelegationChain>();
+  private groupTurnModes = new Map<string, GroupResponseMode>();
+  private groupToolTurns = new Set<string>();
   private groupRuntimes = new Map<string, GroupRuntimeState>();
   notificationRuntimeState: NotificationRuntimeState | null = null;
   notificationUnavailableMessage: string | null = null;
@@ -1142,6 +1156,7 @@ export class Host {
       .filter(id => globalResourceIds.includes(id));
     return {
       codexHome: join(resolve(this.store.directory), 'codex-home'),
+      codexHomeSync: this.runtime.homeSyncState,
       runtimeProxy: settings.runtimeProxy?.trim() ?? '',
       modelSource: this.modelSourceStatus?.() ?? {
         kind: 'local',
@@ -1623,6 +1638,50 @@ export class Host {
     return activity;
   }
 
+  private recordGroupResponseIssue(input: {
+    groupId: string;
+    bot: Bot;
+    chatId?: string | null;
+    turnId?: string | null;
+    title: string;
+    detail: string;
+  }): void {
+    let auditChatId = input.chatId ?? null;
+    let recorded = false;
+    if (!auditChatId) {
+      try {
+        const ownerBotId = this.store.group(input.groupId).ownerBotId;
+        if (ownerBotId) auditChatId = this.store.groupSession(input.groupId, ownerBotId).id;
+      } catch {
+        // The group or owner session may have been removed while the response was starting.
+      }
+    }
+    if (auditChatId) {
+      try {
+        this.store.activity({
+          chatId: auditChatId,
+          turnId: input.turnId ?? null,
+          itemId: `group-response-issue:${input.groupId}:${input.bot.id}:${randomUUID()}`,
+          kind: 'collab',
+          status: 'failed',
+          title: input.title,
+          detail: `Bot：${input.bot.name}\n${input.detail}`
+        });
+        recorded = true;
+      } catch {
+        // Fall back to the main-process log when the hidden member chat is gone.
+      }
+    }
+    if (!recorded) {
+      console.warn('[Rambo] group response issue', {
+        groupId: input.groupId,
+        botId: input.bot.id,
+        title: input.title,
+        detail: input.detail
+      });
+    }
+  }
+
   private publishGeneratedImagesForTurn(
     chatId: string,
     turnId: string,
@@ -1740,6 +1799,32 @@ export class Host {
 
   private registerGroupSession(chatId: string, binding: GroupSessionBinding): void {
     this.groupSessionsByChat.set(chatId, binding);
+  }
+
+  private groupTurnModeKey(threadId: string, turnId: string): string {
+    return `${threadId}:${turnId}`;
+  }
+
+  private rememberGroupTurnMode(threadId: string, turnId: string, mode: GroupResponseMode): void {
+    this.groupTurnModes.set(this.groupTurnModeKey(threadId, turnId), mode);
+    while (this.groupTurnModes.size > 2_000) {
+      this.groupTurnModes.delete(this.groupTurnModes.keys().next().value as string);
+    }
+  }
+
+  private groupTurnMode(
+    threadId: string,
+    turnId: string | null,
+    binding: GroupSessionBinding | undefined
+  ): GroupResponseMode | undefined {
+    return turnId
+      ? this.groupTurnModes.get(this.groupTurnModeKey(threadId, turnId)) ?? binding?.mode
+      : binding?.mode;
+  }
+
+  private rememberGroupToolTurn(chatId: string, threadId: string): void {
+    const turnId = this.activeTurns.get(chatId);
+    if (turnId) this.groupToolTurns.add(this.groupTurnModeKey(threadId, turnId));
   }
 
   private async answerGroupCard(
@@ -1961,16 +2046,34 @@ export class Host {
         await this.waitForChatIdle(session.id);
       }
       if (this.groupStopped(groupId, session.id)) return;
+      this.startGroupRuntime(groupId, [bot], mode);
       const transcript = recentGroupContext(this.store.groupMessages(groupId));
+      const currentMessage = mode === 'directed'
+        ? [
+            '本轮要回应的消息如下；前面的群聊记录只作为上下文，不要改用它来决定本轮任务。',
+            delegation?.senderBotId
+              ? `发送者：群内 Bot「${this.store.bot(delegation.senderBotId).name}」`
+              : '发送者：用户',
+            '消息正文：',
+            rawText,
+            '如果这段消息包含问题或任务，请直接处理，不要只回复“收到”“请开始”或让对方重新发送。'
+          ].join('\n\n')
+        : '';
       const prompt = [
         '以下是当前群聊的共享消息记录。它只包含本群消息，不包含任何 Bot 的私聊内容。',
         transcript,
+        currentMessage,
+        delegation?.senderBotId
+          ? `上一条明确发给你的消息由群内 Bot「${this.store.bot(delegation.senderBotId).name}」发送。`
+          : '',
         delegation
-          ? `这条消息由群内 Bot 主动派发给你。协作链深度 ${delegation.depth}/${MAX_GROUP_DELEGATION_DEPTH}；不得回派祖先成员。`
+          ? `这条消息由群内 Bot 主动派发给你。协作链深度 ${delegation.depth}/${MAX_GROUP_DELEGATION_DEPTH}；除当前直接发送者外，不得把任务回派给祖先成员。`
           : '',
         mode === 'judge' || mode === 'everyone'
           ? `本轮是群聊消息的成员独立判断。请判断这条消息是否与你的职责和群聊内容相关。合适时以你自己的 Bot 身份直接回复；没有有用补充时只输出 ${NO_GROUP_REPLY_TOKEN}。不要为礼貌而勉强回复，也不要替其他 Bot 分配任务。`
-          : '这是明确发给你的群聊消息，请以你自己的 Bot 身份处理并给出真实结果。'
+          : delegation?.senderBotId
+            ? `这是「${this.store.bot(delegation.senderBotId).name}」明确发给你的群聊消息。请直接回应对方，不要把问题退回给用户。用户要求逐轮对答时，用 rambo_group_messages.send 点名 targetBotId=${delegation.senderBotId} 回复对方；如果本次已经完整结束对话，则无需继续发送。`
+            : '这是明确发给你的群聊消息，请以你自己的 Bot 身份处理并给出真实结果。'
       ].join('\n\n');
       if (delegation) {
         this.groupDelegationsByChat.set(session.id, delegation);
@@ -1980,7 +2083,14 @@ export class Host {
       await this.sendConversation(session.id, prompt, undefined, mode, undefined, true, undefined, bot.id);
     } catch (error) {
       if (memberChatId && this.groupStopped(groupId, memberChatId)) return;
-      this.publishGroupMessage(this.store.addGroupMessage(groupId, 'system', `「${bot.name}」未能开始回复：${error instanceof Error ? error.message : String(error)}`, { status: 'failed' }));
+      this.recordGroupResponseIssue({
+        groupId,
+        bot,
+        chatId: memberChatId,
+        turnId: memberChatId ? this.activeTurns.get(memberChatId) ?? null : null,
+        title: '群聊回复未开始',
+        detail: error instanceof Error ? error.message : String(error)
+      });
       if (memberChatId) this.finishGroupRuntimeMember(memberChatId);
     }
   }
@@ -2149,7 +2259,7 @@ export class Host {
           : `内部标记 ${NO_GROUP_REPLY_TOKEN} 和 NO_REPLY 仅用于群聊成员的判断场景，不适用于 Bot 私聊。私聊必须真实回答用户；即使当前 Bot 的职责范围有限，也只能简短说明本次无法完成的范围，不能用 NO_REPLY 代替答复。`,
       groupResponseMode
         ? '当前额外提供 rambo_group_history.read_history 只读工具。若用户询问本群更早记录而当前近期消息不足，调用它按需查询；它只能读取当前群，不能读取任何 Bot 私聊或其他群。' +
-          '当前还提供 rambo_group_messages.send：当你根据成员职责需要其他 Bot 协作时，可点名一个其他成员或通知全部其他活跃成员；不要用普通文本假装已经通知。'
+          '当前还提供 rambo_group_messages.send：当你根据成员职责需要其他 Bot 协作时，可点名一个其他成员或通知全部其他活跃成员；不要用普通文本假装已经通知。用户要求 Bot 逐轮对答时，每次回复上一位 Bot 都必须再次用该 Tool 点名对方，直接回复当前发送者不按回派任务处理。'
         : '',
       chatContentToolsEnabled
         ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接可引用当前 Bot 工作区内的相对路径，也可引用本机已有的绝对路径，不必复制进工作区。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S)、当前 Bot 工作区内的文件路径或本机已有的绝对路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
@@ -2379,6 +2489,7 @@ export class Host {
       const itemId = `group-tool:${params.threadId}:${params.callId}`;
       const existing = this.store.groupMessageByItemId(groupBinding.groupId, itemId);
       if (existing) {
+        this.rememberGroupToolTurn(chatId, params.threadId);
         result = routineToolText(`该群聊消息已发送，消息 ID：${existing.id}。`);
         try { this.runtime.respondToServerRequest(request.id, result); }
         catch { /* runtime disconnected */ }
@@ -2412,7 +2523,8 @@ export class Host {
       if (targetBotId === sender.id) throw new Error('不能通过群消息 Tool 点名自己。');
 
       const parent = this.groupDelegationsByChat.get(chatId);
-      const depth = (parent?.depth ?? 0) + 1;
+      const directReply = targetBotId !== null && targetBotId === parent?.senderBotId;
+      const depth = (parent?.depth ?? 0) + (directReply ? 0 : 1);
       if (depth > MAX_GROUP_DELEGATION_DEPTH) {
         throw new Error(`群内连续转派最多 ${MAX_GROUP_DELEGATION_DEPTH} 次，本次未发送。`);
       }
@@ -2422,15 +2534,17 @@ export class Host {
       if (targetBotId !== null) {
         const target = this.store.bot(targetBotId);
         if (target.archived) throw new Error('目标 Bot 已归档。');
-        if (ancestorBotIds.includes(target.id)) throw new Error('不能把群内协作回派给祖先成员。');
+        if (!directReply && ancestorBotIds.includes(target.id)) {
+          throw new Error('不能把群内协作回派给祖先成员。');
+        }
         targets = [target];
-        displayText = `@${target.name} ${text}`;
+        displayText = groupMentionText(target.name, text);
       } else {
         targets = activeMembers.filter(bot =>
           bot.id !== sender.id && !ancestorBotIds.includes(bot.id)
         );
         if (!targets.length) throw new Error('没有可接收 @everyone 的其他活跃成员。');
-        displayText = `@everyone ${text}`;
+        displayText = groupMentionText('everyone', text);
       }
 
       const message = this.store.addGroupMessage(group.id, 'assistant', displayText, {
@@ -2448,7 +2562,12 @@ export class Host {
         result = routineToolText(`群聊消息已存在，消息 ID：${message.id}；没有重复投递。`);
       } else {
         const mode: GroupResponseMode = targetBotId === null ? 'everyone' : 'directed';
-        const chain = { rootMessageId, ancestorBotIds, depth };
+        const chain = {
+          rootMessageId,
+          ancestorBotIds: directReply ? [sender.id] : ancestorBotIds,
+          depth,
+          senderBotId: sender.id
+        };
         this.startGroupRuntime(group.id, delivered, mode);
         for (const target of delivered) {
           void this.respondInGroup(group.id, target, displayText, mode, chain);
@@ -2460,6 +2579,7 @@ export class Host {
             : '')
         );
       }
+      this.rememberGroupToolTurn(chatId, params.threadId);
       this.changed();
     } catch (error) {
       result = routineToolFailure(error instanceof Error ? error.message : '无法发送群聊消息。');
@@ -4848,6 +4968,7 @@ export class Host {
           await this.runtime.request('turn/steer', {
             threadId, expectedTurnId: currentTurn, input, additionalContext
           }, 60_000, requestOptions);
+          if (groupResponseMode) this.rememberGroupTurnMode(threadId!, currentTurn, groupResponseMode);
           if (queuedMessageId) this.store.setQueuedChatMessageStatus(queuedMessageId, 'dispatched');
           else if (currentTurn && message) this.store.setMessageDispatchStatus(message.id, 'dispatched');
           if (message && (queuedMessageId || currentTurn)) this.publishMessageDispatchState(chatId, message.id);
@@ -4867,6 +4988,7 @@ export class Host {
             error.outcomeUnknown = true;
             throw error;
           }
+          if (groupResponseMode) this.rememberGroupTurnMode(threadId!, turnId, groupResponseMode);
           if (this.groupStoppedGroupSession(chatId)) {
             this.store.attachTurnIdToTerminal(turnRecord?.id ?? operation.operationId, threadId!, turnId);
             if (turnRecord) this.store.setTurnStatus(turnRecord.id, 'interrupted');
@@ -5071,6 +5193,12 @@ export class Host {
     this.secretToolThreads.delete(oldThreadId);
     this.threadConfigFingerprints.delete(oldThreadId);
     this.completedTurns.delete(oldThreadId);
+    for (const key of this.groupTurnModes.keys()) {
+      if (key.startsWith(`${oldThreadId}:`)) this.groupTurnModes.delete(key);
+    }
+    for (const key of this.groupToolTurns) {
+      if (key.startsWith(`${oldThreadId}:`)) this.groupToolTurns.delete(key);
+    }
     for (const key of this.turnAssistantTexts.keys()) {
       if (key.startsWith(`${oldThreadId}:`)) this.turnAssistantTexts.delete(key);
     }
@@ -5248,6 +5376,7 @@ export class Host {
         : null;
       if (this.voiceSessions.has(chatId)) this.supersedeVoiceDraft(chatId);
       const delta = typeof p.delta === 'string' ? p.delta : '';
+      if (!delta) return;
       const { message, replacedMessageId } = this.store.assistantItem(
         chatId, p.itemId, delta, true, 'streaming', turnId, phase
       );
@@ -5304,15 +5433,19 @@ export class Host {
             groupSession.groupId, groupSession.botId, turnId, p.item.id
           );
           if (removedId) this.removeGroupMessage(groupSession.groupId, removedId);
-          if (groupSession.mode === 'directed') {
+          const toolActionCompleted = turnId
+            ? this.groupToolTurns.has(this.groupTurnModeKey(p.threadId, turnId))
+            : false;
+          if (this.groupTurnMode(p.threadId, turnId, groupSession) === 'directed' && !toolActionCompleted) {
             const bot = this.store.bot(groupSession.botId);
-            const failure = this.store.addGroupMessage(
-              groupSession.groupId,
-              'system',
-              `「${bot.name}」未能生成正式回复（返回了内部不回复标记）。`,
-              { status: 'failed', senderName: bot.name }
-            );
-            this.publishGroupMessage(failure);
+            this.recordGroupResponseIssue({
+              groupId: groupSession.groupId,
+              bot,
+              chatId,
+              turnId,
+              title: '群聊回复未生成',
+              detail: '模型返回内部不回复标记，且本轮没有成功执行群消息 Tool。'
+            });
           }
         } else {
           const {
@@ -5327,7 +5460,14 @@ export class Host {
           const groupMessageWithImage = turnId
             ? this.store.attachGeneratedImageToGroupTurn(groupSession.groupId, groupSession.botId, chatId, turnId) ?? groupMessage
             : groupMessage;
-          this.publishGroupMessage(groupMessageWithImage);
+          if (!groupMessageWithImage.text.trim() && !groupMessageWithImage.content) {
+            const removedId = this.store.removeGroupAssistantTurn(
+              groupSession.groupId, groupSession.botId, turnId, p.item.id
+            );
+            if (removedId) this.removeGroupMessage(groupSession.groupId, removedId);
+          } else {
+            this.publishGroupMessage(groupMessageWithImage);
+          }
         }
       }
       if (phase === 'commentary' || phase === 'partial_answer') {
@@ -5407,6 +5547,10 @@ export class Host {
       }
     } else if (method === 'turn/completed') {
       const turnId = p.turn?.id;
+      if (typeof turnId === 'string') {
+        this.groupTurnModes.delete(this.groupTurnModeKey(p.threadId, turnId));
+        this.groupToolTurns.delete(this.groupTurnModeKey(p.threadId, turnId));
+      }
       const finalAssistant = typeof turnId === 'string'
         ? this.turnAssistantTexts.get(`${p.threadId}:${turnId}`)
         : undefined;
@@ -5729,14 +5873,167 @@ export class Host {
       };
     }
   }
+
+  /**
+   * Verify a local/ChatGPT source with one isolated, read-only turn. This
+   * deliberately does not create a user-visible chat or enable Bot resources.
+   */
+  async testCodexConnection(
+    source: Extract<ModelSourceKind, 'local' | 'chatgpt'>,
+    timeoutMs = 45_000
+  ): Promise<{ latencyMs: number; message: string }> {
+    const account = await this.account();
+    if (account.requiresLogin && !account.localLoginDetected) {
+      throw new Error(source === 'chatgpt'
+        ? '尚未登录 ChatGPT，请先完成登录'
+        : '本机 Codex 配置没有可用的登录态');
+    }
+
+    const startedAt = performance.now();
+    const configResponse: any = await this.runtime.request('config/read', {
+      includeLayers: false
+    });
+    let model = typeof configResponse?.config?.model === 'string'
+      ? configResponse.config.model.trim()
+      : '';
+    if (!model) {
+      const models = await this.modelsWithoutStart();
+      model = models[0]?.id?.trim() ?? '';
+    }
+    if (!model) throw new Error('没有读取到可用于连接测试的 Codex 模型');
+
+    const cwd = join(this.store.directory, 'connection-test');
+    mkdirSync(cwd, { recursive: true });
+    const created: any = await this.runtime.request('thread/start', {
+      cwd,
+      model,
+      sandbox: 'read-only',
+      approvalPolicy: 'never',
+      serviceName: 'Rambo',
+      ephemeral: true,
+      baseInstructions: 'This is a connectivity probe. Reply with exactly OK.',
+      selectedCapabilityRoots: [],
+      historyMode: 'paginated',
+      config: {
+        mcp_servers: {},
+        features: { apps: false, plugins: false },
+        skills: {
+          bundled: { enabled: false },
+          include_instructions: false,
+          config: []
+        }
+      }
+    }, 20_000);
+    const threadId = created?.thread?.id;
+    if (typeof threadId !== 'string' || !threadId) {
+      throw new Error('Codex 没有返回连接测试临时 thread');
+    }
+
+    let settled = false;
+    let completedTurnId: string | null = null;
+    let completionStatus: string | null = null;
+    let completionError: string | null = null;
+    let assistantText = '';
+    let completionTimer: ReturnType<typeof setTimeout> | null = null;
+    let onNotification: ((method: string, params: any) => void) | null = null;
+    const cleanupCompletion = () => {
+      if (completionTimer) {
+        clearTimeout(completionTimer);
+        completionTimer = null;
+      }
+      if (onNotification) {
+        this.runtime.off('notification', onNotification);
+        onNotification = null;
+      }
+    };
+    const completion = new Promise<void>((resolve, reject) => {
+      completionTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanupCompletion();
+        reject(new Error('连接测试超时'));
+      }, timeoutMs);
+      onNotification = (method: string, params: any) => {
+        if (params?.threadId !== threadId) return;
+        if (
+          method === 'item/completed' &&
+          params?.item?.type === 'agentMessage' &&
+          typeof params.item.text === 'string'
+        ) {
+          assistantText = params.item.text.trim();
+          return;
+        }
+        if (method !== 'turn/completed' || typeof params?.turn?.id !== 'string') return;
+        completedTurnId = params.turn.id;
+        completionStatus = typeof params.turn.status === 'string' ? params.turn.status : 'unknown';
+        completionError = typeof params.turn?.error?.message === 'string'
+          ? params.turn.error.message
+          : null;
+        if (settled) return;
+        settled = true;
+        cleanupCompletion();
+        resolve();
+      };
+      this.runtime.on('notification', onNotification);
+    });
+
+    let turnId: string | null = null;
+    try {
+      const turn: any = await this.runtime.request('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: 'Reply with exactly OK.', text_elements: [] }],
+        model,
+        effort: 'low',
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'readOnly' }
+      }, 20_000);
+      turnId = typeof turn?.turn?.id === 'string' ? turn.turn.id : null;
+      if (!turnId) throw new Error('Codex 没有返回连接测试 turn');
+      await completion;
+      if (completedTurnId && completedTurnId !== turnId) {
+        throw new Error('连接测试返回了不匹配的 turn');
+      }
+      if (completionStatus !== 'completed') {
+        throw new Error(completionError ?? 'Codex 连接测试未成功完成');
+      }
+      const suffix = assistantText ? `：${assistantText.slice(0, 80)}` : '';
+      return {
+        latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        message: `Codex 已完成最小只读请求${suffix}`
+      };
+    } finally {
+      cleanupCompletion();
+      if (turnId) {
+        await this.runtime.request('turn/interrupt', { threadId, turnId }, 5_000)
+          .catch(() => {});
+      }
+      await this.runtime.request('thread/delete', { threadId }, 5_000).catch(() => {});
+    }
+  }
+
   async verifyModelConnection(): Promise<ModelConnectionTestResult> {
     if (!this.testModelConnection) throw new Error('模型连接测试尚未初始化');
     return this.testModelConnection();
   }
-  async login(): Promise<string | null> {
+  async login(): Promise<AccountLoginStart> {
     await this.runtime.start();
     const result = await this.runtime.request('account/login/start', { type: 'chatgpt' });
-    return result.authUrl ?? null;
+    const authUrl = typeof result?.authUrl === 'string' ? result.authUrl.trim() : '';
+    let parsed: URL;
+    try {
+      parsed = new URL(authUrl);
+    } catch {
+      throw new Error('Codex 没有返回有效的 ChatGPT 登录地址，请重试或先更新 App Server');
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error('Codex 返回的 ChatGPT 登录地址必须使用 HTTPS');
+    }
+    return {
+      authUrl: parsed.toString(),
+      loginId: typeof result?.loginId === 'string' && result.loginId.trim()
+        ? result.loginId.trim()
+        : null
+    };
   }
   async models(): Promise<ModelOption[]> {
     await this.runtime.start();

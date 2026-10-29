@@ -1,14 +1,86 @@
 # 实施进度
 
+## 2026-10-29 · ChatGPT 登录空提示与完成态同步修复
+
+- 干净环境中点击“登录 ChatGPT”后只出现“登录流程已启动，完成后重新打开此页面”的直接原因有两层：旧验收运行时对 `account/login/start` 返回空对象，Rambo 又把空结果当成成功；同时登录完成后的账号状态只更新了设置页局部，顶层侧栏仍保留“配置 Codex”。
+- Host 现在要求 App Server 返回有效 HTTPS `authUrl`，否则明确提示“没有返回有效的 ChatGPT 登录地址，请重试或先更新 App Server”，不再显示虚假成功。主进程打开系统浏览器失败时仍把 URL 返回 renderer，账号页继续保留“重新打开登录页面”链接，而不是把登录状态一并丢掉。
+- 登录后会显示“等待授权…”，每 1.5 秒读取一次账号，最多等待 10 分钟；授权完成后自动刷新账号卡、来源状态和侧栏主入口。账号读取增加代次校验，较早请求的旧结果不能覆盖较新的登录成功状态。
+- 真实内置 `0.165.0` 在一次性空 Codex Home 中直接调用 RPC，确认返回 ChatGPT 类型、`loginId` 和 `https://auth.openai.com/...` 登录地址；未在诊断输出中保存完整一次性 URL。Host 回归覆盖有效 URL 与缺失 URL；真实 Electron 回归覆盖可重开链接、等待态、模拟授权完成、账号卡自动更新和侧栏切换到“创建 Bot”。
+- 最终发布验证：`node scripts/change-checks.mjs --run` 通过 TypeScript、相关后端 **201/201**、验收流程 **21/21**、Electron 构建和相关真实 Electron **53 passed / 1 skipped**；`npm run verify:fast` 通过类型检查、后端 **372/372**、验收流程 **21/21** 和台账 **18/18**，目录为 **155 条规则 / 267 个案例 / 142 implemented / 125 gaps**。唯一跳过项仍是依赖外部真实模型行为的一次性 Routine。
+- `v0.1.8` 候选应用约 **757M**，Bundle ID 为 `local.rambo.desktop`，内置 `codex-app-server 0.165.0`，ad-hoc 签名且 `codesign --verify --deep --strict` 通过，`spctl` 按未公证应用预期拒绝；候选资源测试 **1/1**、打包版 Electron **3/3** 通过，其中直接点击候选包登录入口得到真实 `auth.openai.com` 可重开地址。新增干净登录测试 Skill 已在最终候选包上真实执行 `start`、`status` 和 `cleanup`，确认版本 `0.1.8`、内置运行时 `0.165.0` 并清理隔离环境。
+- Release zip 为 `Rambo-v0.1.8-macOS-arm64.zip`，大小 **293381374** 字节，SHA-256 为 `9974f4a14d220a127cddda3bbcd3b1aa1406feddaa97144d72c9daef2268df72`。同一构建已安装到 `/Applications/Rambo.app`，复核版本 `0.1.8`、Bundle ID `local.rambo.desktop` 和 ad-hoc 签名一致；应用数据目录未清理或覆盖。
+- 证据边界：Electron 用例使用本机验收 App Server 夹具模拟授权完成，尚未在真实外部浏览器完成 `auth.openai.com` 登录回调，也未在安装版单独制造系统浏览器打开失败或执行真实模型回合；“重新打开登录页面”依赖 Electron 既有外链处理。以上是本次针对性发布证据，不代表 P08 全量验收通过。
+
+## 2026-10-29 · Q199 App Server 内置与独立手动更新
+
+- Rambo 安装包现在内置官方 macOS ARM64 `codex-app-server` `0.165.0`，固定归档 SHA-256 为 `db80061560c75c440efe11d347f5bebcf78aa895b40e38ca47623d8a37b41cd7`；`package:mac` 会先运行 `runtime:prepare`，再把 `runtime/codex` 复制到应用 `Contents/Resources`，最后通过 `scripts/sign-mac.mjs` 对候选应用执行 ad-hoc 重签和严格校验。干净安装直接使用内置版本，不再在首次启动时下载。
+- App Server 与 Rambo 版本生命周期解耦：用户通过“账号 → Codex 运行时 → 更新 App Server”手动检查官方最新发布并安装到 `<userData>/runtime/codex/<version>`，目录带 `updateChannel: "manual"`；后续应用包即使带更高内置基线也不自动覆盖该用户选择。只有用户再次点击更新才切换。
+- 更新按钮显示真实字节进度；下载后校验 SHA-256、归档路径、manifest、入口和可执行权限，然后重启 App Server 并完成 `initialize`。有执行中任务时拒绝更新，下载完成到重启前再次检查任务；更新失败保留原运行时，不清理任务、排队项、Routine 或用户数据。
+- 已重新执行 `npm run package:mac`，生成约 **757M** 的 `dist/mac-arm64/Rambo.app`；Bundle ID 为 `local.rambo.desktop`，包内仅保留 `runtime/codex/0.165.0`，入口为 arm64 Mach-O。`codesign --verify --deep --strict` 通过，签名为 ad-hoc；候选包资源测试 **1/1**，打包版真实 Electron **2/2**，确认空配置首次启动直接连接内置运行时且不再显示下载步骤。
+- 独立更新真实 Electron 用例 **3/3**：新用户从内置 `0.165.0` 点击“更新 App Server”，经慢速本机 HTTP 归档显示真实进度并切换到单独安装的 `0.166.0`；运行时来源显示“单独更新”，侧栏在模型仍未配置时继续引导“配置 Codex”。同时通过 Runtime 定向单测 **12/12**、相关后端 **200/200**、`npm run typecheck`、验收结构 **21/21**、目录 **155 条规则 / 155 个完整场景 / 265 个局部案例** 和 `git diff --check`。
+- 已直接核对 GitHub Releases API：当前 `releases/latest` 为 `rust-v0.165.0`，macOS ARM64 App Server 资产名、SHA-256 和下载地址与固定基线一致。证据边界：更新按钮流程仍使用本机夹具归档，未通过安装版按钮完成真实 GitHub 更新；真实模型回合、Voice/Computer Use 同版本组件、应用升级后保留手动版本的真实安装旅程和最终发布验收尚未完成。
+
+## 2026-10-29 · Q198 侧栏空态引导与顶部创建入口
+
+- 侧栏只有没有任何可见 Bot/群聊会话时显示独立空态引导：未配置时引导“配置 Codex”，配置与来源就绪时引导创建第一个 Bot；引导不再作为常驻会话行，也不常驻挤占已有会话列表。
+- 已有可见会话时，空态引导隐藏，“创建 Bot”恢复为顶部工具栏“+”入口；配置尚未就绪时该入口仍打开账号配置页，不进入无法完成的创建流程。
+- 空态改为品牌头像、状态徽标、说明和轻量胶囊操作组成的准备面板；紧凑侧栏保留可点击图标与无障碍名称。真实 Electron 已验证创建首条 Bot 后入口在同一状态更新中迁移到顶部、已有会话重启后仍保留顶部入口，且不重复显示。
+- 连接测试重试时不再先清空已有结果，按钮文案保持“测试连接”并以行内进度提示真实测试中状态；真实 Electron 已验证测试期间结果仍在、可访问名称不变、按钮宽度和来源卡高度不变化，避免快速完成时文字和结果区域连续闪动。
+
+## 2026-10-29 · Q197 配置模式与模型来源分层
+
+- 账号页改为固定顺序：“Codex 运行时（状态、下载、Home、代理）→ 当前配置模式 → 当前模型来源卡 → 来源卡底部连接测试”。顶层模式只有“持续跟随本机 / 独立配置”；没有检测到本机 Codex 时，持续跟随入口保留但禁用，有效模式自动落到独立配置。
+- 持续跟随只使用本机 Codex 配置副本，并隐藏独立来源选择、手动 API 表单和旧通用账号卡。独立配置内才出现本机副本、ChatGPT 登录和手动 API 三个来源；任一来源可用时只显示当前来源卡和“更换配置”，全部不可用时才显示“登录 ChatGPT / 配置 API”。
+- 账号身份绑定当前来源：ChatGPT 登录作为当前来源时显示账号状态，本机副本仅在检测到可用登录态时显示，手动 API 不展示 ChatGPT 账号卡。手动 API 保存后直接成为当前来源并收起表单；连接测试只作用于当前来源，失败保留来源且不自动切换。
+- Host 的本机/ChatGPT 连接测试使用隔离、只读、ephemeral、无 Skills/MCP 的临时 turn，并支持超时参数；测试完成、失败、超时和 turn 不匹配都会清理临时 thread。三个来源统一使用最小真实请求测连通性。
+- 当前验证：`npm run typecheck`；定向账号/模型/运行时/Host 后端 **134/134**；变更门禁相关后端 **200/200**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog` 和验收流程 **19/19**；真实 Electron `runtime-startup`、`private-chat`、`group-chat`、`avatar-picker`、`media-preview` 合并 **49 passed / 1 skipped**；`git diff --check`。验收目录为 **155 条规则 / 155 个完整场景 / 265 个局部案例**，新增 `A09-ACCOUNT-SETTINGS-01` 覆盖账号页真实 Electron 分层。
+- 证据边界：全新用户下载使用本机慢速 mock 归档和真实 Electron UI，不访问真实 GitHub；真实 ChatGPT 登录回调、真实本机/ChatGPT 模型回合、已有 Bot/群聊/Routine 跨来源切换、执行中切换失败回滚和安装版仍未完整验收。跳过的 Electron 用例是依赖外部真实模型行为的一次性 Routine smoke，不能据此宣称 A09 或全量发布通过。
+
+## 2026-10-29 · Q196 独立运行时与 Codex Home 复制
+
+- Rambo 运行时已与安装包和本机 Codex 切割：只解析 Rambo 自己的缓存、包内资源或经校验下载的官方 `codex-app-server` 包，入口必须由 manifest 指向 `bin/codex-app-server`；启动固定使用 `--listen stdio:// --session-source app-server`，不再使用本机 `bin/codex` 或 daemon。
+- 新增 `RuntimeHomeManager`：独立 `codex-home`，白名单复制 `config.toml`、文件 `auth.json`、`skills`、`plugins`、`rules`、`AGENTS.md`、`managed_config.toml`、`mcp-auth.json`，不复制会话、归档、SQLite 状态库、日志和缓存；持续跟随只单向从本机复制到 Rambo，支持“保持独立”、去抖、原子替换、失败保留旧副本和 owned thread 迁移。
+- 账号页已接入运行时状态、真实下载进度、Codex Home 只读路径、本机 Codex 检测、持续跟随/保持独立、最近同步和错误提示；代理仍在“账号 → Codex 运行时”内，填写后自动保存，没有“保存代理”按钮。账号状态按来源展示：ChatGPT 登录始终显示；本机配置副本只有检测到登录态时显示；手动 API 不显示 ChatGPT 账号状态。
+- 修复本机 Codex 后出现时可能覆盖 Rambo 独立配置的边界：若 Rambo 先形成独立登录/配置、尚无首次同步记录，本机 Codex 随后出现时自动切为“保持独立”、标记需要用户选择并保持 pending，只有明确选择“持续跟随本机”后才复制。
+- 手动 API 的非敏感配置现在写入 Rambo 自己的 `codex-home/config.toml`：顶层 `model` 使用填写的模型 ID，并维护 `model_provider` 和 `[model_providers.rambo_manual]`；写入前保留基础配置副本，切回本机配置时恢复。原本没有 `config.toml` 时记录“原文件不存在”并在切回时删除临时配置，不留下空文件或空备份。API Key 仍只保存在加密凭证库并通过 `RAMBO_MANUAL_API_KEY` 注入子进程；ChatGPT 登录或手动 API 生效时禁止“持续跟随本机”，避免下一次同步覆盖独立配置。
+- 账号页只在当前来源真实可用时标记“当前生效”；本机配置副本尚无可用登录态时标记“尚未可用”，不把空配置伪装成已生效。模型来源切换现在先检查活动轮次，再修改同步模式和来源；失败时同时恢复原来源与持续跟随模式。
+- 当前定向验证：`npm run typecheck`；Runtime/RuntimeHome/ModelSource/CodexConfig 合并测试 **27/27**；`npm run build`；`runtime-startup` 真实隔离 Electron **3/3**；账号设置与手动 API 成功/401 真实 Electron **3/3**；验收流程 **19/19**；`git diff --check`。全新用户用例使用本机慢速 HTTP mock 归档，验证下载进度、SHA-256 校验、解包、启动，以及下载完成后的 ChatGPT 登录入口、手动 API 保存/连接测试/启用/切回；未访问真实 GitHub。
+- 本轮收口回归：`private-chat` 真实 Electron **37 passed / 1 skipped**、`group-chat` **6/6**、`avatar-picker` **2/2**、`media-preview` **1/1**、`runtime-startup` **3/3**；变更门禁 `npm run typecheck`、相关后端 **193/193**、验收目录与流程 **19/19** 均通过。一次性 Routine 清理用例补齐第三次来源私聊 turn 交接，头像等待动画修复后连续运行稳定；`private-chat` 跳过项仍是依赖外部真实模型行为的 Routine smoke。
+- 验收目录已同步为 **155 条规则 / 155 个完整场景 / 264 个局部案例**，并新增 `A03-RUNTIME-HOME-01` 覆盖“本机 Codex 后出现不静默覆盖”、`A09-CODEX-CONFIG-01` 覆盖手动 API 文件写回与无原文件清理。证据边界：真实 GitHub 下载、真实 ChatGPT 登录回调、真实手动 API 完整模型对话、执行中来源切换的 Electron 回滚、Voice 独立组件、Computer Use 分发和安装版仍待验证。
+
+## 2026-10-29 · Q195 新安装侧栏主入口按 Codex 配置状态切换
+
+- 左侧栏会话列表上方新增唯一主入口：运行时、模型初值或当前模型来源所需账号/API 配置未完成时显示“配置 Codex”，点击打开系统设置“账号”Tab；账号检查期间显示“正在检查配置”；配置完成后切换为“创建 Bot”，点击打开现有创建 Bot 弹窗。
+- 运行时下载完成、账号登录态读取、模型来源切换和运行时重启后会重新读取账号状态；手动 API 以已保存的 Base URL、模型 ID 和加密 API Key 判定为可用，不要求 ChatGPT 登录。
+- 顶部原有“创建 Bot”快捷按钮由该主入口取代，避免未配置时仍能直接打开创建弹窗；窄侧栏保留图标和无障碍名称，会话列表、搜索、新建群聊及设置入口不变。
+- 验证使用真实 Electron UI 和本地 mock 运行时归档，不触发真实 GitHub 下载。覆盖未配置/下载中/下载完成后“配置 Codex”、已有本机登录时“创建 Bot”、配置入口定位账号页和窄侧栏可操作性。
+- 验证边界：真实 ChatGPT 登录回调、真实手动 API 对话完成后的入口切换、真实 GitHub 下载、四种 profile 组合和安装版视觉仍未完成，不能据此宣称 A08 整条规则通过。
+
+## 2026-10-29 · Q193/Q194 运行时移入账号、代理自动保存与平滑下载进度
+
+- “Codex 运行时”完整区块从“常规”迁入“账号”，顺序为运行时、账号状态、模型来源、手动 API 和连接测试；“常规”只保留登录时启动与共享“关于我”。未配置运行时的首次启动自动定位改为“账号 → Codex 运行时”。
+- 代理地址移除“保存代理”按钮，改为停止输入 650ms、离开输入框或回车后自动保存；清空同样自动保存。保存期间显示等待、进行中、完成或失败状态，原有格式校验、执行中拒绝、运行时重启和失败回滚边界不变。
+- 下载进度改用主题化填充层和 `transform: scaleX()`，真实字节更新每约 100ms 一次，视觉过渡为 180ms；无总大小时使用不定量动画，`prefers-reduced-motion` 下停用动画。仍以真实已下载字节和百分比为数据源。
+- 验收模式增加离线保护：`RAMBO_ACCEPTANCE_RUN` 未显式提供本地归档 URL 时禁止隐式回退 GitHub 下载。运行时 UI 用例使用本机临时 HTTP mock 归档，不触发真实网络下载。
+- 当前定向验证：`npm run typecheck`；Runtime 后端 **13/13**；`npm run build`；`runtime-startup` 真实 Electron **3/3**；账号/常规分工及运行时重建相关真实 Electron **3/3**；验收目录 **155 条规则 / 155 个完整场景 / 262 个局部案例**；验收结构 **19/19**。证据边界：真实 GitHub 下载、真实 ChatGPT 登录回调、真实手动 API 对话、安装版真实代理对话和完整 A02/A03/A07/A08/A09 仍未验证；本轮下载验收明确是 mock 来源、真实 Electron UI。
+
+## 2026-10-29 · Q192 全新用户运行时下载与账号配置
+
+- 用户确认全新用户场景：没有 App Server 时先下载并显示真实进度；下载完成后可选择 ChatGPT 登录或手动 API Key。规则已写入 Q192、A02/A03/A08 与验收矩阵；Q196 后续把“已有 App Server 时直接复用登录态”修订为复制到 Rambo 独立 Codex Home。
+- Runtime 状态新增下载阶段、已下载字节和可选总字节。真实下载每约 100ms 及完成时更新状态；设置页显示原生进度条、百分比和文件大小，缺少 `Content-Length` 时显示不定量进度与已下载量，完成后清除进度并进入 App Server 初始化。
+- 验收模式新增仅由 `RAMBO_ACCEPTANCE_RUN` 启用的本地归档 URL/SHA-256 覆盖，真实 Electron 用例通过慢速本机 HTTP 下载、SHA-256 校验、解包和夹具 App Server 启动验证整条链路，不依赖 GitHub 网络。
+- 全新用户 Electron 用例验证：无欢迎页、当时自动进入常规设置（后续 Q193 已改为账号）、下载进度可见、运行时就绪、账号页显示“登录 ChatGPT”和“手动配置 API”并可展开 Key 表单。已有本机 Codex Home 的真实 Electron 用例验证白名单 `auth.json` 副本和无需重登；手动 API 保存、加密凭证与 Responses fixture 测试继续覆盖 Key 路径。
+- 当前定向验证：`npm run typecheck`；Runtime 后端 **12/12**；相关真实 Electron（本机运行时复用、未配置首次启动、全新用户下载、手动 API）**4/4**；验收目录同步为 **155 条规则 / 155 个完整场景 / 262 个局部案例**。证据边界：尚未用真实 GitHub 下载、真实 ChatGPT 登录回调、真实手动 API 对话或安装版完成该首次旅程，不能据此宣称 A02/A03/A08/A09 整条规则或全量发布通过。
+
 ## 2026-10-27 · 账号设置、模型来源与首次启动入口
 
-- 系统设置拆出独立“账号”Tab，集中承载账号状态、ChatGPT 登录、模型来源和连接测试；常规继续保留启动、关于我和 Codex 运行时。账号 Tab 提供“本机 Codex 配置 / ChatGPT 登录 / 手动配置 API”三选一，并明确同一时间只有一个应用级来源生效，不静默改写已有 Bot 的模型与权限。
-- 手动 API 支持服务名称、Base URL、模型 ID 和 API Key。API Key 写入现有应用本地 AES-256-GCM 凭证库，不进入 Snapshot、设置快照、日志或 React 持久状态；Codex 子进程使用独立 `rambo_manual` Responses provider，API Key 只经子进程环境注入，不修改原生 `~/.codex/config.toml`。
+- 系统设置拆出独立“账号”Tab，集中承载账号状态、ChatGPT 登录、模型来源和连接测试；当时常规继续保留启动、关于我和 Codex 运行时（后续 Q193 已将运行时移入账号）。账号 Tab 提供“本机 Codex 配置 / ChatGPT 登录 / 手动配置 API”三选一，并明确同一时间只有一个应用级来源生效，不静默改写已有 Bot 的模型与权限。
+- 手动 API 支持服务名称、Base URL、模型 ID 和 API Key。API Key 写入现有应用本地 AES-256-GCM 凭证库，不进入 Snapshot、设置快照、日志或 React 持久状态；Codex 子进程使用独立 `rambo_manual` Responses provider。非敏感 provider 配置写入 Rambo 自己的 `codex-home/config.toml`，API Key 只经子进程环境注入，不修改原生 `~/.codex/config.toml`；后续 Q196 已把配置副本和持续跟随边界补齐。
 - 连接测试发送真实最小 `POST <Base URL>/responses` 请求并显示首响应延迟；保存并测试成功不会自动启用来源，需用户再点击“切换为当前来源”。HTTP 401、超时或无效配置显示失败，不提供启用入口；切换运行时失败会恢复原来源。
 - 账号在线状态读取超时时，如果本机 `auth.json` 仍有认证，界面显示“检测到本机登录 / 本机认证存在，在线状态暂不可用”并保留原始错误，不把在线超时误报成未登录，也不在完全无本机认证时虚构成功。
-- 未新增欢迎页、首次使用向导或独立首次配置路由。隔离 Electron 验证：未配置运行时首次启动自动进入“常规 → Codex 运行时”，点击返回后 reload 不重复弹出；一次性状态通过 `initialSetupPrompted` 持久化。四种配置组合、真正重启应用后的触发边界、其他入口的“去配置”提示和安装版仍待验收。
+- 未新增欢迎页、首次使用向导或独立首次配置路由。当时隔离 Electron 验证：未配置运行时首次启动自动进入“常规 → Codex 运行时”，点击返回后 reload 不重复弹出；一次性状态通过 `initialSetupPrompted` 持久化（后续 Q193 已将定位改为“账号 → Codex 运行时”）。四种配置组合、真正重启应用后的触发边界、其他入口的“去配置”提示和安装版仍待验收。
 - 本轮最新定向验证：`npm run typecheck`；`runtime-startup` 真实 Electron **2/2**；账号 Tab、手动 API 成功与 HTTP 401 三条真实 Electron 用例 **3/3**；后端相关目标 **197/197**；`npm run test:catalog` **148 条规则、148 个完整场景、233 个局部案例**；`npm run test:acceptance` **19/19**；`git diff --check`。隔离窗口视觉复核确认常规/账号分工正确、760px 下 Tab 与三选一没有重叠或横向溢出。
-- 证据边界：手动 API 的 Save/Test 与加密凭证已有隔离 Responses fixture 证据；`local` 和 `chatgpt` 仍主要复用本机 `config.toml` 与共享登录态，两路真实模型回合尚未验证。未承诺第三方 API 完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力；已有 Bot、群聊、Routine 在切换来源后的真实运行、失败运行时回滚和安装版均未完成完整验收，因此不能宣称 A09 或全量发布已通过。
+- 证据边界：手动 API 的 Save/Test 与加密凭证已有隔离 Responses fixture 证据；`local` 和 `chatgpt` 的独立副本/登录态及两路真实模型回合尚未验证（后续 Q196 已取消共享登录态）。未承诺第三方 API 完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力；已有 Bot、群聊、Routine 在切换来源后的真实运行、失败运行时回滚和安装版均未完成完整验收，因此不能宣称 A09 或全量发布已通过。
 
 ## 2026-10-27 · Q168 会话置顶与 Q169 聊天时间显示
 
@@ -102,6 +174,7 @@
 ## 2026-10-26：确认本机 Codex 二进制与独立进程边界
 
 - 用户澄清 A01/Q79 选择的是 Rambo 管理自己的 App Server 子进程，并未禁止复用本机同一 Codex 二进制。已把 A02/A05 和运行时验收定义修正为：普通 `bin/codex` 不是被产品规则禁止的入口，能否使用取决于是否满足 A04 会话来源隔离。
+- 后续修订：Q196 已改为 Rambo 独立下载/管理运行时并复制独立 Codex Home，不再复用本机二进制、认证或配置；上面是本轮历史判断，不适用于当前实现。
 - 本机 app-server-daemon 0.164.0 清单为 `variant: codex`、`entrypoint: bin/codex`；`codex app-server --listen stdio://` 支持独立 stdio 启动，但不接受 `--session-source app-server`。用该二进制、空临时 `CODEX_HOME` 和 Rambo 当前 `initialize` 参数做了真实子进程协议握手，返回 `initialize` 成功并正常停止；没有创建 thread、调用模型或触及日常凭据。对应 `rust-v0.164.0` 源码调用时固定传入 `SessionSource::VSCode`，而 VSCode 属于默认交互来源。因此用这个入口启动自己的进程是可行的，但在当前 A04 下会让 Rambo 线程可能出现在普通 Codex 历史列表。
 - 已记录独立 `CODEX_HOME` 作为待研究方向，但它会改变 A03；认证可能使用与 home 路径相关的 Keychain 身份，不能假定只 symlink 配置和认证文件即可安全共享。本轮没有改运行时启动代码，也没有把本机 0.164 二进制复制进 Rambo 缓存。
 - 决策依据和边界写入 Q145、A02/A05、技术设计与验收计划。验收 catalog 同步后，`npm run test:catalog` 为 141/141 规则映射，`npm run test:acceptance` 为 16/16，`node --test tests/backend/runtime.test.mjs` 为 7/7，`git diff --check` 通过。尚未将该入口接入真实 Rambo 启动器，也未并行验证 Rambo 与原生 Codex 的历史列表；本轮没有修改 TypeScript 源码，因此未执行构建/类型检查。
@@ -380,9 +453,9 @@
 ## 本轮实际执行
 
 - `npm install`；固定 Electron **42.11.15**（使用本机缓存且校验匹配包内官方 SHA-256 清单），React **19.3.1**、electron-vite **6.0.0**，精确解析版本见 package-lock.json。
-- `npm run runtime:prepare`：按需准备下载回退使用的独立 App Server **0.164.0**，归档 SHA-256 匹配后解包到开发缓存；未复制用户认证文件。常规启动先使用本机独立运行时或已有缓存，不再要求先执行此命令。
+- `npm run runtime:prepare`：按需准备下载回退使用的独立 App Server **0.164.0**，归档 SHA-256 匹配后解包到开发缓存；未复制用户认证文件。Q196 后续修订后，常规启动只使用 Rambo 自己的缓存、包内资源或下载回退，不读取本机 Codex 运行时。
 - `codex-app-server --help`：实际确认 `--session-source` 参数。
-- `npm run build` 和 `npm run package:mac`：成功生成未签名 `dist/mac-arm64/Rambo.app`；运行时二进制存在于包内。`du -sh` 观察约 **569M**，不是压缩下载大小。
+- `npm run build` 和 `npm run package:mac`：成功生成未签名 `dist/mac-arm64/Rambo.app`。这是 Q196 之前的历史结果；当前按 Q199 重新内置经校验的 `0.165.0` 基线，同时保留用户主动安装的独立更新版本。
 - `npx tsc --noEmit`：最终通过；收敛头像选项到 13 项后发现的类型索引错误已修复。
 - `npm run dev`：开发窗口实际打开；CUA 观察到设置页的 Codex 连接和既有账号状态，未将邮箱地址或凭据写入本记录。终端环境不兼容的 NODE_OPTIONS 仅在桌面启动脚本的子进程环境中清除，不改全局配置。
 - 指定品牌原图经等比尺寸转换生成 app.icns，没有重绘或裁剪。原图继续保留。

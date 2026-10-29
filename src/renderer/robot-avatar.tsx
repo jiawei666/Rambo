@@ -48,7 +48,10 @@ type RobotWithEyePose = RobotElement & {
 
 function syncRobotEyePose(robot: RobotElement, eyeStyle: RobotEyeStyle, animated: boolean) {
   const posedRobot = robot as RobotWithEyePose;
-  posedRobot.setState?.(eyeStyle, { duration: 0, notify: false });
+  // An animated avatar is about to enter the waiting action. Do not let the
+  // selected sleep eye pose pause its frame loop before that action starts.
+  const pose = animated && eyeStyle === 'sleep' ? 'idle' : eyeStyle;
+  posedRobot.setState?.(pose, { duration: 0, notify: false });
   // setState only schedules the morph; commit it now so a newly inserted or
   // recolored avatar never paints the upstream idle-eye shape first.
   posedRobot._updateMorph?.(performance.now());

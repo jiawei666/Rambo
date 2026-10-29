@@ -178,6 +178,63 @@ function emitTurnStarted(runtime, threadId, turnId) {
   });
 }
 
+function installCodexConnectionFixture(runtime, mode = 'completed') {
+  const threadId = 'connection-test-thread';
+  const turnId = 'connection-test-turn';
+  runtime.request = (method, params = {}) => {
+    runtime.requests.push({ method, params });
+    if (method === 'account/read') {
+      return Promise.resolve({
+        account: { type: 'chatgpt', email: 'fixture@example.com' }
+      });
+    }
+    if (method === 'config/read') {
+      return Promise.resolve({ config: { model: 'fixture-model' } });
+    }
+    if (method === 'thread/start') {
+      return Promise.resolve({ thread: { id: threadId } });
+    }
+    if (method === 'turn/start') {
+      setImmediate(() => {
+        if (mode === 'timeout') return;
+        if (mode === 'mismatch') {
+          runtime.emit('notification', 'turn/completed', {
+            threadId,
+            turn: { id: 'different-turn', status: 'completed', error: null }
+          });
+          return;
+        }
+        if (mode === 'failed') {
+          runtime.emit('notification', 'turn/completed', {
+            threadId,
+            turn: {
+              id: turnId,
+              status: 'failed',
+              error: { message: 'fixture connection failure' }
+            }
+          });
+          return;
+        }
+        runtime.emit('notification', 'item/completed', {
+          threadId,
+          turnId,
+          item: { type: 'agentMessage', id: 'connection-test-message', text: 'OK' }
+        });
+        runtime.emit('notification', 'turn/completed', {
+          threadId,
+          turn: { id: turnId, status: 'completed', error: null }
+        });
+      });
+      return Promise.resolve({ turn: { id: turnId, status: 'inProgress' } });
+    }
+    if (method === 'turn/interrupt' || method === 'thread/delete') {
+      return Promise.resolve({});
+    }
+    throw new Error(`Unexpected connection test RPC: ${method}`);
+  };
+  return { threadId, turnId };
+}
+
 async function withHost(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-host-test-'));
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule, { mode: 0o600 });
@@ -327,6 +384,35 @@ async function withSecretHost(run) {
     await run({ ...context, host: secretHost, credentials, createHost: context.createHost });
   });
 }
+
+test('ChatGPT login requires the App Server to return a valid HTTPS URL', async () => {
+  await withHost(async ({ runtime, host }) => {
+    runtime.request = async method => {
+      if (method === 'account/login/start') {
+        return {
+          type: 'chatgpt',
+          loginId: 'login-fixture',
+          authUrl: 'https://auth.openai.com/oauth/authorize?state=fixture'
+        };
+      }
+      throw new Error(`Unexpected RPC: ${method}`);
+    };
+
+    assert.deepEqual(await host.login(), {
+      authUrl: 'https://auth.openai.com/oauth/authorize?state=fixture',
+      loginId: 'login-fixture'
+    });
+
+    runtime.request = async method => {
+      if (method === 'account/login/start') return { type: 'chatgpt', loginId: 'missing-url' };
+      throw new Error(`Unexpected RPC: ${method}`);
+    };
+    await assert.rejects(
+      host.login(),
+      /没有返回有效的 ChatGPT 登录地址/
+    );
+  });
+});
 
 test('a version 12 duplicate chat migration keeps only the surviving thread in host mappings', async () => {
   await withHost(async ({ store, runtime, Store, replaceStore }) => {
@@ -924,6 +1010,76 @@ test('an MCP metadata refresh failure is reported without stopping the ready run
     assert.equal(JSON.stringify(snapshot).includes('stable-command-secret'), false);
     assert.deepEqual(JSON.parse(store.settings().globalResourceIds ?? '[]'), []);
   });
+});
+
+test('Codex connection test uses one isolated read-only turn and deletes its temporary thread', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    mkdirSync(join(store.directory, 'codex-home'), { recursive: true });
+    writeFileSync(
+      join(store.directory, 'codex-home', 'auth.json'),
+      '{"auth_mode":"chatgpt"}',
+      { mode: 0o600 }
+    );
+    const { threadId, turnId } = installCodexConnectionFixture(runtime);
+
+    const result = await host.testCodexConnection('chatgpt');
+
+    assert.ok(result.latencyMs >= 0);
+    assert.match(result.message, /Codex 已完成最小只读请求：OK/u);
+    const threadStart = runtime.requests.find(request => request.method === 'thread/start');
+    assert.equal(threadStart.params.cwd, join(store.directory, 'connection-test'));
+    assert.equal(threadStart.params.model, 'fixture-model');
+    assert.equal(threadStart.params.sandbox, 'read-only');
+    assert.equal(threadStart.params.approvalPolicy, 'never');
+    assert.equal(threadStart.params.ephemeral, true);
+    assert.equal(threadStart.params.baseInstructions, 'This is a connectivity probe. Reply with exactly OK.');
+    assert.deepEqual(threadStart.params.selectedCapabilityRoots, []);
+    assert.deepEqual(threadStart.params.config.mcp_servers, {});
+    assert.deepEqual(threadStart.params.config.features, { apps: false, plugins: false });
+    assert.deepEqual(threadStart.params.config.skills, {
+      bundled: { enabled: false },
+      include_instructions: false,
+      config: []
+    });
+    const turnStart = runtime.requests.find(request => request.method === 'turn/start');
+    assert.equal(turnStart.params.threadId, threadId);
+    assert.equal(turnStart.params.model, 'fixture-model');
+    assert.equal(turnStart.params.effort, 'low');
+    assert.equal(turnStart.params.input[0].text, 'Reply with exactly OK.');
+    assert.deepEqual(turnStart.params.sandboxPolicy, { type: 'readOnly' });
+    assert.ok(runtime.requests.some(request =>
+      request.method === 'turn/interrupt' &&
+      request.params.threadId === threadId &&
+      request.params.turnId === turnId));
+    assert.ok(runtime.requests.some(request =>
+      request.method === 'thread/delete' && request.params.threadId === threadId));
+  });
+});
+
+test('Codex connection failures and timeouts always clean up the temporary thread', async () => {
+  for (const [mode, pattern] of [
+    ['failed', /fixture connection failure/u],
+    ['mismatch', /不匹配的 turn/u],
+    ['timeout', /连接测试超时/u]
+  ]) {
+    await withHost(async ({ store, runtime, host }) => {
+      mkdirSync(join(store.directory, 'codex-home'), { recursive: true });
+      writeFileSync(
+        join(store.directory, 'codex-home', 'auth.json'),
+        '{"auth_mode":"chatgpt"}',
+        { mode: 0o600 }
+      );
+      const { threadId } = installCodexConnectionFixture(runtime, mode);
+
+      await assert.rejects(
+        () => host.testCodexConnection('local', mode === 'timeout' ? 20 : 1_000),
+        pattern
+      );
+
+      assert.ok(runtime.requests.some(request =>
+        request.method === 'thread/delete' && request.params.threadId === threadId));
+    });
+  }
 });
 
 test('selected Playwright always uses Chrome Extension mode instead of Codex Home CDP settings', async () => {
@@ -1786,6 +1942,103 @@ test('Bot group message Tool supports directed and everyone delivery with stable
     assert.equal(messages.some(message => message.text === '@Beta Please research the shared question.'), true);
     assert.equal(messages.some(message => message.text === '@everyone Share any material updates.'), true);
     assert.equal(messages.some(message => message.text.includes('This retry must not append twice.')), false);
+  });
+});
+
+test('Bot group message Tool lets the immediate sender reply for multi-turn dialogue', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const interviewer = store.createBot('Interviewer', 'a');
+    const candidate = store.createBot('Candidate', 'b');
+    const group = store.createGroup(
+      'Interview room',
+      [interviewer.bot.id, candidate.bot.id],
+      'Run a turn-taking interview',
+      interviewer.bot.id
+    );
+
+    await host.sendGroup(group.id, '@Interviewer start the interview');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 1);
+    const interviewerStart = runtime.requests.filter(request => request.method === 'turn/start')[0];
+    interviewerStart.resolve({ turn: { id: 'interviewer-question-turn', status: 'inProgress' } });
+
+    const question = await host.submitAcceptanceGroupMessageTool({
+      method: 'item/tool/call',
+      params: {
+        threadId: interviewerStart.params.threadId,
+        callId: 'interviewer-question',
+        namespace: 'rambo_group_messages',
+        tool: 'send',
+        arguments: {
+          text: '@Candidate introduce one Go project.',
+          targetBotId: candidate.bot.id
+        }
+      }
+    });
+    assert.equal(question.result.success, true);
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const candidateStart = runtime.requests.filter(request => request.method === 'turn/start')[1];
+    assert.match(candidateStart.params.input[0].text, /Interviewer.*明确发给你/u);
+    assert.match(candidateStart.params.input[0].text, /本轮要回应的消息如下/u);
+    assert.match(candidateStart.params.input[0].text, /introduce one Go project/u);
+    assert.match(candidateStart.params.input[0].text, /除当前直接发送者外，不得把任务回派给祖先成员/u);
+    assert.match(candidateStart.params.input[0].text, new RegExp(`targetBotId=${interviewer.bot.id}`, 'u'));
+    assert.match(
+      store.groupMessages(group.id).find(message => message.senderBotId === interviewer.bot.id)?.text ?? '',
+      /^@Candidate introduce one Go project\.$/u
+    );
+
+    runtime.emit('notification', 'turn/completed', {
+      threadId: interviewerStart.params.threadId,
+      turn: { id: 'interviewer-question-turn', status: 'completed' }
+    });
+    candidateStart.resolve({ turn: { id: 'candidate-answer-turn', status: 'inProgress' } });
+    await waitFor(() =>
+      host.activeTurns.get(store.groupSession(group.id, candidate.bot.id).id) === 'candidate-answer-turn'
+    );
+
+    const answer = await host.submitAcceptanceGroupMessageTool({
+      method: 'item/tool/call',
+      params: {
+        threadId: candidateStart.params.threadId,
+        callId: 'candidate-answer',
+        namespace: 'rambo_group_messages',
+        tool: 'send',
+        arguments: {
+          text: '@Interviewer I built a Go service for order processing.',
+          targetBotId: interviewer.bot.id
+        }
+      }
+    });
+    assert.equal(answer.result.success, true, JSON.stringify(answer.result));
+    runtime.emit('notification', 'item/completed', {
+      threadId: candidateStart.params.threadId,
+      turnId: 'candidate-answer-turn',
+      item: {
+        id: 'candidate-tool-only-final',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: '[[RAMBO_NO_GROUP_REPLY]]'
+      }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: candidateStart.params.threadId,
+      turn: { id: 'candidate-answer-turn', status: 'completed' }
+    });
+    assert.equal(store.groupMessages(group.id).some(message =>
+      message.role === 'system' && message.text.includes('内部不回复标记')
+    ), false);
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 3);
+    const nextInterviewerStart = runtime.requests.filter(request => request.method === 'turn/start')[2];
+    assert.match(nextInterviewerStart.params.input[0].text, /@Interviewer I built a Go service/u);
+    assert.match(nextInterviewerStart.params.input[0].text, /Candidate.*明确发给你/u);
+    assert.match(nextInterviewerStart.params.input[0].text, /本轮要回应的消息如下/u);
+    assert.equal(
+      store.groupMessages(group.id).filter(message =>
+        message.senderBotId === candidate.bot.id &&
+        message.text.startsWith('@Interviewer')
+      ).length,
+      1
+    );
   });
 });
 
@@ -6213,6 +6466,140 @@ test('ordinary group messages let every active Bot judge independently without a
   });
 });
 
+test('empty group agent messages do not persist or surface as blank Bot bubbles', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const first = store.createBot('Interviewer', 'a');
+    const second = store.createBot('Candidate', 'b');
+    const group = store.createGroup('Interview room', [first.bot.id, second.bot.id]);
+    const legacyBlank = store.addGroupMessage(group.id, 'assistant', '', {
+      senderBot: first.bot,
+      phase: 'final_answer'
+    });
+    assert.equal(store.groupMessages(group.id).some(message => message.id === legacyBlank.id), false);
+
+    const sending = host.sendGroup(group.id, '@everyone announce the interview');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    starts.forEach((start, index) => start.resolve({
+      turn: { id: `empty-group-turn-${index}`, status: 'inProgress' }
+    }));
+    await sending;
+
+    runtime.emit('notification', 'item/completed', {
+      threadId: starts[0].params.threadId,
+      turnId: 'empty-group-turn-0',
+      item: { id: 'empty-group-final', type: 'agentMessage', phase: 'final_answer', text: '' }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: starts[0].params.threadId,
+      turn: { id: 'empty-group-turn-0', status: 'completed' }
+    });
+
+    assert.equal(store.groupMessages(group.id).some(message =>
+      message.role === 'assistant' && message.senderBotId === first.bot.id
+    ), false);
+    assert.equal(events.some(event =>
+      event.type === 'groupMessage' &&
+      event.message.role === 'assistant' &&
+      event.message.text.trim() === '' &&
+      !event.message.content
+    ), false);
+  });
+});
+
+test('queued directed group delivery does not reclassify an active judgment no-reply', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const interviewer = store.createBot('Interviewer', 'a');
+    const candidate = store.createBot('Candidate', 'b');
+    const group = store.createGroup(
+      'Interview room',
+      [interviewer.bot.id, candidate.bot.id],
+      'Run a turn-taking interview',
+      interviewer.bot.id
+    );
+
+    const sending = host.sendGroup(group.id, '@everyone start the interview');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(request => request.method === 'turn/start');
+    const candidateChatId = store.groupSession(group.id, candidate.bot.id).id;
+    const interviewerChatId = store.groupSession(group.id, interviewer.bot.id).id;
+    const candidateThreadId = store.chat(candidateChatId).threadId;
+    const interviewerThreadId = store.chat(interviewerChatId).threadId;
+    const candidateStart = starts.find(start => start.params.threadId === candidateThreadId);
+    const interviewerStart = starts.find(start => start.params.threadId === interviewerThreadId);
+    assert.ok(candidateStart);
+    assert.ok(interviewerStart);
+    candidateStart.resolve({ turn: { id: 'candidate-judgment-turn', status: 'inProgress' } });
+    interviewerStart.resolve({ turn: { id: 'interviewer-judgment-turn', status: 'inProgress' } });
+    await sending;
+
+    const delivery = await host.submitAcceptanceGroupMessageTool({
+      method: 'item/tool/call',
+      params: {
+        threadId: interviewerThreadId,
+        callId: 'question-for-candidate',
+        namespace: 'rambo_group_messages',
+        tool: 'send',
+        arguments: {
+          text: '@Candidate introduce one Go project.',
+          targetBotId: candidate.bot.id
+        }
+      }
+    });
+    assert.equal(delivery.result.success, true, JSON.stringify(delivery.result));
+
+    runtime.emit('notification', 'item/completed', {
+      threadId: candidateThreadId,
+      turnId: 'candidate-judgment-turn',
+      item: {
+        id: 'candidate-judgment-final',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: '[[RAMBO_NO_GROUP_REPLY]]'
+      }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: candidateThreadId,
+      turn: { id: 'candidate-judgment-turn', status: 'completed' }
+    });
+
+    assert.equal(store.groupMessages(group.id).some(message =>
+      message.role === 'system' && message.text.includes('内部不回复标记')
+    ), false);
+
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 3);
+    const directedStart = runtime.requests.filter(request => request.method === 'turn/start')[2];
+    directedStart.resolve({ turn: { id: 'candidate-directed-turn', status: 'inProgress' } });
+    runtime.emit('notification', 'turn/started', {
+      threadId: candidateThreadId,
+      turn: { id: 'candidate-directed-turn', status: 'inProgress' }
+    });
+    assert.equal(runtime.requests.some(request =>
+      request.method === 'turn/interrupt' &&
+      request.params.threadId === candidateThreadId &&
+      request.params.turnId === 'candidate-directed-turn'
+    ), false);
+    runtime.emit('notification', 'item/completed', {
+      threadId: candidateThreadId,
+      turnId: 'candidate-directed-turn',
+      item: {
+        id: 'candidate-directed-final',
+        type: 'agentMessage',
+        phase: 'final_answer',
+        text: 'I worked on an order processing service.'
+      }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: candidateThreadId,
+      turn: { id: 'candidate-directed-turn', status: 'completed' }
+    });
+    runtime.emit('notification', 'turn/completed', {
+      threadId: interviewerThreadId,
+      turn: { id: 'interviewer-judgment-turn', status: 'completed' }
+    });
+  });
+});
+
 test('group runtime tracks participant judgment, latest activity, and hides after every member finishes', async () => {
   await withHost(async ({ store, runtime, host, events }) => {
     const first = store.createBot('Researcher', 'a');
@@ -6814,6 +7201,12 @@ test('@name dispatches only to the named member', async () => {
     const first = store.createBot('Researcher', 'a');
     const second = store.createBot('Writer', 'b');
     const group = store.createGroup('Project room', [first.bot.id, second.bot.id]);
+    store.addGroupMessage(group.id, 'system', '「Writer」未能生成正式回复（返回了内部不回复标记）。', {
+      status: 'failed'
+    });
+    store.addGroupMessage(group.id, 'system', '「Writer」未能开始回复：上一条消息正在发送，请稍后', {
+      status: 'failed'
+    });
     const sending = host.sendGroup(group.id, '@Writer draft a summary');
     await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 1);
     const start = runtime.requests.filter(request => request.method === 'turn/start')[0];
@@ -6832,18 +7225,48 @@ test('@name dispatches only to the named member', async () => {
       threadId: start.params.threadId, turn: { id: 'named-only', status: 'completed' }
     });
     const messages = store.groupMessages(group.id);
-    assert.equal(messages.length, 2);
+    assert.equal(messages.length, 1);
     assert.equal(messages[0].text, '@Writer draft a summary');
-    assert.equal(messages[1].role, 'system');
-    assert.equal(messages[1].status, 'failed');
-    assert.match(messages[1].text, /Writer/);
-    assert.match(messages[1].text, /未能生成正式回复/);
-    assert.equal(messages[1].text.includes('RAMBO_NO_GROUP_REPLY'), false);
+    const issue = store.activities(store.groupSessions()[0].chatId).find(activity =>
+      activity.title === '群聊回复未生成'
+    );
+    assert.ok(issue);
+    assert.equal(issue.status, 'failed');
+    assert.match(issue.detail, /Writer/);
+    assert.match(issue.detail, /内部不回复标记/);
+    assert.equal(issue.detail.includes('RAMBO_NO_GROUP_REPLY'), false);
   });
 });
 
-test('an @everyone member setup failure is published instead of swallowed by allSettled', async () => {
+test('transient group response failures stay out of the system timeline', async () => {
+  await withHost(async ({ store, host }) => {
+    const writer = store.createBot('Writer', 'b');
+    const reviewer = store.createBot('Reviewer', 'a');
+    const group = store.createGroup(
+      'Project room', [writer.bot.id, reviewer.bot.id], 'Draft summaries', writer.bot.id
+    );
+    const session = store.groupSession(group.id, writer.bot.id);
+    host.sendConversation = async () => {
+      throw new Error('上一条消息正在发送，请稍后');
+    };
+
+    await host.sendGroup(group.id, '@Writer draft a summary');
+    await waitFor(() => store.activities(session.id).some(activity =>
+      activity.title === '群聊回复未开始'
+    ));
+
+    const messages = store.groupMessages(group.id);
+    assert.deepEqual(messages.map(message => message.role), ['user']);
+    const issue = store.activities(session.id).find(activity => activity.title === '群聊回复未开始');
+    assert.ok(issue);
+    assert.equal(issue.status, 'failed');
+    assert.match(issue.detail, /上一条消息正在发送，请稍后/);
+  });
+});
+
+test('an @everyone member setup failure stays out of the system timeline', async t => {
   await withHost(async ({ store, runtime, host }) => {
+    const warning = t.mock.method(console, 'warn', () => {});
     const first = store.createBot('Researcher', 'a');
     const second = store.createBot('Writer', 'b');
     const group = store.createGroup('Project room', [first.bot.id, second.bot.id]);
@@ -6859,10 +7282,7 @@ test('an @everyone member setup failure is published instead of swallowed by all
     start.resolve({ turn: { id: 'everyone-surviving-member', status: 'inProgress' } });
     await sending;
 
-    const failure = store.groupMessages(group.id).find(message => message.role === 'system');
-    assert.ok(failure);
-    assert.equal(failure.status, 'failed');
-    assert.match(failure.text, /Researcher/);
-    assert.match(failure.text, /member session unavailable/);
+    assert.equal(store.groupMessages(group.id).some(message => message.role === 'system'), false);
+    assert.equal(warning.mock.callCount(), 1);
   });
 });

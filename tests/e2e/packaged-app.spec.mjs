@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -8,7 +8,7 @@ const candidate = process.env.RAMBO_APP_PATH
   ? resolve(process.env.RAMBO_APP_PATH)
   : join(root, 'dist/mac-arm64/Rambo.app');
 
-test('候选应用在无本机入口时从缓存启动自己的 Codex App Server', async () => {
+test('候选应用内置 Codex App Server，并在空配置下直接启动', async () => {
   const runs = join(root, 'acceptance-runs');
   mkdirSync(runs, { recursive: true });
   const run = realpathSync(mkdtempSync(join(runs, 'playwright-packaged-')));
@@ -17,33 +17,9 @@ test('候选应用在无本机入口时从缓存启动自己的 Codex App Server
   mkdirSync(profile);
   const nativeHome = join(run, 'native-codex');
   mkdirSync(nativeHome);
-  const cachedRuntime = join(profile, 'runtime/codex/0.163.0');
-  mkdirSync(join(cachedRuntime, 'bin'), { recursive: true });
-  mkdirSync(join(cachedRuntime, 'codex-path'), { recursive: true });
-  const fixtureServer = join(cachedRuntime, 'bin/codex-app-server');
-  writeFileSync(fixtureServer, `#!/usr/bin/env node
-const readline = require('node:readline');
-const input = readline.createInterface({ input: process.stdin });
-input.on('line', line => {
-  const message = JSON.parse(line);
-  if (message.id === undefined || !message.method) return;
-  process.stdout.write(JSON.stringify({
-    id: message.id,
-    result: { userAgent: 'codex_cli_rs/0.163.0', platformFamily: 'unix', platformOs: 'macos' }
-  }) + '\\n');
-});
-setInterval(() => {}, 1 << 30);
-`, { mode: 0o755 });
-  chmodSync(fixtureServer, 0o755);
-  writeFileSync(join(cachedRuntime, 'codex-package.json'), JSON.stringify({
-    layoutVersion: 1,
-    version: '0.163.0',
-    target: 'aarch64-apple-darwin',
-    variant: 'codex-app-server',
-    entrypoint: 'bin/codex-app-server',
-    resourcesDir: 'codex-resources',
-    pathDir: 'codex-path'
-  }));
+  const packagedRuntime = join(candidate, 'Contents/Resources/runtime/codex/0.165.0');
+  expect(existsSync(join(packagedRuntime, 'codex-package.json'))).toBe(true);
+  expect(existsSync(join(packagedRuntime, 'bin/codex-app-server'))).toBe(true);
   writeFileSync(join(run, 'run.json'), JSON.stringify({
     schema: 'rambo.acceptance.run.v1',
     runId,
@@ -73,7 +49,12 @@ setInterval(() => {}, 1 << 30);
     }));
     expect(paths.userData).toBe(profile);
     expect(paths.resourcesPath).toBe(join(candidate, 'Contents/Resources'));
-    await expect(page.getByLabel('创建 Bot')).toBeVisible();
+    await expect(page.getByRole('heading', { name: '系统设置', exact: true }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('tab', { name: '账号', exact: true }))
+      .toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[data-sidebar-action="configure"]')).toBeVisible();
+    await expect(page.getByLabel('创建 Bot')).toHaveCount(0);
 
     const appPid = app.process().pid;
     let runtimeSnapshot = null;
@@ -84,13 +65,15 @@ setInterval(() => {}, 1 << 30);
     }
     expect(runtimeSnapshot, JSON.stringify(runtimeSnapshot)).not.toBeNull();
     expect(runtimeSnapshot.status, JSON.stringify(runtimeSnapshot)).toBe('ready');
+    expect(runtimeSnapshot.version).toBe('0.165.0');
+    expect(runtimeSnapshot.source).toBe('packaged');
+    await expect(page.locator('.runtime-version')).toContainText('0.165.0 · 内置');
     const processes = execFileSync('/bin/ps', ['-axo', 'ppid=,command='], { encoding: 'utf8' }).split('\n');
     const runtimeCommand = processes
       .map(line => line.trim().match(/^(\d+)\s+(.*)$/))
       .find(match => match?.[1] === String(appPid) &&
         match[2].includes('/bin/codex-app-server'))?.[2] ?? '';
-    expect(runtimeCommand).toContain(join(cachedRuntime, 'bin/codex-app-server'));
-    expect(runtimeCommand).not.toContain(join(candidate, 'Contents/Resources/runtime/codex'));
+    expect(runtimeCommand).toContain(join(packagedRuntime, 'bin/codex-app-server'));
     expect(runtimeCommand).toContain('--session-source app-server');
   } finally {
     await app?.close();
@@ -138,6 +121,53 @@ test('候选应用验收模式登录启动偏好可持久化', async () => {
     await page.reload();
     await page.getByLabel('设置', { exact: true }).click();
     await expect(page.getByRole('checkbox', { name: '登录时启动' })).not.toBeChecked();
+  } finally {
+    await app?.close();
+    rmSync(run, { recursive: true, force: true });
+  }
+});
+
+test('候选应用点击 ChatGPT 登录后提供可重开地址', async () => {
+  const runs = join(root, 'acceptance-runs');
+  mkdirSync(runs, { recursive: true });
+  const run = realpathSync(mkdtempSync(join(runs, 'playwright-packaged-chatgpt-login-')));
+  const runId = run.slice(run.lastIndexOf('/') + 1);
+  const profile = join(run, 'profile');
+  const nativeHome = join(run, 'native-codex');
+  mkdirSync(profile);
+  writeFileSync(join(run, 'run.json'), JSON.stringify({
+    schema: 'rambo.acceptance.run.v1',
+    runId,
+    project: root
+  }));
+
+  let app;
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: nativeHome,
+      RAMBO_ACCEPTANCE_RUN: run
+    };
+    delete env.NODE_OPTIONS;
+    delete env.ELECTRON_RUN_AS_NODE;
+    app = await electron.launch({
+      executablePath: join(candidate, 'Contents/MacOS/Rambo'),
+      cwd: root,
+      env
+    });
+    const page = await app.firstWindow();
+    await expect(page.getByRole('heading', { name: '系统设置', exact: true }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '登录 ChatGPT', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: '登录 ChatGPT', exact: true }).click();
+    const retryLink = page.getByRole('link', { name: '重新打开登录页面', exact: true });
+    await expect(retryLink).toBeVisible({ timeout: 30_000 });
+    const loginUrl = await retryLink.getAttribute('href');
+    expect(loginUrl).toBeTruthy();
+    expect(new URL(loginUrl).protocol).toBe('https:');
+    expect(new URL(loginUrl).host).toBe('auth.openai.com');
+    await expect(page.getByRole('button', { name: '等待授权…', exact: true })).toBeDisabled();
   } finally {
     await app?.close();
     rmSync(run, { recursive: true, force: true });

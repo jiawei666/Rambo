@@ -54,6 +54,8 @@ import {
   type GroupRuntimePhase,
   type McpElicitationAction,
   type MessageContent,
+  type CodexHomeSyncMode,
+  type CodexHomeSyncState,
   type VoiceState,
   type ModelConnectionTestResult,
   type ModelSourceKind,
@@ -77,10 +79,10 @@ import {
   manualProviderConfig,
   modelSourceKindFrom,
   modelSourceStateFrom,
-  runtimeConfigOverrides,
   testManualModelApi,
   validateManualApiConfig
 } from './model-source';
+import { applyManualProviderConfig, clearManualProviderConfig } from './codex-config';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'rambo-asset',
@@ -192,15 +194,18 @@ function manualModelApiKey(): string {
   return credential.apiKey;
 }
 
-function applyModelSourceRuntimeConfig(): void {
+async function applyModelSourceRuntimeConfig(): Promise<void> {
   const source = modelSourceState();
+  const configPath = join(store.directory, 'codex-home', 'config.toml');
   if (source.kind === 'manualApi') {
     const config = validateManualApiConfig(source.manual);
-    runtime.setModelSourceConfig(runtimeConfigOverrides(source.kind, config), {
+    await applyManualProviderConfig(configPath, config);
+    runtime.setModelSourceConfig([], {
       [manualProviderConfig(config).apiKeyEnv]: manualModelApiKey()
     });
     return;
   }
+  await clearManualProviderConfig(configPath);
   runtime.setModelSourceConfig([], {});
 }
 
@@ -269,12 +274,11 @@ async function restartRuntimeForModelSource(): Promise<void> {
 async function testModelConnection(
   requestedSource?: ModelSourceKind
 ): Promise<ModelConnectionTestResult> {
-  if (requestedSource !== undefined && modelSourceKindFrom(requestedSource) !== requestedSource) {
-    throw new Error('无效的模型来源');
-  }
   const current = modelSourceState();
-  const sourceKind = requestedSource ?? current.kind;
-  const sourcePending = sourceKind !== current.kind;
+  if (requestedSource !== undefined && requestedSource !== current.kind) {
+    throw new Error('只能测试当前生效的模型来源');
+  }
+  const sourceKind = current.kind;
   const testedAt = new Date().toISOString();
   if (sourceKind === 'manualApi') {
     const startedAt = performance.now();
@@ -283,8 +287,7 @@ async function testModelConnection(
       source: sourceKind,
       latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
       message,
-      testedAt,
-      sourcePending
+      testedAt
     });
     try {
       const config = validateManualApiConfig(current.manual);
@@ -295,8 +298,7 @@ async function testModelConnection(
         source: sourceKind,
         latencyMs: result.latencyMs,
         message: result.message,
-        testedAt,
-        sourcePending
+        testedAt
       };
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
@@ -304,48 +306,24 @@ async function testModelConnection(
   }
   await runtime.start();
   const startedAt = performance.now();
-  const failed = (message: string): {
-    ok: false; source: ModelSourceKind; latencyMs: number; message: string;
-    testedAt: string; sourcePending?: boolean; configMayBeStale?: boolean;
-  } => ({
+  const failed = (message: string): ModelConnectionTestResult => ({
     ok: false,
     source: sourceKind,
     latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
     message,
-    testedAt,
-    sourcePending,
-    configMayBeStale: true
+    testedAt
   });
   try {
-    if (sourceKind === 'chatgpt') {
-      const account = await host.account();
-      return account.requiresLogin
-        ? failed('尚未登录 ChatGPT，请先完成登录')
-        : {
-            ok: true,
-            source: sourceKind,
-            latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-            message: 'ChatGPT 登录状态可用。',
-            testedAt,
-            sourcePending
-          };
+    if (sourceKind !== 'local' && sourceKind !== 'chatgpt') {
+      return failed('不支持的模型来源');
     }
-    const [models, config] = await Promise.all([
-      host.modelsWithoutStart(),
-      runtime.request('config/read', { includeLayers: false })
-    ]);
-    const configuredModel = typeof config?.config?.model === 'string' ? config.config.model.trim() : '';
-    if (!configuredModel && !models.length) return failed('没有读取到可用模型配置');
+    const result = await host.testCodexConnection(sourceKind);
     return {
       ok: true,
       source: sourceKind,
-      latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-      message: configuredModel
-        ? `本机 Codex 配置可用：${configuredModel}`
-        : `本机 Codex 模型目录可用（${models.length} 个模型）`,
-      testedAt,
-      sourcePending,
-      configMayBeStale: true
+      latencyMs: result.latencyMs,
+      message: result.message,
+      testedAt
     };
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));
@@ -756,6 +734,9 @@ function showRoutineFinishedNotification(runId: string): void {
 }
 const emit = (event: AppEvent) => {
   if (event.type === 'turn' || event.type === 'changed') queueSystemIndicators();
+  if ((event.type === 'turn' && !event.turnId) || event.type === 'codexHomeSync') {
+    queueMicrotask(() => { void applyPendingCodexHomeSync(); });
+  }
   if (event.type === 'turn' && !event.turnId) publishBotTurnFinishedNotification(event.chatId);
   if (event.type === 'botReplyNotification') showBotReplyNotification(event);
   if (event.type === 'routineRunFinished') {
@@ -774,6 +755,32 @@ const emit = (event: AppEvent) => {
   }
   if (window && !window.isDestroyed()) window.webContents.send('rambo:event', event);
 };
+let codexHomeSyncApplying: Promise<void> | null = null;
+async function applyPendingCodexHomeSync(): Promise<void> {
+  if (!runtime || !host || codexHomeSyncApplying) return;
+  const state = runtime.homeSyncState;
+  if (
+    state.mode !== 'follow' ||
+    !state.pending ||
+    state.syncing ||
+    state.decisionRequired ||
+    host.activeTurns.size > 0
+  ) return;
+  codexHomeSyncApplying = (async () => {
+    try {
+      await runtime.applyPendingHomeSync();
+      await host.syncMcpMetadata();
+    } catch (error) {
+      emit({
+        type: 'error',
+        message: `Codex 配置同步失败：${error instanceof Error ? error.message : String(error)}`
+      });
+    } finally {
+      codexHomeSyncApplying = null;
+    }
+  })();
+  await codexHomeSyncApplying;
+}
 let indicatorUpdateQueued = false;
 function queueSystemIndicators(): void {
   if (!systemIndicators || indicatorUpdateQueued) return;
@@ -1749,22 +1756,47 @@ function registerIPC(): void {
       throw new Error('不支持的验收事件');
     },
     account: () => host.account(),
-    login: async () => { const url = await host.login(); if (url) { if (!url.startsWith('https://')) throw new Error('登录地址协议无效'); await shell.openExternal(url); } },
+    login: async () => {
+      const result = await host.login();
+      // Automated runs must not open a real system browser. The renderer still
+      // receives the URL and exercises the visible retry path.
+      if (acceptanceRunId) return { ...result, browserOpened: true };
+      try {
+        await shell.openExternal(result.authUrl, { activate: true });
+        return { ...result, browserOpened: true };
+      } catch (error) {
+        return {
+          ...result,
+          browserOpened: false,
+          browserOpenError: error instanceof Error ? error.message : String(error)
+        };
+      }
+    },
     models: () => host.models(),
     setModelSource: async kindValue => {
       const kind = modelSourceKindFrom(kindValue);
       if (kind !== kindValue) throw new Error('无效的模型来源');
       const current = modelSourceState();
+      if (
+        kind !== 'local' &&
+        runtime.homeSyncState.mode === 'follow' &&
+        runtime.homeSyncState.sourceDetected
+      ) {
+        throw new Error('持续跟随本机时只能使用本机 Codex 配置副本；请先切换到独立配置');
+      }
+      if (kind !== current.kind && host.activeTurns.size > 0) {
+        throw new Error('有任务执行中，请先停止任务再切换模型来源');
+      }
       if (kind === 'manualApi' && !manualModelSourceAvailable(current)) {
         throw new Error('请先填写并保存手动 API 的服务名称、Base URL、模型 ID 和 API Key');
       }
       store.setSetting('modelSource', kind);
-      applyModelSourceRuntimeConfig();
       try {
+        await applyModelSourceRuntimeConfig();
         await restartRuntimeForModelSource();
       } catch (error) {
         store.setSetting('modelSource', current.kind);
-        applyModelSourceRuntimeConfig();
+        await applyModelSourceRuntimeConfig();
         throw new Error(`模型来源切换失败，已保留原来源：${
           error instanceof Error ? error.message : String(error)
         }`);
@@ -1772,17 +1804,56 @@ function registerIPC(): void {
       host.changed();
       return modelSourceState();
     },
+    setCodexHomeSyncMode: async (modeValue: CodexHomeSyncMode) => {
+      if (modeValue !== 'follow' && modeValue !== 'independent') {
+        throw new Error('无效的 Codex Home 同步模式');
+      }
+      if (modeValue === 'follow' && host.activeTurns.size > 0) {
+        throw new Error('有任务执行中，请先停止任务再应用 Codex 配置同步');
+      }
+      const currentSource = modelSourceState();
+      const previousMode = runtime.homeSyncState.mode;
+      if (modeValue === 'follow' && !runtime.homeSyncState.sourceDetected) {
+        throw new Error('未检测到本机 Codex，不能开启持续跟随');
+      }
+      if (modeValue === 'follow') {
+        try {
+          // Follow is a mode, not a third model source. Deactivate a selected
+          // ChatGPT/manual source while retaining its credentials for later.
+          if (currentSource.kind !== 'local') {
+            store.setSetting('modelSource', 'local');
+            await applyModelSourceRuntimeConfig();
+          }
+          const state = await runtime.setHomeSyncMode('follow');
+          host.changed();
+          return state;
+        } catch (error) {
+          store.setSetting('modelSource', currentSource.kind);
+          await applyModelSourceRuntimeConfig().catch(() => {});
+          if (previousMode === 'independent') {
+            await runtime.setHomeSyncMode('independent', false).catch(() => {});
+          }
+          await runtime.start().catch(() => {});
+          throw new Error(`无法开启持续跟随，已保留原配置：${
+            error instanceof Error ? error.message : String(error)
+          }`);
+        }
+      }
+      const state = await runtime.setHomeSyncMode(modeValue);
+      host.changed();
+      return state;
+    },
     saveManualModelSource: async inputValue => {
       const input = object(inputValue);
       const { previousKind, previousSettings } = persistModelSourceConfig(input);
       if (store.settings().modelSource === 'manualApi' && host.activeTurns.size === 0) {
-        applyModelSourceRuntimeConfig();
         try {
+          await applyModelSourceRuntimeConfig();
           await restartRuntimeForModelSource();
         } catch (error) {
           restoreManualModelSettings(previousSettings);
           store.setSetting('modelSource', previousKind);
-          applyModelSourceRuntimeConfig();
+          await applyModelSourceRuntimeConfig();
           throw new Error(`手动 API 配置保存失败，已保留原来源：${
             error instanceof Error ? error.message : String(error)
           }`);
@@ -1805,6 +1876,22 @@ function registerIPC(): void {
       } catch (error) {
         console.error('[Rambo] MCP metadata refresh failed after runtime restart', error);
       }
+    },
+    updateRuntime: async () => {
+      if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再更新 App Server');
+      const result = await runtime.updateRuntime(() => {
+        if (host.activeTurns.size) {
+          throw new Error('App Server 已下载，但有任务开始执行；请停止任务后再次点击更新');
+        }
+      });
+      if (result.status === 'updated') {
+        try {
+          await host.syncMcpMetadata();
+        } catch (error) {
+          console.error('[Rambo] MCP metadata refresh failed after App Server update', error);
+        }
+      }
+      return result;
     }
   };
   for (const [name, method] of Object.entries(methods)) ipcMain.handle(`rambo:${name}`, (event, ...args) => {
@@ -1877,7 +1964,7 @@ function installSystemIndicators(): void {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showWindow);
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
       const allowed = permission === 'media' && window?.webContents === webContents;
       callback(allowed);
@@ -1919,10 +2006,32 @@ else {
         }
       }
     ));
-    const root = app.isPackaged ? process.resourcesPath : app.getAppPath();
+    const acceptanceResourceRoot = acceptanceRunId
+      ? process.env.RAMBO_ACCEPTANCE_PACKAGED_RUNTIME_ROOT?.trim()
+      : '';
+    const root = acceptanceResourceRoot
+      ? resolve(acceptanceResourceRoot)
+      : app.isPackaged ? process.resourcesPath : app.getAppPath();
+    const acceptanceUpdateVersion = acceptanceRunId
+      ? process.env.RAMBO_ACCEPTANCE_RUNTIME_UPDATE_VERSION?.trim()
+      : '';
+    const acceptanceUpdateUrl = acceptanceRunId
+      ? process.env.RAMBO_ACCEPTANCE_RUNTIME_UPDATE_URL?.trim()
+      : '';
+    const acceptanceUpdateSha256 = acceptanceRunId
+      ? process.env.RAMBO_ACCEPTANCE_RUNTIME_UPDATE_SHA256?.trim()
+      : '';
     runtime = new CodexRuntime(root, store.directory, undefined, {
       ownedThreadIds: () => store.ownedCodexThreadIds(),
-      proxyUrl: initialSettings.runtimeProxy?.trim() || null
+      proxyUrl: initialSettings.runtimeProxy?.trim() || null,
+      latestRuntimeRelease: acceptanceUpdateVersion && acceptanceUpdateUrl && acceptanceUpdateSha256
+        ? async () => ({
+            version: acceptanceUpdateVersion,
+            archiveUrl: acceptanceUpdateUrl,
+            sha256: acceptanceUpdateSha256,
+            publishedAt: null
+          })
+        : undefined
     });
     const workerTransport = new ElectronWechatWorkerTransport(
       join(__dirname, 'wechat-worker.js'),
@@ -1960,8 +2069,15 @@ else {
       () => modelSourceState(),
       () => testModelConnection()
     );
+    runtime.on('homeSync', (state: CodexHomeSyncState) => {
+      emit({ type: 'codexHomeSync', state });
+      void applyPendingCodexHomeSync();
+    });
     try {
-      applyModelSourceRuntimeConfig();
+      if (modelSourceState().kind !== 'local') {
+        await runtime.setHomeSyncMode('independent', false);
+      }
+      await applyModelSourceRuntimeConfig();
     } catch (error) {
       console.error('[Rambo] model source configuration is unavailable', error);
     }
@@ -2086,6 +2202,7 @@ else {
       wechatReader?.dispose();
       wechatReader = null;
       await runtime?.stop();
+      runtime?.dispose();
       connectorCredentials?.close();
       store?.close();
       app.quit();

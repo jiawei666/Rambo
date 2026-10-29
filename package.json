@@ -1,6 +1,6 @@
 {
   "name": "rambo",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",
@@ -26,7 +26,7 @@
     "start": "node scripts/desktop.mjs preview",
     "runtime:prepare": "node scripts/prepare-runtime.mjs",
     "icon:prepare": "node scripts/prepare-icon.mjs",
-    "package:mac": "npm run icon:prepare && npm run build && electron-builder --mac --dir"
+    "package:mac": "npm run icon:prepare && npm run runtime:prepare && npm run build && electron-builder --mac --dir && node scripts/sign-mac.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
@@ -66,6 +66,10 @@
       {
         "from": "out/media-tools",
         "to": "media-tools"
+      },
+      {
+        "from": "runtime/codex",
+        "to": "runtime/codex"
       }
     ],
     "mac": {
