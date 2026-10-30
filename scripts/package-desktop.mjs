@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -8,6 +9,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const electronBuilderCli = require.resolve('electron-builder/out/cli/cli.js');
+const electronInstaller = require.resolve('electron/install.js');
 const electronVitePackage = require.resolve('electron-vite/package.json');
 const electronViteCli = resolve(dirname(electronVitePackage), 'bin/electron-vite.js');
 
@@ -40,6 +42,11 @@ function run(command, args, extraEnv = {}) {
   if (result.status !== 0) {
     throw new Error(`命令失败（退出码 ${result.status ?? 'unknown'}）：${command} ${args.join(' ')}`);
   }
+}
+
+if (!existsSync(resolve('node_modules/electron/dist'))) {
+  console.log('未找到 Electron 分发目录，正在为当前原生平台下载安装');
+  run(process.execPath, [electronInstaller]);
 }
 
 const plan = [
