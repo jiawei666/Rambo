@@ -1,7 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { constants, accessSync, readdirSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
-import { homedir } from 'node:os';
+import { findNpx, npxInvocation, terminateProcessTree } from './platform/process';
 
 const PLAYWRIGHT_PACKAGE = '@playwright/mcp@0.0.83';
 const MAX_LINE_CHARS = 5_000_000;
@@ -70,14 +68,11 @@ class StdioJsonRpcClient {
     this.killed = true;
     this.closed = true;
     this.failAll(new Error('Playwright MCP 已关闭。'));
-    try { this.child.kill('SIGTERM'); } catch { /* process may already have exited */ }
-    const child = this.child;
-    const forceKill = setTimeout(() => {
-      if (child.exitCode === null) {
-        try { child.kill('SIGKILL'); } catch { /* process may already have exited */ }
-      }
-    }, 1_000);
-    forceKill.unref();
+    terminateProcessTree(this.child, {
+      platform: process.platform,
+      processGroup: process.platform !== 'win32',
+      graceMs: 1_000
+    });
   }
 
   private read(chunk: string): void {
@@ -132,38 +127,6 @@ class StdioJsonRpcClient {
   }
 }
 
-function findNpx(home = homedir()): string | null {
-  const candidates = new Set<string>();
-  for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
-    candidates.add(join(directory, 'npx'));
-  }
-  for (const directory of [
-    join(home, '.local/bin'),
-    join(home, '.volta/bin'),
-    join(home, '.asdf/shims'),
-    join(home, '.nvm/versions/node/current/bin'),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin'
-  ]) candidates.add(join(directory, 'npx'));
-  for (const nodeVersions of [
-    join(home, '.nvm/versions/node'),
-    join(home, '.local/share/fnm/node-versions')
-  ]) {
-    try {
-      for (const version of readdirSync(nodeVersions).sort().reverse()) {
-        candidates.add(join(nodeVersions, version, 'bin/npx'));
-        candidates.add(join(nodeVersions, version, 'installation/bin/npx'));
-      }
-    } catch { /* optional Node version manager directory */ }
-  }
-  for (const candidate of candidates) {
-    try { accessSync(candidate, constants.X_OK); return candidate; }
-    catch { /* continue searching */ }
-  }
-  return null;
-}
-
 function textContent(result: unknown): string {
   if (!result || typeof result !== 'object') return '';
   const record = result as Record<string, unknown>;
@@ -207,7 +170,11 @@ export class PlaywrightExtensionVerifier {
   cancel(): void {
     this.active?.abort();
     if (this.child && this.child.exitCode === null) {
-      try { this.child.kill('SIGTERM'); } catch { /* process may already have exited */ }
+      terminateProcessTree(this.child, {
+        platform: process.platform,
+        processGroup: process.platform !== 'win32',
+        graceMs: 1_000
+      });
     }
   }
 
@@ -221,10 +188,16 @@ export class PlaywrightExtensionVerifier {
       const npx = (this.deps.resolveNpx ?? findNpx)();
       if (!npx) throw new Error('没有找到 Node.js 的 npx。请安装 Node.js 后重试 Chrome 连接验证。');
       onProgress({ phase: 'starting', message: '正在启动 Playwright MCP 并连接 Chrome 扩展…' });
-      const child = (this.deps.spawnProcess ?? spawn)(npx, ['-y', PLAYWRIGHT_PACKAGE, '--extension'], {
+      const invocation = npxInvocation(npx, ['-y', PLAYWRIGHT_PACKAGE, '--extension'], {
+        platform: process.platform,
+        environment: process.env
+      });
+      const child = (this.deps.spawnProcess ?? spawn)(invocation.command, invocation.args, {
         stdio: 'pipe',
         env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-        windowsHide: true
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        detached: process.platform !== 'win32'
       }) as ChildProcessWithoutNullStreams;
       this.child = child;
       client = new StdioJsonRpcClient(child);

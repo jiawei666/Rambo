@@ -1,6 +1,6 @@
 import { createElectronTest, expect } from './fixtures/electron-app.mjs';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 
@@ -62,6 +62,22 @@ async function clearActiveTurns(page) {
     const snapshot = await window.rambo.snapshot();
     return Object.keys(snapshot.activeTurns);
   }), { message: '清理前置测试留下的活动轮次超时' }).toEqual([]);
+}
+
+async function settlePendingWork(page, timeoutMs = 15_000) {
+  await expect.poll(() => page.evaluate(() =>
+    window.rambo.snapshot().then(snapshot => snapshot.pendingWork)
+  ), {
+    message: '前置测试留下的任务或语音状态没有结束',
+    timeout: timeoutMs
+  }).toEqual({
+    activeTurns: 0,
+    startingTurns: 0,
+    busyChats: 0,
+    busyGroups: 0,
+    unknownOperations: 0,
+    voiceSessions: 0
+  });
 }
 
 async function settleInitialBotTurn(page, botId, timeoutMs = 15_000) {
@@ -199,6 +215,34 @@ async function openSystemSettings(page, tabName) {
   await tab.click();
 }
 
+async function openManualApiEditor(page) {
+  const independent = page.getByRole('radio', { name: /独立配置/ });
+  if (await independent.getAttribute('aria-checked') !== 'true') {
+    await independent.click();
+  }
+  await expect(independent).toHaveAttribute('aria-checked', 'true');
+
+  const manualSource = page.getByRole('radio', { name: /手动配置 API/ });
+  if (!(await manualSource.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
+  }
+  if (await manualSource.isVisible().catch(() => false)) {
+    await manualSource.click();
+  }
+  if (!(await page.getByLabel('服务名称').isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: '编辑配置', exact: true }).click();
+  }
+  await expect(page.getByLabel('服务名称')).toBeEditable();
+}
+
+async function checkManualModel(page, modelId) {
+  const tag = page.locator('.manual-model-tag').filter({
+    has: page.getByText(modelId, { exact: true })
+  });
+  await expect(tag).toBeVisible();
+  await tag.locator('input[type="checkbox"]').check();
+}
+
 async function openConnectors(page) {
   await page.getByRole('button', { name: '连接应用', exact: true }).click();
   await expect(page.getByRole('heading', { name: '连接应用', exact: true })).toBeVisible();
@@ -332,7 +376,7 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
     await expect(restartedPage.getByLabel('会话列表').getByText('E2E Pilot')).toBeVisible();
 });
 
-test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', async ({ electron }) => {
+test('真实 Electron 系统设置保存全局默认配置且不改已有 Bot', async ({ electron }) => {
   const page = electron.page;
   const footer = page.locator('.sidebar-footer');
   const footerButtons = footer.locator(':scope > button');
@@ -371,12 +415,12 @@ test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', a
   const initialModel = initialBot.model;
   const initialPermission = initialBot.permission;
   const models = await page.evaluate(() => window.rambo.models());
-  expect(models.length, '真实模型目录为空，无法验证新建 Bot 初值').toBeGreaterThan(0);
+  expect(models.length, '真实模型目录为空，无法验证全局默认配置').toBeGreaterThan(0);
   const globalModelValue = models.find(option => option.isDefault) ?? models[0];
   const sessionModelValue = models.find(option => option.id !== globalModelValue.id) ?? globalModelValue;
-  await openSystemSettings(page, '新建 Bot 初值');
+  await openSystemSettings(page, '模型配置');
   await expect(page.getByRole('tab', { name: '连接应用', exact: true })).toHaveCount(0);
-  const globalModel = page.getByLabel('新建 Bot 模型');
+  const globalModel = page.getByLabel('全局默认模型');
   const settingsLayout = await page.evaluate(() => {
     const modelCard = document.querySelector('.global-model-card');
     const modelSelect = modelCard.querySelector('select');
@@ -396,7 +440,7 @@ test('真实 Electron 系统设置保存新建 Bot 初值且不改已有 Bot', a
   expect(settingsLayout.modelChevronInset).toBeGreaterThan(20);
   expect(settingsLayout.permissionHeadingInset).toBeGreaterThan(10);
   expect(settingsLayout.cardGap).toBeGreaterThanOrEqual(14);
-  await expect(page.getByRole('heading', { name: '新建 Bot 权限', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '默认权限', exact: true })).toBeVisible();
   await expect(page.getByText('更改会自动保存', { exact: true })).toHaveCount(0);
   await expect(page.locator('.global-default-save-status')).toHaveCount(0);
   const currentModelId = await globalModel.inputValue();
@@ -2725,20 +2769,24 @@ test('真实 Electron 新消息提醒只在当前私聊不可见时触发且遵�
     secondChat.id)).toBeNull();
 });
 
-test('账号设置独立承载运行时、登录、模型来源与连接测试，常规保留关于我', async ({ electron }) => {
+test('模型配置独立承载运行时、登录、模型来源、连接测试与全局默认配置', async ({ electron }) => {
     const page = electron.page;
+    await clearActiveTurns(page);
+    await settlePendingWork(page);
     await page.getByLabel('设置', { exact: true }).click();
-    await expect(page.getByRole('tab', { name: '账号', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '模型配置', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '关于我' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toHaveCount(0);
     await expect(page.getByText('Rambo 使用本机 Codex 登录状态。')).toHaveCount(0);
-    for (const name of ['常规', '账号', '新建 Bot 初值', '资源管理', '定时任务']) {
+    for (const name of ['常规', '模型配置', '资源管理', '定时任务']) {
       await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
     }
-    await page.getByRole('tab', { name: '账号', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '当前配置模式', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '当前模型来源', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '全局默认配置', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '全局默认配置', exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '账号状态', exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '模型来源', exact: true })).toHaveCount(0);
     await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
@@ -2746,18 +2794,20 @@ test('账号设置独立承载运行时、登录、模型来源与连接测试�
     await expect(page.getByRole('radio', { name: /持续跟随本机/ })).toBeChecked();
     await page.getByRole('radio', { name: /独立配置/ }).click();
     await expect(page.getByRole('radio', { name: /独立配置/ })).toBeChecked();
-    await expect(page.getByRole('button', { name: '更换配置', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'none');
     await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeVisible();
     await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeVisible();
+    await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toHaveCount(0);
     await page.getByRole('radio', { name: /手动配置 API/ }).click();
     await expect(page.getByRole('heading', { name: '手动 API 配置' })).toBeVisible();
     await expect(page.getByLabel('Base URL')).toBeVisible();
-    await expect(page.getByLabel('模型 ID')).toBeVisible();
+    await expect(page.getByLabel('自定义模型 ID')).toBeVisible();
+    await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeVisible();
     await expect(page.getByLabel('API Key')).toHaveAttribute('type', 'password');
-    await expect(page.getByText(/不承诺第三方服务完整支持/u)).toBeVisible();
-    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
-    await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
+    await expect(page.locator('.manual-source-section').getByText(/不承诺第三方服务完整支持/u))
+      .toBeVisible();
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'none');
+    await expect(page.getByRole('button', { name: '测试连接', exact: true })).toHaveCount(0);
     await expect(page.getByText(/注册|同步到其他设备|跨设备同步/)).toHaveCount(0);
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     expect(snapshot.settings).not.toHaveProperty('account');
@@ -2767,7 +2817,164 @@ test('账号设置独立承载运行时、登录、模型来源与连接测试�
     expect(JSON.stringify(snapshot)).not.toContain('apiKey');
 });
 
-test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可切回本机配置', async ({
+test('模型配置页在任务执行中稳定禁用运行时变更并在任务结束后恢复', async ({ electron }) => {
+  test.setTimeout(90_000);
+  const page = electron.page;
+  await clearActiveTurns(page);
+  await settlePendingWork(page);
+  let availableSnapshot = await page.evaluate(() => window.rambo.snapshot());
+  let chat = availableSnapshot.chats.find(item =>
+    !item.groupChatId &&
+    availableSnapshot.bots.some(bot => bot.id === item.botId && !bot.archived)
+  );
+  if (!chat) {
+    const botName = `Task Lock ${Date.now()}`;
+    await page.getByLabel('创建 Bot').click();
+    await page.getByLabel('Bot 名称').fill(botName);
+    await page.getByRole('dialog', { name: '创建新 Bot' })
+      .getByRole('button', { name: '创建', exact: true }).click();
+    availableSnapshot = await page.evaluate(() => window.rambo.snapshot());
+    const createdBot = availableSnapshot.bots.find(bot => bot.name === botName);
+    expect(createdBot, '活动任务用例需要成功创建测试 Bot').toBeTruthy();
+    await settleInitialBotTurn(page, createdBot.id);
+    await clearActiveTurns(page);
+    await settlePendingWork(page);
+    availableSnapshot = await page.evaluate(() => window.rambo.snapshot());
+    chat = availableSnapshot.chats.find(item =>
+      item.botId === createdBot.id && !item.groupChatId
+    );
+  }
+  expect(chat, '需要至少一个可用 Bot 私聊来制造活动任务').toBeTruthy();
+
+  await openSystemSettings(page, '模型配置');
+
+  const independent = page.getByRole('radio', { name: /独立配置/ });
+  if (await independent.getAttribute('aria-checked') !== 'true') {
+    await independent.click();
+  }
+  await expect(independent).toHaveAttribute('aria-checked', 'true');
+
+  const sourceCard = page.locator('.current-source-card');
+  if (await sourceCard.getAttribute('data-source') !== 'chatgpt') {
+    const chatgptSource = page.getByRole('radio', { name: /ChatGPT 登录/ });
+    if (!(await chatgptSource.isVisible().catch(() => false))) {
+      await page.getByRole('button', { name: '更换配置', exact: true }).click();
+    }
+    if (await chatgptSource.isEnabled()) await chatgptSource.click();
+  }
+  await expect(sourceCard).toHaveAttribute('data-source', 'chatgpt');
+  const collapseSourcePicker = page.getByRole('button', { name: '收起选择', exact: true });
+  if (await collapseSourcePicker.isVisible().catch(() => false)) {
+    await collapseSourcePicker.click();
+  }
+
+  const manualStateBeforeTask = await page.evaluate(() => {
+    const snapshot = window.rambo.snapshot();
+    return snapshot.then(value => ({
+      modelSource: value.modelSource,
+      settings: {
+        manualModelServiceName: value.settings.manualModelServiceName ?? null,
+        manualModelBaseUrl: value.settings.manualModelBaseUrl ?? null,
+        manualModelId: value.settings.manualModelId ?? null,
+        manualModelCredentialRef: value.settings.manualModelCredentialRef ?? null
+      }
+    }));
+  });
+  await page.evaluate(chatId =>
+    window.rambo.send(chatId, '执行一个保持运行的长任务'), chat.id);
+  await waitForBoundTurn(page, chat.id);
+
+  const updateRuntime = page.getByRole('button', { name: '更新 App Server', exact: true });
+  const restartRuntime = page.getByRole('button', { name: '重启运行时', exact: true });
+  const testConnection = page.getByRole('button', { name: '测试连接', exact: true });
+  const follow = page.getByRole('radio', { name: /持续跟随本机/ });
+  await expect(updateRuntime).toBeDisabled();
+  await expect(restartRuntime).toBeDisabled();
+  await expect(testConnection).toBeDisabled();
+  await expect(follow).toBeDisabled();
+  await expect(page.getByLabel('代理地址')).toBeDisabled();
+  await expect(page.locator('#account-task-runtime')).toContainText(
+    '结束当前任务后，才能更新或重启 App Server，或修改代理'
+  );
+  await expect(page.locator('#account-task-mode')).toContainText(
+    '结束当前任务后，才能切换到“持续跟随本机”'
+  );
+  await expect(page.locator('#account-task-source')).toContainText(
+    '结束当前任务后，才能登录 ChatGPT、切换模型来源或测试连接'
+  );
+
+  await page.getByRole('button', { name: '更换配置', exact: true }).click();
+  await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeDisabled();
+  await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeDisabled();
+
+  const blockedErrors = await page.evaluate(async () => {
+    const attempts = {
+      login: () => window.rambo.login(),
+      setModelSource: () => window.rambo.setModelSource('manualApi'),
+      setCodexHomeSyncMode: () => window.rambo.setCodexHomeSyncMode('follow'),
+      restartRuntime: () => window.rambo.restartRuntime(),
+      updateRuntime: () => window.rambo.updateRuntime(),
+      testModelConnection: () => window.rambo.testModelConnection(),
+      saveManualModelSource: () => window.rambo.saveManualModelSource({
+        serviceName: 'Blocked API',
+        baseUrl: 'http://127.0.0.1:9/v1',
+        model: 'blocked-model',
+        models: [{ id: 'blocked-model', label: 'Blocked Model', isDefault: true }],
+        apiKey: 'sk-blocked'
+      })
+    };
+    const errors = {};
+    for (const [name, attempt] of Object.entries(attempts)) {
+      try {
+        await attempt();
+        errors[name] = null;
+      } catch (error) {
+        errors[name] = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return errors;
+  });
+  for (const [name, message] of Object.entries(blockedErrors)) {
+    expect(message, `${name} 应在活动任务期间被拒绝`).toMatch(/有任务执行中/u);
+  }
+  const duringTask = await page.evaluate(() => window.rambo.snapshot());
+  expect(duringTask.modelSource.kind).toBe('chatgpt');
+  expect(duringTask.hasPendingWork).toBe(true);
+  expect(duringTask.pendingWork.activeTurns).toBeGreaterThan(0);
+  const manualStateDuringTask = await page.evaluate(() => {
+    const snapshot = window.rambo.snapshot();
+    return snapshot.then(value => ({
+      modelSource: value.modelSource,
+      settings: {
+        manualModelServiceName: value.settings.manualModelServiceName ?? null,
+        manualModelBaseUrl: value.settings.manualModelBaseUrl ?? null,
+        manualModelId: value.settings.manualModelId ?? null,
+        manualModelCredentialRef: value.settings.manualModelCredentialRef ?? null
+      }
+    }));
+  });
+  expect(manualStateDuringTask).toEqual(manualStateBeforeTask);
+
+  await page.evaluate(chatId => window.rambo.interrupt(chatId), chat.id);
+  await expect.poll(() => page.evaluate(chatId =>
+    window.rambo.snapshot().then(value => ({
+      active: value.activeTurns[chatId] ?? null,
+      pending: value.hasPendingWork
+    })), chat.id), { timeout: 30_000 }).toEqual({ active: null, pending: false });
+  await expect(updateRuntime).toBeEnabled();
+  await expect(restartRuntime).toBeEnabled();
+  await expect(testConnection).toBeEnabled();
+  await expect(follow).toBeEnabled();
+  await expect(page.getByLabel('代理地址')).toBeEnabled();
+  await expect(page.locator('.account-task-notice')).toHaveCount(0);
+  const closeSourcePicker = page.getByRole('button', { name: '收起选择', exact: true });
+  if (await closeSourcePicker.isVisible().catch(() => false)) {
+    await closeSourcePicker.click();
+  }
+});
+
+test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可切回持续跟随', async ({
   electron, acceptanceRun
 }) => {
   test.setTimeout(60_000);
@@ -2779,23 +2986,65 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
       url: request.url,
       authorization: request.headers.authorization
     });
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ id: 'resp_e2e', output_text: 'OK' }));
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        data: [
+          { id: 'fixture-model', name: 'Fixture Model' },
+          { id: 'fixture-model-alt', name: 'Fixture Model Alt' }
+        ]
+      }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/responses') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp_e2e', output_text: 'OK' }));
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'not found' } }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
   const secret = 'sk-e2e-manual-secret';
+  let createdBotId = null;
+  const initial = await page.evaluate(() => window.rambo.snapshot());
+  if (!initial.bots.length) {
+    const botName = `Manual Source ${Date.now()}`;
+    await page.getByLabel('创建 Bot').click();
+    await page.getByLabel('Bot 名称').fill(botName);
+    await page.getByRole('dialog', { name: '创建新 Bot' })
+      .getByRole('button', { name: '创建', exact: true }).click();
+    const created = await page.evaluate(name =>
+      window.rambo.snapshot().then(snapshot => snapshot.bots.find(bot => bot.name === name)),
+    botName);
+    if (!created) throw new Error('没有创建手动 API 来源测试 Bot');
+    createdBotId = created.id;
+  }
+  const botsBeforeSave = await page.evaluate(() => window.rambo.snapshot().then(snapshot =>
+    snapshot.bots.map(bot => ({
+      id: bot.id,
+      name: bot.name,
+      model: bot.model,
+      permission: bot.permission
+    }))
+  ));
   try {
     await clearActiveTurns(page);
-    await openSystemSettings(page, '账号');
-    await page.getByRole('radio', { name: /独立配置/ }).click();
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    await openSystemSettings(page, '模型配置');
+    await openManualApiEditor(page);
     await page.getByLabel('服务名称').fill('E2E Responses');
     await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
-    await page.getByLabel('模型 ID').fill('fixture-model');
     await page.getByLabel('API Key').fill(secret);
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '已获取 2 个可选模型' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '保存并使用', exact: true })).toBeDisabled();
+    await checkManualModel(page, 'fixture-model');
+    await checkManualModel(page, 'fixture-model-alt');
+    await page.getByLabel('全局默认模型').selectOption('fixture-model-alt');
+    await expect(page.locator('.global-model-pool')).toContainText('Fixture Model');
+    await expect(page.locator('.global-model-pool')).toContainText('Fixture Model Alt');
     await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot()))
       .toMatchObject({
@@ -2804,21 +3053,35 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
           manual: {
             serviceName: 'E2E Responses',
             baseUrl: `http://127.0.0.1:${address.port}/v1`,
-            model: 'fixture-model'
+            model: 'fixture-model-alt'
           },
+          models: [
+            { id: 'fixture-model', label: 'Fixture Model', isDefault: false },
+            { id: 'fixture-model-alt', label: 'Fixture Model Alt', isDefault: true }
+          ],
           hasApiKey: true
         }
       });
     await expect(page.getByRole('heading', { name: '手动 API 配置', exact: true })).toHaveCount(0);
     await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'manualApi');
+    await expect.poll(() => page.evaluate(() =>
+      window.rambo.models().then(models => models.map(model => model.id))
+    )).toEqual(['fixture-model', 'fixture-model-alt']);
     await page.getByRole('button', { name: '测试连接', exact: true }).click();
     await expect(page.getByRole('status').filter({ hasText: '连接可用 · 首响应' }))
       .toBeVisible({ timeout: 30_000 });
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     expect(JSON.stringify(snapshot)).not.toContain(secret);
-    expect(requests).toEqual([
+    expect(requests.filter(request => request.method === 'GET')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          url: '/v1/models',
+          authorization: `Bearer ${secret}`
+        })
+      ])
+    );
+    expect(requests.filter(request => request.method === 'POST')).toEqual([
       expect.objectContaining({
-        method: 'POST',
         url: '/v1/responses',
         authorization: `Bearer ${secret}`
       })
@@ -2832,18 +3095,324 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
     await expect.poll(() => readFileSync(runtimeConfigPath, 'utf8'))
       .toContain('model_provider = "rambo_manual"');
     const manualConfig = readFileSync(runtimeConfigPath, 'utf8');
-    expect(manualConfig).toContain('model = "fixture-model"');
+    expect(manualConfig).toContain('model = "fixture-model-alt"');
     expect(manualConfig).toContain(`base_url = "http://127.0.0.1:${address.port}/v1"`);
 
+    const refreshTarget = botsBeforeSave[0];
+    if (refreshTarget) {
+      await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
+        model: 'fixture-model',
+        permission: 'workspaceWrite'
+      }), refreshTarget.id);
+    }
     await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    await page.getByRole('radio', { name: /本机 Codex 配置副本/ }).click();
+    await page.getByRole('radio', { name: /ChatGPT 登录/ }).click();
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => ({
+      source: value.modelSource.kind,
+      defaultModel: value.settings.defaultBotModel
+    })))).toEqual({
+      source: 'chatgpt',
+      defaultModel: 'local-fixture-model'
+    });
+    await expect(page.getByRole('status').filter({ hasText: '已统一刷新' })).toBeVisible();
+    if (refreshTarget) {
+      await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
+        const bot = snapshot.bots.find(item => item.id === botId);
+        return bot ? { model: bot.model, permission: bot.permission } : null;
+      }), refreshTarget.id)).toEqual({
+        model: 'local-fixture-model',
+        permission: 'workspaceWrite'
+      });
+    }
+
+    await page.evaluate(async baseUrl => {
+      await window.rambo.saveManualModelSource({
+        serviceName: 'E2E Responses',
+        baseUrl,
+        model: 'fixture-model-alt',
+        models: [
+          { id: 'fixture-model', label: 'Fixture Model', isDefault: false },
+          { id: 'fixture-model-alt', label: 'Fixture Model Alt', isDefault: true }
+        ]
+      });
+    }, `http://127.0.0.1:${address.port}/v1`);
+    if (refreshTarget) {
+      await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
+        model: 'fixture-model',
+        permission: 'workspaceWrite'
+      }), refreshTarget.id);
+    }
+    await page.getByRole('radio', { name: /持续跟随本机/ }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
       .toBe('local');
+    await expect.poll(() => page.evaluate(async () => {
+      const value = await window.rambo.snapshot();
+      return {
+        defaultModel: value.settings.defaultBotModel,
+        models: (await window.rambo.models()).map(model => model.id),
+        manualModels: value.modelSource.models.map(model => model.id)
+      };
+    })).toEqual({
+      defaultModel: 'local-fixture-model',
+      models: ['local-fixture-model', 'local-fixture-model-alt'],
+      manualModels: ['fixture-model', 'fixture-model-alt']
+    });
+    await expect(page.getByRole('status').filter({
+      hasText: '已开启持续跟随本机 Codex'
+    })).toContainText(/已统一刷新 \d+ 个历史 Bot/u);
+    if (refreshTarget) {
+      await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
+        const bot = snapshot.bots.find(item => item.id === botId);
+        return bot ? { model: bot.model, permission: bot.permission } : null;
+      }), refreshTarget.id)).toEqual({
+        model: 'local-fixture-model',
+        permission: 'workspaceWrite'
+      });
+    }
     await expect.poll(() => {
       try { return readFileSync(runtimeConfigPath, 'utf8'); }
       catch { return ''; }
     }).toBe('model = "local-fixture-model"\n');
   } finally {
+    await page.evaluate(async ({ bots, createdBotId }) => {
+      for (const bot of bots) {
+        await window.rambo.updateBotExecutionConfig(bot.id, {
+          model: bot.model,
+          permission: bot.permission
+        });
+      }
+      if (createdBotId) await window.rambo.deleteBot(createdBotId).catch(() => {});
+    }, { bots: botsBeforeSave, createdBotId }).catch(() => {});
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 Bot', async ({
+  electron, acceptanceRun
+}) => {
+  test.setTimeout(75_000);
+  const page = electron.page;
+  await clearActiveTurns(page);
+  await settlePendingWork(page);
+
+  const before = await page.evaluate(() => window.rambo.snapshot().then(snapshot => ({
+    syncMode: snapshot.codexHomeSync.mode,
+    modelSourceKind: snapshot.modelSource.kind,
+    defaultBotModel: snapshot.settings.defaultBotModel,
+    bots: snapshot.bots.map(bot => ({
+      id: bot.id,
+      model: bot.model,
+      permission: bot.permission
+    }))
+  })));
+  let createdBotId = null;
+  try {
+    await page.evaluate(async () => {
+      await window.rambo.setCodexHomeSyncMode('independent');
+    });
+    await page.evaluate(async () => {
+      await window.rambo.saveManualModelSource({
+        serviceName: 'Login Refresh API',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'login-api-model',
+        models: [
+          { id: 'login-api-model', label: 'Login API Model', isDefault: true }
+        ],
+        apiKey: 'sk-login-refresh-fixture'
+      });
+    });
+    let target = before.bots[0];
+    if (!target) {
+      const botName = `Login Refresh ${Date.now()}`;
+      await page.getByLabel('创建 Bot').click();
+      await page.getByLabel('Bot 名称').fill(botName);
+      await page.getByRole('dialog', { name: '创建新 Bot' })
+        .getByRole('button', { name: '创建', exact: true }).click();
+      const created = await page.evaluate(name =>
+        window.rambo.snapshot().then(snapshot => snapshot.bots.find(bot => bot.name === name)),
+      botName);
+      if (!created) throw new Error('没有创建 ChatGPT 登录刷新测试 Bot');
+      createdBotId = created.id;
+      target = { id: created.id, model: created.model, permission: created.permission };
+      await settleInitialBotTurn(page, created.id);
+      await clearActiveTurns(page);
+      await settlePendingWork(page);
+    }
+    await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
+      model: 'retired-login-model',
+      permission: 'workspaceWrite'
+    }), target.id);
+
+    rmSync(join(acceptanceRun.profile, 'codex-home', 'auth.json'), { force: true });
+    writeFileSync(
+      join(acceptanceRun.profile, 'fixture-login-state.txt'),
+      'required'
+    );
+
+    await openSystemSettings(page, '模型配置');
+    await page.getByRole('button', { name: '更换配置', exact: true }).click();
+    const chatgptSource = page.getByRole('radio', { name: /ChatGPT 登录/ });
+    await expect(chatgptSource).toBeEnabled();
+    await chatgptSource.click();
+
+    const loginRefresh = page.getByRole('status').filter({
+      hasText: 'ChatGPT 登录已完成'
+    });
+    await expect(loginRefresh).toContainText('已统一刷新', { timeout: 20_000 });
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(snapshot => ({
+      source: snapshot.modelSource.kind,
+      defaultModel: snapshot.settings.defaultBotModel
+    })))).toEqual({
+      source: 'chatgpt',
+      defaultModel: 'local-fixture-model'
+    });
+    await expect.poll(() => page.evaluate(() =>
+      window.rambo.models().then(models => models.map(model => model.id))
+    )).toEqual(['local-fixture-model', 'local-fixture-model-alt']);
+    await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
+      const bot = snapshot.bots.find(item => item.id === botId);
+      return bot ? { model: bot.model, permission: bot.permission } : null;
+    }), target.id)).toEqual({
+      model: 'local-fixture-model',
+      permission: 'workspaceWrite'
+    });
+  } finally {
+    await page.evaluate(async previous => {
+      const snapshot = await window.rambo.snapshot();
+      for (const bot of snapshot.bots) {
+        const original = previous.bots.find(item => item.id === bot.id);
+        if (original) {
+          await window.rambo.updateBotExecutionConfig(bot.id, {
+            model: original.model,
+            permission: original.permission
+          });
+        }
+      }
+      if (previous.modelSourceKind === 'local') {
+        await window.rambo.setModelSource('local');
+      }
+      if (previous.defaultBotModel) {
+        await window.rambo.setSetting('defaultBotModel', previous.defaultBotModel);
+      }
+      if (previous.syncMode === 'follow') {
+        await window.rambo.setCodexHomeSyncMode('follow').catch(() => {});
+      }
+    }, before).catch(() => {});
+    if (createdBotId) {
+      await page.evaluate(botId => window.rambo.deleteBot(botId), createdBotId).catch(() => {});
+    }
+  }
+});
+
+test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot', async ({ electron }) => {
+  test.setTimeout(75_000);
+  const page = electron.page;
+  const server = createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        data: [
+          { id: 'refresh-model-a', name: 'Refresh Model A' },
+          { id: 'refresh-model-b', name: 'Refresh Model B' }
+        ]
+      }));
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('本地模型目录 fixture 没有监听端口');
+  const before = await page.evaluate(() => window.rambo.snapshot().then(snapshot =>
+    snapshot.bots.map(bot => ({
+      id: bot.id,
+      model: bot.model,
+      permission: bot.permission,
+      pinnedAt: bot.pinnedAt
+    }))
+  ));
+  let createdBotId = null;
+  try {
+    await clearActiveTurns(page);
+    await settlePendingWork(page);
+    let target = before[0];
+    if (!target) {
+      const botName = `Refresh Target ${Date.now()}`;
+      await page.getByLabel('创建 Bot').click();
+      await page.getByLabel('Bot 名称').fill(botName);
+      await page.getByRole('dialog', { name: '创建新 Bot' })
+        .getByRole('button', { name: '创建', exact: true }).click();
+      const snapshot = await page.evaluate(() => window.rambo.snapshot());
+      const created = snapshot.bots.find(bot => bot.name === botName);
+      if (!created) throw new Error('没有创建统一刷新测试 Bot');
+      target = created;
+      createdBotId = created.id;
+    }
+    const targetName = await page.evaluate(async botId => {
+      const snapshot = await window.rambo.snapshot();
+      const bot = snapshot.bots.find(item => item.id === botId);
+      if (!bot) throw new Error('统一刷新目标 Bot 不存在');
+      await window.rambo.setBotPinned(botId, true);
+      await window.rambo.updateBotExecutionConfig(botId, {
+        model: 'retired-refresh-model',
+        permission: 'workspaceWrite'
+      });
+      return bot.name;
+    }, target.id);
+    await clearActiveTurns(page);
+    await settlePendingWork(page);
+
+    await openSystemSettings(page, '模型配置');
+    await openManualApiEditor(page);
+    await page.getByLabel('服务名称').fill('Refresh Catalog');
+    await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
+    await page.getByLabel('API Key').fill('sk-refresh-catalog');
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '已获取 2 个可选模型' })).toBeVisible();
+    await checkManualModel(page, 'refresh-model-a');
+    await checkManualModel(page, 'refresh-model-b');
+    await page.getByLabel('全局默认模型').selectOption('refresh-model-b');
+
+    const refreshPreview = page.getByRole('status').filter({ hasText: '保存后将统一刷新' });
+    await expect(refreshPreview).toBeVisible();
+    await expect(refreshPreview).toContainText(targetName);
+    await expect(refreshPreview).toContainText('refresh-model-b');
+
+    await page.getByRole('button', { name: '保存并使用', exact: true }).click();
+    await expect(page.getByRole('status').filter({
+      hasText: '手动 API 配置已加密保存，并设为当前来源。'
+    })).toContainText('已统一刷新');
+    await expect(page.getByRole('status').filter({
+      hasText: '手动 API 配置已加密保存，并设为当前来源。'
+    })).toContainText('Refresh Model B');
+    await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
+      const bot = snapshot.bots.find(item => item.id === botId);
+      return bot ? { model: bot.model, permission: bot.permission } : null;
+    }), target.id)).toEqual({
+      model: 'refresh-model-b',
+      permission: 'workspaceWrite'
+    });
+
+    await page.getByRole('radio', { name: /持续跟随本机/ }).click();
+    await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(snapshot => snapshot.modelSource.kind)))
+      .toBe('local');
+  } finally {
+    await page.evaluate(async ({ before, createdBotId }) => {
+      const snapshot = await window.rambo.snapshot();
+      for (const bot of snapshot.bots) {
+        const original = before.find(item => item.id === bot.id);
+        if (original) {
+          await window.rambo.updateBotExecutionConfig(bot.id, {
+            model: original.model,
+            permission: original.permission
+          });
+          await window.rambo.setBotPinned(bot.id, Boolean(original.pinnedAt));
+        } else if (bot.id === createdBotId) {
+          await window.rambo.deleteBot(bot.id);
+        }
+      }
+    }, { before, createdBotId }).catch(() => {});
     await new Promise(resolve => server.close(resolve));
   }
 });
@@ -2851,6 +3420,15 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
 test('手动 API 连接测试失败仍保留当前来源', async ({ electron }) => {
   test.setTimeout(60_000);
   const page = electron.page;
+  const before = await page.evaluate(() => window.rambo.snapshot().then(snapshot => ({
+    modelSourceKind: snapshot.modelSource.kind,
+    defaultBotModel: snapshot.settings.defaultBotModel,
+    bots: snapshot.bots.map(bot => ({
+      id: bot.id,
+      model: bot.model,
+      permission: bot.permission
+    }))
+  })));
   const server = createServer((_request, response) => {
     response.writeHead(401, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: { message: 'invalid api key' } }));
@@ -2859,21 +3437,16 @@ test('手动 API 连接测试失败仍保留当前来源', async ({ electron }) 
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('本地 Responses fixture 没有监听端口');
   try {
-    await openSystemSettings(page, '账号');
-    await page.getByRole('radio', { name: /独立配置/ }).click();
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    await page.getByRole('radio', { name: /手动配置 API/ }).click();
-    if (!(await page.getByLabel('服务名称').isVisible().catch(() => false))) {
-      await expect.poll(() => page.evaluate(() =>
-        window.rambo.snapshot().then(value => value.modelSource.kind)))
-        .toBe('manualApi');
-      await page.getByRole('button', { name: '编辑配置', exact: true }).click();
-    }
-    await expect(page.getByLabel('服务名称')).toBeEditable({ timeout: 30_000 });
+    await openSystemSettings(page, '模型配置');
+    await openManualApiEditor(page);
     await page.getByLabel('服务名称').fill('E2E Rejected');
     await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
-    await page.getByLabel('模型 ID').fill('fixture-model');
     await page.getByLabel('API Key').fill('sk-e2e-invalid-secret');
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'HTTP 401' })).toBeVisible();
+    await page.getByLabel('自定义模型 ID').fill('fixture-manual-model');
+    await page.getByRole('button', { name: '添加模型 ID', exact: true }).click();
+    await checkManualModel(page, 'fixture-manual-model');
     await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
       .toBe('manualApi');
@@ -2886,6 +3459,27 @@ test('手动 API 连接测试失败仍保留当前来源', async ({ electron }) 
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
       .toBe('manualApi');
   } finally {
+    await page.evaluate(async previous => {
+      const snapshot = await window.rambo.snapshot();
+      for (const bot of snapshot.bots) {
+        const original = previous.bots.find(item => item.id === bot.id);
+        if (
+          original &&
+          (bot.model !== original.model || bot.permission !== original.permission)
+        ) {
+          await window.rambo.updateBotExecutionConfig(bot.id, {
+            model: original.model,
+            permission: original.permission
+          });
+        }
+      }
+      if (previous.modelSourceKind === 'local') {
+        await window.rambo.setModelSource('local');
+        if (previous.defaultBotModel) {
+          await window.rambo.setSetting('defaultBotModel', previous.defaultBotModel);
+        }
+      }
+    }, before).catch(() => {});
     await new Promise(resolve => server.close(resolve));
   }
 });
@@ -4114,7 +4708,7 @@ test('真实 Electron Bot 自管理写入后界面与重启回读一致', async 
   };
 });
 
-test('真实 Electron 新建 Bot 初值复制后逐 Bot 独立并在重启后保持', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 全局默认配置复制后逐 Bot 独立并在重启后保持', async ({ electron, acceptanceRun }) => {
   const page = electron.page;
   for (const name of ['Model Pilot', 'Model Peer']) {
     await page.getByLabel('创建 Bot').click();
@@ -4125,12 +4719,16 @@ test('真实 Electron 新建 Bot 初值复制后逐 Bot 独立并在重启后保
   let snapshot = await page.evaluate(() => window.rambo.snapshot());
   const pilot = snapshot.bots.find(bot => bot.name === 'Model Pilot');
   const peer = snapshot.bots.find(bot => bot.name === 'Model Peer');
+  expect(pilot).toBeTruthy();
+  expect(peer).toBeTruthy();
+  await settleInitialBotTurn(page, pilot.id);
+  await settleInitialBotTurn(page, peer.id);
   const models = await page.evaluate(() => window.rambo.models());
   expect(models.length, '真实模型目录为空，无法验证模型设置').toBeGreaterThan(0);
   const globalModel = models.find(option => option.isDefault) ?? models[0];
   const sessionModel = models.find(option => option.id !== globalModel.id) ?? globalModel;
-  await openSystemSettings(page, '新建 Bot 初值');
-  await page.getByLabel('新建 Bot 模型').selectOption(globalModel.id);
+  await openSystemSettings(page, '模型配置');
+  await page.getByLabel('全局默认模型').selectOption(globalModel.id);
   await page.getByRole('radio', { name: /工作区写入/ }).click();
   await expect(page.locator('.autosave-indicator').filter({ hasText: '已自动保存' })).toBeVisible();
 
@@ -4181,7 +4779,12 @@ test('真实 Electron 新建 Bot 初值复制后逐 Bot 独立并在重启后保
 test('真实 Electron 模型与权限初值独立复制且运行时重建后重载模型目录', async ({
   electron, acceptanceRun
 }) => {
-  const page = electron.page;
+  // Earlier serial cases intentionally leave fake running turns behind. Start
+  // this runtime-rebuild case from a fresh process so it only exercises the
+  // turns created below, while persisted model settings still survive restart.
+  const page = await electron.restart();
+  await clearActiveTurns(page);
+  await settlePendingWork(page);
   await page.getByLabel('创建 Bot').click();
   await page.getByLabel('Bot 名称').fill('Readiness Alpha');
   await page.getByRole('dialog', { name: '创建新 Bot' })
@@ -4195,8 +4798,8 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   const nextModel = models.find(option => option.id !== alpha.model);
   expect(nextModel, '模型目录至少需要两个不同选项').toBeDefined();
 
-  await openSystemSettings(page, '新建 Bot 初值');
-  const defaultModel = page.getByLabel('新建 Bot 模型');
+  await openSystemSettings(page, '模型配置');
+  const defaultModel = page.getByLabel('全局默认模型');
   const defaultModelOptions = await defaultModel.locator('option').evaluateAll(options =>
     options.map(option => ({
       value: option.value,
@@ -4264,9 +4867,11 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
     permission: 'readOnly'
   });
 
+  await clearActiveTurns(page);
+  await settlePendingWork(page);
   await page.getByRole('button', { name: /返回聊天/ }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '账号', exact: true }).click();
+  await page.getByRole('tab', { name: '模型配置', exact: true }).click();
   const restart = page.getByRole('button', { name: '重启运行时', exact: true });
   await expect(restart).toBeEnabled();
   await restart.click();
@@ -4275,7 +4880,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot()))
     .runtime.status, { timeout: 30_000 }).toBe('ready');
 
-  await page.getByRole('tab', { name: '新建 Bot 初值', exact: true }).click();
+  await page.getByRole('tab', { name: '模型配置', exact: true }).click();
   await expect(defaultModel).toBeEnabled();
   await expect.poll(() => defaultModel.locator('option').count()).toBeGreaterThan(0);
   await expect(defaultModel).toHaveValue(nextModel.id);

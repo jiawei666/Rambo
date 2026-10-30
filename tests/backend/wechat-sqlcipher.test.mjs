@@ -12,6 +12,7 @@ const {
   WECHAT_PAGE_SIZE,
   WechatSqlCipherError,
   decryptWechatDatabase,
+  deriveWechatDatabaseKey,
   encryptWechatDatabaseFixture,
   encryptWechatWalFixture,
   opensWechatDatabase
@@ -24,6 +25,18 @@ const WRONG_KEY = Buffer.alloc(32, 0xa5);
 const DATABASE_SALT = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
 const WAL_SALT = Buffer.from('1020304050607080', 'hex');
 const ivForPage = pageNumber => Buffer.alloc(16, 0x60 + pageNumber);
+
+test('derives a database key from the account passphrase and page salt', () => {
+  const derived = deriveWechatDatabaseKey(KEY, DATABASE_SALT);
+  assert.equal(
+    derived.toString('hex'),
+    '682ac2e4317b74916c92809021a67a9271ceaea58aeb838be855e9e81c1a6608'
+  );
+  assert.throws(
+    () => deriveWechatDatabaseKey(KEY, Buffer.alloc(15)),
+    /salt 必须为 16 字节/u
+  );
+});
 
 function sqliteLikeDatabase(pageCount) {
   const database = Buffer.alloc(PAGE_SIZE * pageCount);

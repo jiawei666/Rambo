@@ -51,6 +51,7 @@ import {
   createVoiceWaveformSmoother,
   voiceFrequencyBinRange
 } from './voice-waveform-model';
+import { LivePcmPlayback } from './voice-playback';
 import hark, { type Harker } from 'hark';
 import type {
   AccountState,
@@ -59,6 +60,7 @@ import type {
   BotResource,
   Chat,
   ComposerAttachment,
+  CodexHomeSyncChangeResult,
   CodexHomeSyncMode,
   CodexHomeSyncState,
   ConnectorAuthChallenge,
@@ -76,9 +78,12 @@ import type {
   McpElicitationAction,
   McpElicitationPrompt,
   Message,
+  ManualApiSaveInput,
+  ModelCatalogRefresh,
   ModelConnectionTestResult,
   ModelOption,
   ModelSourceKind,
+  ModelSourceChangeResult,
   ModelSourceState,
   PermissionMode,
   PlaywrightVerificationResult,
@@ -88,6 +93,7 @@ import type {
   SecretCapturePrompt,
   Snapshot,
   TurnActivity,
+  VoiceAudioChunk,
   VoiceState
 } from '../shared/contracts';
 import {
@@ -96,6 +102,12 @@ import {
   parseImageDataUrl
 } from '../shared/composer-attachments';
 import { botExecutionConfigError } from '../shared/execution-config';
+import {
+  loginAtStartupDescription,
+  otherPlatformPathsLabel,
+  redactDesktopPaths,
+  wechatConnectorDescription
+} from '../shared/platform';
 import { needsInitialSetup as shouldOpenInitialSetup } from '../main/model-source';
 import {
   accountSourceLabel,
@@ -103,7 +115,7 @@ import {
 } from '../shared/account-settings';
 
 type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
-type SystemSettingsTab = 'general' | 'account' | 'model' | 'resources' | 'routines';
+type SystemSettingsTab = 'general' | 'account' | 'resources' | 'routines';
 type ResourceSection = 'skills' | 'mcp' | 'plugins';
 type AutoSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type LiveVoiceUi = {
@@ -134,6 +146,7 @@ const EMPTY_SNAPSHOT: Snapshot = {
   modelSource: {
     kind: 'local',
     manual: { serviceName: '', baseUrl: '', model: '' },
+    models: [],
     hasApiKey: false
   },
   bots: [],
@@ -152,6 +165,15 @@ const EMPTY_SNAPSHOT: Snapshot = {
   runtime: { status: 'stopped', version: '', source: null, error: null },
   activeTurns: {},
   startingTurns: {},
+  pendingWork: {
+    activeTurns: 0,
+    startingTurns: 0,
+    busyChats: 0,
+    busyGroups: 0,
+    unknownOperations: 0,
+    voiceSessions: 0
+  },
+  hasPendingWork: false,
   groupRuntimes: {},
   settings: {},
   executionDefaults: {
@@ -371,7 +393,8 @@ function ConnectorProviderIcon({ provider, className }: {
 class VoiceMediaSession {
   private peer: RTCPeerConnection | null = null;
   private stream: MediaStream | null = null;
-  private audio: HTMLAudioElement | null = null;
+  private playbackContext: AudioContext | null = null;
+  private pcmPlayback: LivePcmPlayback | null = null;
   private channel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -383,6 +406,15 @@ class VoiceMediaSession {
   constructor(readonly chatId: string) {}
 
   async start(): Promise<string> {
+    try {
+      const playbackContext = new AudioContext({ latencyHint: 'interactive' });
+      this.playbackContext = playbackContext;
+      void playbackContext.resume().catch(() => {
+        // The first audio chunk retries resume after the Live session is ready.
+      });
+    } catch {
+      // Live connection setup can proceed even if this optional context is unavailable.
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
@@ -395,15 +427,6 @@ class VoiceMediaSession {
 
     const channel = peer.createDataChannel('oai-events', { ordered: true });
     this.channel = channel;
-    this.audio = new Audio();
-    this.audio.autoplay = true;
-    peer.ontrack = event => {
-      if (!this.audio) return;
-      this.audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-      void this.audio.play().catch(() => {
-        // Chromium may defer playback until the next gesture; the Live UI exposes retry.
-      });
-    };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     await this.waitForIceGathering(peer);
@@ -413,6 +436,18 @@ class VoiceMediaSession {
   async applyAnswer(sdp: string): Promise<void> {
     if (!this.peer) throw new Error('语音媒体连接已释放');
     await this.peer.setRemoteDescription({ type: 'answer', sdp });
+  }
+
+  playOutputAudio(chunk: VoiceAudioChunk): void {
+    const playbackContext = this.playbackContext;
+    if (!playbackContext || playbackContext.state === 'closed') return;
+    void playbackContext.resume().then(() => {
+      if (this.playbackContext !== playbackContext || playbackContext.state === 'closed') return;
+      this.pcmPlayback ??= new LivePcmPlayback(playbackContext);
+      this.pcmPlayback.enqueue(chunk);
+    }).catch(() => {
+      // Live state remains visible so the user can hang up and retry audio.
+    });
   }
 
   readInputLevels(barCount: number): { levels: number[]; speech: boolean } | null {
@@ -447,18 +482,21 @@ class VoiceMediaSession {
     this.frequencySamples = null;
     this.voiceLowBin = 0;
     this.voiceHighBin = 0;
+    this.pcmPlayback?.close();
+    this.pcmPlayback = null;
+    const playbackContext = this.playbackContext;
+    this.playbackContext = null;
+    if (playbackContext && playbackContext.state !== 'closed') {
+      void playbackContext.close().catch(() => {
+        // The context may already be closing with the media session.
+      });
+    }
     const audioContext = this.audioContext;
     this.audioContext = null;
     if (audioContext && audioContext.state !== 'closed') {
       void audioContext.close().catch(() => {
         // The context may already be closing with the media session.
       });
-    }
-    if (this.audio) {
-      this.audio.pause();
-      this.audio.srcObject = null;
-      this.audio.remove();
-      this.audio = null;
     }
     try { peer?.close(); } catch { /* already closed */ }
   }
@@ -553,6 +591,7 @@ type PendingMessageLoad = {
 };
 
 function App() {
+  const platform = window.rambo.platform;
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -600,6 +639,15 @@ function App() {
   } | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
+  const refreshModels = useCallback(async () => {
+    try {
+      const options = await window.rambo.models();
+      setModelOptions(options);
+      setModelOptionsError(null);
+    } catch (error) {
+      setModelOptionsError(toError(error));
+    }
+  }, []);
   const firstRunSettingsRef = useRef(false);
   const [voice, setVoice] = useState<LiveVoiceUi | null>(null);
   const botsRef = useRef<Bot[]>([]);
@@ -1137,6 +1185,10 @@ function App() {
             void window.rambo.stopVoice(event.chatId, '媒体协商失败');
           }
         })();
+      } else if (event.type === 'voiceAudio') {
+        if (voiceRef.current?.chatId === event.chatId) {
+          voiceSessionRef.current?.playOutputAudio(event.audio);
+        }
       } else if (event.type === 'voiceEndRequested') {
         flushPendingVoiceMessages();
         if (voiceRef.current?.chatId === event.chatId) {
@@ -1172,14 +1224,6 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    const refreshModels = () => window.rambo.models().then(options => {
-      if (active) {
-        setModelOptions(options);
-        setModelOptionsError(null);
-      }
-    }).catch(error => {
-      if (active) setModelOptionsError(toError(error));
-    });
     void refreshModels();
     const onRuntime = (event: AppEvent) => {
       if (event.type !== 'runtime') return;
@@ -1200,7 +1244,7 @@ function App() {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [refreshModels]);
 
   useEffect(() => {
     const updateFocus = () => {
@@ -1316,6 +1360,9 @@ function App() {
   const currentGroup = currentSnapshot.groups.find(group => group.id === selectedGroupId) ?? null;
   const isRunning = currentChat ? Boolean(currentSnapshot.activeTurns[currentChat.id]) : false;
   const isStartingTurn = currentChat ? Boolean(currentSnapshot.startingTurns[currentChat.id]) : false;
+  const hasPendingWork = currentSnapshot.hasPendingWork ||
+    Object.keys(currentSnapshot.activeTurns).length > 0 ||
+    Object.keys(currentSnapshot.startingTurns).length > 0;
 
   const returnToChat = async () => {
     const target = currentSnapshot.bots.find(bot => bot.id === selectedBotId && !bot.archived)
@@ -1978,6 +2025,7 @@ function App() {
             activeTab={systemSettingsTab}
             onTabChange={setSystemSettingsTab}
             onAccountStateChange={updateAccountReady}
+            taskRunning={hasPendingWork}
             runtime={currentSnapshot.runtime}
             codexHome={currentSnapshot.codexHome}
             codexHomeSync={currentSnapshot.codexHomeSync}
@@ -1996,6 +2044,7 @@ function App() {
             playwrightVerifiedAt={currentSnapshot.settings.playwrightVerifiedAt ?? ''}
             models={modelOptions}
             modelError={modelOptionsError}
+            onRefreshModels={refreshModels}
             bots={currentSnapshot.bots}
             routines={currentSnapshot.routines}
             runs={currentSnapshot.routineRuns}
@@ -2287,7 +2336,7 @@ function App() {
       {deletingBot && (
         <ConfirmationDialog
           title={`永久删除「${deletingBot.name}」？`}
-          description="将删除该 Bot 在 Rambo 中的聊天、记忆、例程和专属工作区。只清理应用管理目录，不扫描或清理其他 Mac 路径。此操作不可撤销。"
+          description={`将删除该 Bot 在 Rambo 中的聊天、记忆、例程和专属工作区。只清理应用管理目录，不扫描或清理${otherPlatformPathsLabel(platform)}。此操作不可撤销。`}
           confirmLabel="永久删除 Bot"
           onCancel={() => setDeletingBot(null)}
           onConfirm={permanentlyDeleteBot}
@@ -2663,9 +2712,8 @@ function appendConnectorProgress(
 }
 
 function safeConnectorLogMessage(message: string): string {
-  return message
+  return redactDesktopPaths(message)
     .replace(/\b[a-f0-9]{64}\b/giu, '<密钥已隐藏>')
-    .replace(/\/Users\/[^/\s]+/gu, '~')
     .slice(0, 500);
 }
 
@@ -2703,6 +2751,8 @@ function ConnectorDialog({
   onReconnect: (connection: ConnectorConnection) => Promise<void>;
 }) {
   const titleId = useId();
+  const platform = window.rambo.platform;
+  const wechatCopy = wechatConnectorDescription(platform);
   const [grantedIds, setGrantedIds] = useState<Set<string>>(() => new Set(
     connection ? grants.filter(grant => grant.connectionId === connection.id).map(grant => grant.botId) : []
   ));
@@ -2909,7 +2959,7 @@ function ConnectorDialog({
     setCanContinueCapture(false);
     setConnectorPhase('resuming-capture');
     setError(null);
-    const message = '继续复用当前微信副本和管理员授权；请继续操作，完成后再结束本轮。';
+    const message = '继续复用当前微信捕获会话；请继续操作，完成后再结束本轮。';
     setConnectorProgress(message);
     setConnectorLog(current => appendConnectorProgress(current, {
       phase: 'resuming-capture',
@@ -3052,7 +3102,7 @@ function ConnectorDialog({
               <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
               <div>
                 <strong>读取本机微信</strong>
-                <p>Rambo 将读取此 Mac 上微信已保存的聊天消息。主微信保持腾讯官方签名；首次连接需要创建临时受管副本完成密钥捕获，验证后删除副本。</p>
+                <p>{wechatCopy.summary}</p>
                 <small>读取只在本机进行，不联网补取消息，不建立微信正文归档或媒体缓存。</small>
               </div>
             </div>
@@ -3060,8 +3110,8 @@ function ConnectorDialog({
               <span className="connector-auth-note-icon"><Icon name="check" size={20} /></span>
               <div>
                 <strong>连接步骤</strong>
-                <p>Rambo 会检查微信 4.1.x 与官方签名，让你选择账号目录，然后在临时副本中捕获并验证数据库密钥。密钥不会交给 Bot，也不会写入日志。</p>
-                <small>首次使用会出现 macOS 管理员授权提示。密钥监听启动后会保持同一个微信副本和授权进程；请在副本中登录并打开聊天、图片或语音，完成一轮后点“我已完成操作，验证密钥”。如果仍缺少密钥，先点“继续补抓密钥”，再回到副本打开聊天或媒体；完成后再次点验证，不必重启或重新登录。</small>
+                <p>{wechatCopy.process}</p>
+                <small>{wechatCopy.detail}</small>
               </div>
             </div>
             {(oauthWaiting || connectorLog.length > 0) && (
@@ -5822,10 +5872,19 @@ function MemoryManager({ botId, title, description }: { botId: string | null; ti
   );
 }
 
+function TaskRunningNotice({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <div id={id} className="account-task-notice" role="status">
+      {children}
+    </div>
+  );
+}
+
 function AccountSettingsPage({
   activeTab,
   onTabChange,
   onAccountStateChange,
+  taskRunning,
   runtime,
   codexHome,
   codexHomeSync,
@@ -5844,6 +5903,7 @@ function AccountSettingsPage({
   playwrightVerifiedAt,
   models,
   modelError,
+  onRefreshModels,
   bots,
   routines,
   runs,
@@ -5868,6 +5928,7 @@ function AccountSettingsPage({
   activeTab: SystemSettingsTab;
   onTabChange: (tab: SystemSettingsTab) => void;
   onAccountStateChange: (account: AccountState) => void;
+  taskRunning: boolean;
   runtime: RuntimeState;
   codexHome: string;
   codexHomeSync: CodexHomeSyncState;
@@ -5886,6 +5947,7 @@ function AccountSettingsPage({
   playwrightVerifiedAt: string;
   models: ModelOption[];
   modelError: string | null;
+  onRefreshModels: () => Promise<void>;
   bots: Bot[];
   routines: RoutineListItem[];
   runs: RoutineRun[];
@@ -5899,11 +5961,9 @@ function AccountSettingsPage({
   onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
   onSetRuntimeProxy: (value: string) => Promise<void>;
-  onSetCodexHomeSyncMode: (mode: CodexHomeSyncMode) => Promise<CodexHomeSyncState>;
-  onSetModelSource: (kind: ModelSourceKind) => Promise<ModelSourceState>;
-  onSaveManualModelSource: (input: {
-    serviceName: string; baseUrl: string; model: string; apiKey?: string;
-  }) => Promise<ModelSourceState>;
+  onSetCodexHomeSyncMode: (mode: CodexHomeSyncMode) => Promise<CodexHomeSyncChangeResult>;
+  onSetModelSource: (kind: ModelSourceKind) => Promise<ModelSourceChangeResult>;
+  onSaveManualModelSource: (input: ManualApiSaveInput) => Promise<ModelSourceChangeResult>;
   onTestModelConnection: (source?: ModelSourceKind) => Promise<ModelConnectionTestResult>;
   onSetRoutineStatus: (id: string, status: RoutineListItem['status']) => Promise<void>;
   onRunRoutineNow: (id: string) => Promise<RoutineRun>;
@@ -5914,8 +5974,10 @@ function AccountSettingsPage({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [codexHomeSyncBusy, setCodexHomeSyncBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [generalError, setGeneralError] = useState<string | null>(null);
+  const [generalNotice, setGeneralNotice] = useState<string | null>(null);
+  const [configurationError, setConfigurationError] = useState<string | null>(null);
+  const [configurationNotice, setConfigurationNotice] = useState<string | null>(null);
   const [globalModelDraft, setGlobalModelDraft] = useState(globalModel);
   const [globalPermissionDraft, setGlobalPermissionDraft] = useState<PermissionMode | null>(globalPermission);
   const [modelSaveState, setModelSaveState] = useState<AutoSaveState>('idle');
@@ -5933,8 +5995,17 @@ function AccountSettingsPage({
   const [playwrightVerificationError, setPlaywrightVerificationError] = useState<string | null>(null);
   const [manualServiceName, setManualServiceName] = useState(modelSource.manual.serviceName);
   const [manualBaseUrl, setManualBaseUrl] = useState(modelSource.manual.baseUrl);
-  const [manualModel, setManualModel] = useState(modelSource.manual.model);
   const [manualApiKey, setManualApiKey] = useState('');
+  const [manualModelOptions, setManualModelOptions] = useState<ModelOption[]>(modelSource.models);
+  const [manualCustomModelOptions, setManualCustomModelOptions] = useState<ModelOption[]>([]);
+  const [manualSelectedModelIds, setManualSelectedModelIds] = useState<Set<string>>(
+    () => new Set(modelSource.models.map(option => option.id))
+  );
+  const [manualDefaultModel, setManualDefaultModel] = useState(modelSource.manual.model);
+  const [manualModelInput, setManualModelInput] = useState('');
+  const [manualModelsBusy, setManualModelsBusy] = useState(false);
+  const [manualModelsError, setManualModelsError] = useState<string | null>(null);
+  const [manualModelsNotice, setManualModelsNotice] = useState<string | null>(null);
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   const [manualEditorOpen, setManualEditorOpen] = useState(false);
   const [modelSourceBusy, setModelSourceBusy] = useState(false);
@@ -5944,6 +6015,8 @@ function AccountSettingsPage({
   const [connectionTest, setConnectionTest] = useState<ModelConnectionTestResult | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountActionError, setAccountActionError] = useState<string | null>(null);
+  const [accountActionNotice, setAccountActionNotice] = useState<string | null>(null);
   const [loginPending, setLoginPending] = useState(false);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [runtimeRestartNotice, setRuntimeRestartNotice] = useState<string | null>(null);
@@ -5955,6 +6028,22 @@ function AccountSettingsPage({
   const modelWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const permissionWriteSequenceRef = useRef(0);
   const permissionWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const manualModelsRequestRef = useRef(0);
+  const manualSavedCatalogSignature = modelSource.models
+    .map(option => `${option.id}\u0000${option.label}`)
+    .join('\u0001');
+
+  const describeCatalogRefresh = useCallback((refresh: ModelCatalogRefresh) => {
+    const defaultLabel = refresh.models.find(model => model.id === refresh.defaultModel)?.label
+      ?? refresh.defaultModel;
+    const names = refresh.refreshedBots.slice(0, 3).map(bot => bot.name);
+    const refreshed = refresh.refreshedBots.length
+      ? `已统一刷新 ${refresh.refreshedBots.length} 个历史 Bot 的模型为“${defaultLabel}”：${
+        names.join('、')
+      }${refresh.refreshedBots.length > names.length ? ' 等' : ''}。`
+      : '历史 Bot 的现有模型都在新列表中，没有需要统一刷新的 Bot。';
+    return `全局模型池已切换为 ${refresh.models.length} 个可用模型，默认模型已更新为“${defaultLabel}”。${refreshed}`;
+  }, []);
 
   const globalSaveError = modelSaveError ?? permissionSaveError;
   const globalSaveState: AutoSaveState = globalSaveError || modelSaveState === 'error' || permissionSaveState === 'error'
@@ -5976,8 +6065,24 @@ function AccountSettingsPage({
   useEffect(() => {
     setManualServiceName(modelSource.manual.serviceName);
     setManualBaseUrl(modelSource.manual.baseUrl);
-    setManualModel(modelSource.manual.model);
-  }, [modelSource.manual.serviceName, modelSource.manual.baseUrl, modelSource.manual.model]);
+    setManualDefaultModel(modelSource.manual.model);
+    setManualModelOptions(modelSource.models);
+    setManualCustomModelOptions([]);
+    setManualSelectedModelIds(new Set(modelSource.models.map(option => option.id)));
+    setManualModelInput('');
+  }, [
+    modelSource.manual.serviceName,
+    modelSource.manual.baseUrl,
+    modelSource.manual.model,
+    manualSavedCatalogSignature
+  ]);
+
+  useEffect(() => {
+    const selected = manualModelOptions.filter(option => manualSelectedModelIds.has(option.id));
+    if (!selected.some(option => option.id === manualDefaultModel)) {
+      setManualDefaultModel(selected[0]?.id ?? '');
+    }
+  }, [manualDefaultModel, manualModelOptions, manualSelectedModelIds]);
 
   useEffect(() => {
     setSourcePickerOpen(false);
@@ -6050,7 +6155,17 @@ function AccountSettingsPage({
         if (!next.requiresLogin) {
           setLoginPending(false);
           setLoginUrl(null);
-          setNotice('ChatGPT 登录已完成，账号已连接。');
+          try {
+            const refresh = await window.rambo.syncModelCatalogForCurrentSource();
+            await onRefreshModels();
+            setAccountActionNotice(
+              `ChatGPT 登录已完成，账号已连接。${describeCatalogRefresh(refresh)}`
+            );
+          } catch (issue) {
+            setAccountActionError(
+              `ChatGPT 登录已完成，但全局模型列表同步失败：${toError(issue)}`
+            );
+          }
           return;
         }
       } catch (issue) {
@@ -6062,7 +6177,7 @@ function AccountSettingsPage({
         timer = window.setTimeout(() => void checkLogin(), 1_500);
       } else {
         setLoginPending(false);
-        setNotice('登录尚未完成。可以重新点击“登录 ChatGPT”，或使用下方链接重新打开登录页。');
+        setAccountActionNotice('登录尚未完成。可以重新点击“登录 ChatGPT”，或使用下方链接重新打开登录页。');
       }
     };
     void checkLogin();
@@ -6070,7 +6185,7 @@ function AccountSettingsPage({
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [loginPending, onAccountStateChange]);
+  }, [describeCatalogRefresh, loginPending, onAccountStateChange, onRefreshModels]);
 
   const updateGlobalModel = async (value: string) => {
     const sequence = ++modelWriteSequenceRef.current;
@@ -6138,30 +6253,39 @@ function AccountSettingsPage({
     await onCancelPlaywrightVerification().catch(() => {});
   };
 
-  const login = async () => {
+  const login = async (sourceAlreadySelected = false) => {
+    if (taskRunning) {
+      setAccountActionError('有任务执行中，请先结束当前任务再登录 ChatGPT');
+      return;
+    }
     setBusy(true);
-    setAccountError(null);
-    setNotice(null);
+    setAccountActionError(null);
+    setAccountActionNotice(null);
     setLoginUrl(null);
     try {
-      if (modelSource.kind !== 'chatgpt') {
-        await onSetModelSource('chatgpt');
+      if (!sourceAlreadySelected && modelSource.kind !== 'chatgpt') {
+        const switched = await onSetModelSource('chatgpt');
+        if (switched.catalogRefresh) await onRefreshModels();
       }
       const result = await window.rambo.login();
       setLoginPending(true);
       setLoginUrl(result.authUrl);
-      setNotice(result.browserOpened === false
+      setAccountActionNotice(result.browserOpened === false
         ? '未能自动打开系统浏览器。请使用下方链接完成授权，此页会自动更新账号状态。'
         : '登录页已在浏览器中打开。完成授权后，此页会自动更新账号状态。');
     } catch (issue) {
       setLoginPending(false);
-      setAccountError(toError(issue));
+      setAccountActionError(toError(issue));
     } finally {
       setBusy(false);
     }
   };
 
   const restart = async () => {
+    if (taskRunning) {
+      setRuntimeRestartError('有任务执行中，请先结束当前任务再重启运行时');
+      return;
+    }
     setBusy(true);
     setRuntimeRestartError(null);
     setRuntimeRestartNotice(null);
@@ -6178,6 +6302,10 @@ function AccountSettingsPage({
   };
 
   const updateRuntime = async () => {
+    if (taskRunning) {
+      setRuntimeUpdateError('有任务执行中，请先结束当前任务再更新 App Server');
+      return;
+    }
     setRuntimeUpdating(true);
     setRuntimeUpdateError(null);
     setRuntimeUpdateNotice(null);
@@ -6197,25 +6325,44 @@ function AccountSettingsPage({
 
   const switchCodexHomeSync = async (mode: CodexHomeSyncMode) => {
     if (mode === codexHomeSync.mode) return;
+    if (mode === 'follow' && taskRunning) {
+      setConfigurationError('有任务执行中，请先结束当前任务再切换到持续跟随本机');
+      return;
+    }
     setCodexHomeSyncBusy(true);
-    setError(null);
-    setNotice(null);
+    setConfigurationError(null);
+    setConfigurationNotice(null);
     try {
-      await onSetCodexHomeSyncMode(mode);
+      const result = await onSetCodexHomeSyncMode(mode);
+      if (mode === 'follow') await onRefreshModels();
       setSourcePickerOpen(false);
       setManualEditorOpen(false);
-      setNotice(mode === 'follow'
-        ? '已开启持续跟随本机 Codex；后续配置和资源会在空闲时同步。'
-        : '已保持独立；Rambo 不再跟随本机 Codex 的后续变化。');
+      setConfigurationNotice(mode === 'follow' && result.catalogRefresh
+        ? `已开启持续跟随本机 Codex。${describeCatalogRefresh(result.catalogRefresh)}后续配置和资源会在空闲时同步。`
+        : mode === 'follow'
+          ? '已开启持续跟随本机 Codex；后续配置和资源会在空闲时同步。'
+          : '已保持独立；Rambo 不再跟随本机 Codex 的后续变化。');
     } catch (issue) {
-      setError(toError(issue));
+      setConfigurationError(toError(issue));
     } finally {
       setCodexHomeSyncBusy(false);
     }
   };
 
   const switchModelSource = async (kind: ModelSourceKind) => {
-    if (kind === 'manualApi' && !(modelSource.manual.baseUrl && modelSource.manual.model && modelSource.hasApiKey)) {
+    if (taskRunning) {
+      setModelSourceError('有任务执行中，请先结束当前任务再切换模型来源');
+      return;
+    }
+    if (
+      kind === 'manualApi' &&
+      !(
+        modelSource.manual.baseUrl &&
+        modelSource.manual.model &&
+        modelSource.hasApiKey &&
+        modelSource.models.some(option => option.id === modelSource.manual.model)
+      )
+    ) {
       setModelSourceError(null);
       setModelSourceNotice(null);
       setConnectionTest(null);
@@ -6233,10 +6380,18 @@ function AccountSettingsPage({
     setModelSourceNotice(null);
     setConnectionTest(null);
     try {
-      await onSetModelSource(kind);
+      const result = await onSetModelSource(kind);
+      await onRefreshModels();
       setSourcePickerOpen(false);
       setManualEditorOpen(false);
-      setModelSourceNotice('模型来源已切换，Codex 运行时已重启。');
+      if (kind === 'chatgpt' && !result.catalogRefresh) {
+        setModelSourceNotice(null);
+        await login(true);
+      } else {
+        setModelSourceNotice(result.catalogRefresh
+          ? `模型来源已切换，Codex 运行时已重启。${describeCatalogRefresh(result.catalogRefresh)}`
+          : '模型来源已切换，Codex 运行时已重启。');
+      }
     } catch (issue) {
       setModelSourceError(toError(issue));
     } finally {
@@ -6244,27 +6399,146 @@ function AccountSettingsPage({
     }
   };
 
+  const mergeManualModelOptions = (...groups: ModelOption[][]) => {
+    const seen = new Set<string>();
+    const merged: ModelOption[] = [];
+    for (const option of groups.flat()) {
+      const id = option.id.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push({
+        id,
+        label: option.label.trim() || id,
+        isDefault: option.isDefault
+      });
+    }
+    return merged;
+  };
+
+  const selectedManualModels = manualModelOptions.filter(option =>
+    manualSelectedModelIds.has(option.id)
+  );
+  const manualModelRefreshTargets = selectedManualModels.length && manualDefaultModel
+    ? bots.filter(bot => !manualSelectedModelIds.has(bot.model.trim()))
+    : [];
+  const manualModelRefreshNames = manualModelRefreshTargets
+    .slice(0, 3)
+    .map(bot => bot.name);
+  const manualModelRefreshSummary = manualModelRefreshTargets.length
+    ? `保存后将统一刷新 ${manualModelRefreshTargets.length} 个历史 Bot 的模型为“${manualDefaultModel}”：${
+      manualModelRefreshNames.join('、')
+    }${
+      manualModelRefreshTargets.length > manualModelRefreshNames.length
+        ? ' 等'
+        : ''
+    }。`
+    : null;
+
+  const addManualModelTag = () => {
+    const id = manualModelInput.trim();
+    if (!id) return;
+    if (id.length > 500) {
+      setManualModelsError('模型 ID 不能超过 500 个字符');
+      return;
+    }
+    const option = { id, label: id, isDefault: false };
+    setManualCustomModelOptions(current => mergeManualModelOptions(current, [option]));
+    setManualModelOptions(current => mergeManualModelOptions(current, [option]));
+    setManualModelInput('');
+    setManualModelsError(null);
+    setManualModelsNotice('已添加自定义模型标签，请勾选后加入全局模型池。');
+  };
+
+  const toggleManualModel = (id: string, checked: boolean) => {
+    setManualSelectedModelIds(current => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const updateManualBaseUrl = (value: string) => {
+    manualModelsRequestRef.current += 1;
+    setManualBaseUrl(value);
+    setManualModelOptions([]);
+    setManualCustomModelOptions([]);
+    setManualSelectedModelIds(new Set());
+    setManualDefaultModel('');
+    setManualModelsBusy(false);
+    setManualModelsError(null);
+    setManualModelsNotice(null);
+  };
+
+  const updateManualApiKey = (value: string) => {
+    manualModelsRequestRef.current += 1;
+    setManualApiKey(value);
+    setManualModelsBusy(false);
+    setManualModelsError(null);
+    setManualModelsNotice(null);
+  };
+
+  const fetchManualModels = async () => {
+    const requestId = ++manualModelsRequestRef.current;
+    setManualModelsBusy(true);
+    setManualModelsError(null);
+    setManualModelsNotice(null);
+    try {
+      const options = await window.rambo.manualModels({
+        serviceName: manualServiceName,
+        baseUrl: manualBaseUrl,
+        ...(manualApiKey.trim() ? { apiKey: manualApiKey.trim() } : {})
+      });
+      if (requestId !== manualModelsRequestRef.current) return;
+      setManualModelOptions(current => mergeManualModelOptions(current, options));
+      setManualModelsNotice(`已获取 ${options.length} 个可选模型，请勾选后加入全局模型池。`);
+    } catch (issue) {
+      if (requestId !== manualModelsRequestRef.current) return;
+      setManualModelsError(toError(issue));
+    } finally {
+      if (requestId === manualModelsRequestRef.current) setManualModelsBusy(false);
+    }
+  };
+
   const saveManualSource = async () => {
+    if (taskRunning) {
+      setManualSaveState('idle');
+      setModelSourceError('有任务执行中，请先结束当前任务再保存并使用手动 API');
+      return;
+    }
+    if (!selectedManualModels.length) {
+      setManualSaveState('error');
+      setModelSourceError('请至少勾选一个模型后再保存手动 API 配置');
+      return;
+    }
+    if (!selectedManualModels.some(option => option.id === manualDefaultModel)) {
+      setManualSaveState('error');
+      setModelSourceError('请从已勾选的模型中选择一个全局默认模型');
+      return;
+    }
     setManualSaveState('saving');
+    setModelSourceBusy(true);
     setModelSourceError(null);
     setModelSourceNotice(null);
     setConnectionTest(null);
     try {
-      await onSaveManualModelSource({
+      const result = await onSaveManualModelSource({
         serviceName: manualServiceName,
         baseUrl: manualBaseUrl,
-        model: manualModel,
+        model: manualDefaultModel,
+        models: selectedManualModels,
         ...(manualApiKey.trim() ? { apiKey: manualApiKey.trim() } : {})
       });
+      await onRefreshModels();
       setManualApiKey('');
-      if (modelSource.kind !== 'manualApi') {
-        setModelSourceBusy(true);
-        await onSetModelSource('manualApi');
-      }
       setManualSaveState('saved');
       setManualEditorOpen(false);
       setSourcePickerOpen(false);
-      setModelSourceNotice('手动 API 配置已加密保存，并设为当前来源。');
+      setModelSourceNotice(
+        result.catalogRefresh
+          ? `手动 API 配置已加密保存，并设为当前来源。${describeCatalogRefresh(result.catalogRefresh)}`
+          : '手动 API 配置已加密保存，并设为当前来源。'
+      );
     } catch (issue) {
       setManualSaveState('error');
       setModelSourceError(toError(issue));
@@ -6276,6 +6550,10 @@ function AccountSettingsPage({
 
   const testConnection = async () => {
     if (testingConnection) return;
+    if (taskRunning) {
+      setModelSourceError('有任务执行中，请先结束当前任务再测试连接');
+      return;
+    }
     setTestingConnection(true);
     setModelSourceError(null);
     setModelSourceNotice(null);
@@ -6291,8 +6569,7 @@ function AccountSettingsPage({
 
   const tabs: Array<[SystemSettingsTab, string]> = [
     ['general', '常规'],
-    ['account', '账号'],
-    ['model', '新建 Bot 初值'],
+    ['account', '模型配置'],
     ['resources', '资源管理'],
     ['routines', '定时任务']
   ];
@@ -6317,36 +6594,53 @@ function AccountSettingsPage({
   const currentSourceReady = accountSettings.activeSourceStatus === 'ready';
   const showCurrentSourceCard = accountSettings.effectiveMode === 'follow' ||
     accountSettings.anySourceReady ||
-    accountSettings.activeSourceStatus === 'checking';
-  const currentSourceTitle = accountSettings.activeSource === 'manualApi'
-    ? modelSource.manual.serviceName.trim() || '手动配置 API'
-    : accountSourceLabel(accountSettings.activeSource);
-  const currentSourceDetail = accountSettings.activeSource === 'manualApi'
-    ? [
-        modelSource.manual.model.trim(),
-        modelSource.manual.baseUrl.trim()
-      ].filter(Boolean).join(' · ') || '尚未填写 Base URL、模型 ID 和 API Key'
+    accountSettings.activeSourceStatus === 'checking' ||
+    (accountSettings.effectiveMode === 'independent' && accountSettings.activeSource === null);
+  const currentSourceTitle = accountSettings.activeSource === null
+    ? '选择独立配置来源'
+    : accountSettings.activeSource === 'manualApi'
+      ? modelSource.manual.serviceName.trim() || '手动配置 API'
+      : accountSourceLabel(accountSettings.activeSource);
+  const currentSourceDetail = accountSettings.activeSource === null
+    ? '独立配置只使用 ChatGPT 登录或手动 API；本机配置由“持续跟随本机”提供。'
+    : accountSettings.activeSource === 'manualApi'
+      ? [
+          modelSource.manual.model.trim(),
+          modelSource.manual.baseUrl.trim()
+        ].filter(Boolean).join(' · ') || '尚未填写 Base URL、模型池和 API Key'
+      : accountSettings.activeSourceStatus === 'checking'
+        ? '正在读取独立 Codex Home 的登录状态…'
+        : accountError
+          ? '无法读取独立 Codex Home 的账号状态'
+          : account?.requiresLogin && !account.localLoginDetected
+            ? '独立 Codex Home 中没有可用的登录态'
+            : account?.email || (account?.localLoginDetected ? '检测到本机登录态' : '已连接 ChatGPT');
+  const currentSourceStatusLabel = accountSettings.activeSource === null
+    ? '未选择'
     : accountSettings.activeSourceStatus === 'checking'
-      ? '正在读取独立 Codex Home 的登录状态…'
-      : accountError
-        ? '无法读取独立 Codex Home 的账号状态'
-        : account?.requiresLogin && !account.localLoginDetected
-          ? '独立 Codex Home 中没有可用的登录态'
-          : account?.email || (account?.localLoginDetected ? '检测到本机登录态' : '已连接 ChatGPT');
-  const currentSourceStatusLabel = accountSettings.activeSourceStatus === 'checking'
-    ? '正在检查'
-    : accountSettings.activeSourceStatus === 'ready'
-      ? accountSettings.activeSource === 'manualApi' ? '已配置' : '已连接'
-      : accountSettings.activeSource === 'manualApi' ? '未配置' : '不可用';
+      ? '正在检查'
+      : accountSettings.activeSourceStatus === 'ready'
+        ? accountSettings.activeSource === 'manualApi' ? '已配置' : '已连接'
+        : accountSettings.activeSource === 'manualApi' ? '未配置' : '不可用';
   const currentSourceMeta = accountSettings.effectiveMode === 'follow'
     ? codexHomeSync.lastSyncedAt
       ? `持续跟随本机 · 最近同步 ${timestampLabel(codexHomeSync.lastSyncedAt)}`
       : '持续跟随本机'
-    : accountSettings.activeSource === 'local'
-      ? '独立 Codex Home 中的本机配置副本'
+    : accountSettings.activeSource === null
+      ? '请选择 ChatGPT 登录或手动配置 API'
       : accountSettings.activeSource === 'chatgpt'
         ? '使用独立 Codex Home 中的 ChatGPT 登录'
         : 'Codex Responses API 兼容配置';
+  const normalizedManualBaseUrl = manualBaseUrl.trim().replace(/\/+$/u, '');
+  const savedManualBaseUrl = modelSource.manual.baseUrl.trim().replace(/\/+$/u, '');
+  const manualModelsKeyReady = Boolean(
+    manualApiKey.trim() ||
+    (modelSource.hasApiKey && normalizedManualBaseUrl &&
+      normalizedManualBaseUrl === savedManualBaseUrl)
+  );
+  const sourcePickerVisible = sourcePickerOpen || accountSettings.activeSource === null;
+  const globalModelsForDisplay = manualEditorOpen ? selectedManualModels : models;
+  const globalModelSelectValue = manualEditorOpen ? manualDefaultModel : globalModelDraft;
 
   return (
     <section className="settings-page system-settings-page" aria-label="系统设置">
@@ -6354,7 +6648,7 @@ function AccountSettingsPage({
         <div>
           <div className="eyebrow">RAMBO</div>
           <h1>系统设置</h1>
-          <p>集中管理账号、模型与权限、全局资源和全部定时任务。</p>
+          <p>集中管理模型服务、模型与权限初值、全局资源和全部定时任务。</p>
         </div>
         <span className="app-version">Rambo {appVersion}</span>
       </div>
@@ -6372,7 +6666,7 @@ function AccountSettingsPage({
           id="system-panel-general" aria-labelledby="system-tab-general">
           <div className="settings-section">
             <div className="settings-section-title">
-              <div><h2>启动</h2><p>登录 macOS 后启动 Rambo，让本机任务继续运行。</p></div>
+              <div><h2>启动</h2><p>{loginAtStartupDescription(window.rambo.platform)}</p></div>
             </div>
             <label className="settings-toggle-row">
               <span><strong>登录时启动</strong><span>关闭 Rambo 窗口不会停止任务；退出 Rambo 才会停止本机服务。</span></span>
@@ -6380,12 +6674,12 @@ function AccountSettingsPage({
                 onChange={event => {
                   const enabled = event.target.checked;
                   setBusy(true);
-                  setError(null);
-                  setNotice(null);
+                  setGeneralError(null);
+                  setGeneralNotice(null);
                   void onSetLaunchAtLogin(enabled).then(() => {
-                    setNotice(enabled ? '已开启登录时启动。' : '已关闭登录时启动。');
+                    setGeneralNotice(enabled ? '已开启登录时启动。' : '已关闭登录时启动。');
                   }).catch(issue => {
-                    setError(toError(issue));
+                    setGeneralError(toError(issue));
                   }).finally(() => {
                     setBusy(false);
                   });
@@ -6394,9 +6688,9 @@ function AccountSettingsPage({
           </div>
           <MemoryManager botId={null} title="关于我"
             description="所有 Bot 可参考的共用个人资料。此处条目与各 Bot 的专属记忆分开管理。" />
-          {(error || notice) && (
-            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-              {error ?? notice}
+          {(generalError || generalNotice) && (
+            <div className={generalError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+              {generalError ?? generalNotice}
             </div>
           )}
         </div>
@@ -6425,14 +6719,25 @@ function AccountSettingsPage({
                     : runtime.source === 'packaged' ? ' · 内置' : ''}
                 </span>
                 <div className="runtime-card-actions">
-                  <button type="button" className="secondary-button" disabled={busy || runtimeUpdating || runtime.status === 'starting'}
+                  <button type="button" className="secondary-button"
+                    disabled={busy || taskRunning || runtimeUpdating || runtime.status === 'starting'}
+                    aria-describedby={taskRunning ? 'account-task-runtime' : undefined}
+                    title={taskRunning ? '有任务执行中，请先结束当前任务再更新 App Server' : undefined}
                     onClick={() => void updateRuntime()}>
                     {runtimeUpdating ? '更新中…' : '更新 App Server'}
                   </button>
-                  <button type="button" className="secondary-button runtime-restart-button" disabled={busy || runtimeUpdating || runtime.status === 'starting'}
+                  <button type="button" className="secondary-button runtime-restart-button"
+                    disabled={busy || taskRunning || runtimeUpdating || runtime.status === 'starting'}
+                    aria-describedby={taskRunning ? 'account-task-runtime' : undefined}
+                    title={taskRunning ? '有任务执行中，请先结束当前任务再重启运行时' : undefined}
                     onClick={() => void restart()}>{busy ? '处理中…' : '重启运行时'}</button>
                 </div>
               </div>
+              {taskRunning && (
+                <TaskRunningNotice id="account-task-runtime">
+                  有任务执行中。结束当前任务后，才能更新或重启 App Server，或修改代理。
+                </TaskRunningNotice>
+              )}
               {runtime.progress?.phase === 'downloading' && (
                 <div className="runtime-download-progress">
                   <div
@@ -6464,7 +6769,7 @@ function AccountSettingsPage({
               </div>
               <RuntimeProxySetting
                 value={runtimeProxy}
-                busy={busy || runtime.status === 'starting'}
+                busy={busy || taskRunning || runtime.status === 'starting'}
                 onChange={onSetRuntimeProxy}
               />
               {notificationUnavailable && (
@@ -6492,19 +6797,19 @@ function AccountSettingsPage({
                   'follow',
                   '持续跟随本机',
                   accountSettings.followAvailable
-                    ? '持续复制本机 Codex 的登录、配置和资源；Rambo 不反向修改本机。'
+                    ? '持续复制本机 Codex 的登录、配置和资源；切换后会更新全局模型池、默认模型和失效 Bot。'
                     : '未检测到本机 Codex。此模式保留，但当前不可选择。'
                 ],
                 [
                   'independent',
                   '独立配置',
-                  'Rambo 使用自己的 Codex Home，可登录 ChatGPT 或配置 API。'
+                  'Rambo 使用自己的 Codex Home，可登录 ChatGPT 或配置 API；来源变化会同步全局模型配置。'
                 ]
               ] as Array<[CodexHomeSyncMode, string, string]>).map(([mode, title, description]) => {
                 const selected = accountSettings.effectiveMode === mode;
                 const disabled = codexHomeSyncBusy ||
                   runtime.status === 'starting' ||
-                  (mode === 'follow' && !accountSettings.followAvailable);
+                  (mode === 'follow' && (!accountSettings.followAvailable || taskRunning));
                 return (
                   <button
                     key={mode}
@@ -6513,6 +6818,11 @@ function AccountSettingsPage({
                     aria-checked={selected}
                     className={'configuration-mode-option' + (selected ? ' selected' : '')}
                     disabled={disabled}
+                    aria-describedby={
+                      mode === 'follow' && taskRunning && accountSettings.followAvailable
+                        ? 'account-task-mode'
+                        : undefined
+                    }
                     onClick={() => void switchCodexHomeSync(mode)}
                   >
                     <span className="configuration-mode-radio" aria-hidden="true" />
@@ -6525,6 +6835,26 @@ function AccountSettingsPage({
                 );
               })}
             </div>
+            <p className="field-hint">
+              任何会改变实际模型目录的切换，都会同步更新全局模型池和默认模型；历史 Bot 仅在自己的模型失效时统一切换到新默认模型。
+            </p>
+            {taskRunning &&
+              accountSettings.effectiveMode === 'independent' &&
+              accountSettings.followAvailable && (
+              <TaskRunningNotice id="account-task-mode">
+                有任务执行中。结束当前任务后，才能切换到“持续跟随本机”。
+              </TaskRunningNotice>
+            )}
+            {(configurationError || configurationNotice) && (
+              <div
+                className={configurationError
+                  ? 'form-error settings-message'
+                  : 'form-saved settings-message'}
+                role="status"
+              >
+                {configurationError ?? configurationNotice}
+              </div>
+            )}
             <div className="configuration-mode-status" role="status">
               <span className={'status-dot status-' + (codexHomeSync.sourceDetected ? 'ready' : 'stopped')} />
               <span>
@@ -6562,7 +6892,7 @@ function AccountSettingsPage({
             )}
           </div>
 
-          {showCurrentSourceCard && (
+          {(showCurrentSourceCard || loginPending) && (
             <div className="settings-section current-source-section">
               <div className="settings-section-title">
                 <div>
@@ -6572,12 +6902,14 @@ function AccountSettingsPage({
               </div>
               <div
                 className={'current-source-card' + (currentSourceReady ? ' ready' : ' unavailable')}
-                data-source={accountSettings.activeSource}
+                data-source={accountSettings.activeSource ?? 'none'}
                 data-ready={currentSourceReady ? 'true' : 'false'}
               >
                 <div className="current-source-main">
                   <div className="current-source-mark" aria-hidden="true">
-                    {accountSettings.activeSource === 'manualApi' ? 'API' : 'C'}
+                    {accountSettings.activeSource === null
+                      ? '?'
+                      : accountSettings.activeSource === 'manualApi' ? 'API' : 'C'}
                   </div>
                   <div className="current-source-copy">
                     <div className="current-source-title">
@@ -6592,7 +6924,8 @@ function AccountSettingsPage({
                       <small>在线账号状态读取失败：{account.statusError}</small>
                     )}
                   </div>
-                  {accountSettings.effectiveMode === 'independent' && (
+                  {accountSettings.effectiveMode === 'independent' &&
+                    accountSettings.activeSource !== null && (
                     <div className="current-source-actions">
                       {accountSettings.activeSource === 'manualApi' && (
                         <button
@@ -6606,17 +6939,35 @@ function AccountSettingsPage({
                           }}
                         >编辑配置</button>
                       )}
-                      <button
-                        type="button"
-                        className="secondary-button current-source-change"
-                        disabled={modelSourceBusy || runtime.status === 'starting'}
-                        onClick={() => setSourcePickerOpen(open => !open)}
-                      >
-                        {sourcePickerOpen ? '收起选择' : '更换配置'}
-                      </button>
+                      {accountSettings.activeSource === 'chatgpt' &&
+                        accountSettings.activeSourceStatus === 'unavailable' &&
+                        !loginPending && (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={busy || taskRunning || runtime.status === 'starting'}
+                          aria-describedby={taskRunning ? 'account-task-source' : undefined}
+                          onClick={() => void login()}
+                        >登录 ChatGPT</button>
+                      )}
+                      {accountSettings.activeSource !== null && (
+                        <button
+                          type="button"
+                          className="secondary-button current-source-change"
+                          disabled={modelSourceBusy || runtime.status === 'starting'}
+                          onClick={() => setSourcePickerOpen(open => !open)}
+                        >
+                          {sourcePickerOpen ? '收起选择' : '更换配置'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
+                {taskRunning && (
+                  <TaskRunningNotice id="account-task-source">
+                    有任务执行中。结束当前任务后，才能登录 ChatGPT、切换模型来源或测试连接。
+                  </TaskRunningNotice>
+                )}
                 {accountSettings.effectiveMode === 'follow' && !currentSourceReady && (
                   <div className="current-source-alert" role="status">
                     <span>本机配置不可用。请切换到独立配置后登录 ChatGPT 或配置 API。</span>
@@ -6628,12 +6979,15 @@ function AccountSettingsPage({
                     >切换到独立配置</button>
                   </div>
                 )}
-                {accountSettings.effectiveMode === 'independent' && !currentSourceReady && (
+                {accountSettings.effectiveMode === 'independent' &&
+                  accountSettings.activeSource !== null &&
+                  !currentSourceReady &&
+                  !loginPending && (
                   <div className="current-source-alert" role="status">
                     当前来源不可用，请更换配置。
                   </div>
                 )}
-                <div className="current-source-test-row">
+                {accountSettings.activeSource !== null && <div className="current-source-test-row">
                   <div>
                     <strong>连接与延迟</strong>
                     <span>发送一次真实最小请求；失败不会自动切换当前来源。</span>
@@ -6643,26 +6997,46 @@ function AccountSettingsPage({
                     className="secondary-button connection-test-button"
                     disabled={
                       !currentSourceReady ||
+                      taskRunning ||
                       testingConnection ||
                       modelSourceBusy ||
                       runtime.status === 'starting'
                     }
+                    aria-describedby={taskRunning ? 'account-task-source' : undefined}
                     aria-busy={testingConnection || undefined}
                     onClick={() => void testConnection()}
                   >
                     {testingConnection && <span className="connection-test-spinner" aria-hidden="true" />}
                     <span>测试连接</span>
                   </button>
-                </div>
+                </div>}
                 {connectionTest && (
                   <div className={connectionTest.ok ? 'model-test-result success' : 'model-test-result error'} role="status">
                     <strong>{connectionTest.ok ? '连接可用' : '连接失败'} · 首响应 {connectionTest.latencyMs} ms</strong>
                     <span>{connectionTest.message}</span>
                     {connectionTest.configMayBeStale &&
                       (connectionTest.source === 'local' || connectionTest.source === 'chatgpt') && (
-                      <button type="button" className="secondary-button" disabled={busy}
+                      <button type="button" className="secondary-button"
+                        disabled={busy || taskRunning}
                         onClick={() => void restart()}>重启运行时后重试</button>
                     )}
+                  </div>
+                )}
+                {(accountActionError || accountActionNotice) && (
+                  <div
+                    className={accountActionError
+                      ? 'account-action-feedback error'
+                      : 'account-action-feedback notice'}
+                    role={accountActionError ? 'alert' : 'status'}
+                  >
+                    {accountActionError ?? accountActionNotice}
+                  </div>
+                )}
+                {loginPending && loginUrl && (
+                  <div className="login-fallback" role="status">
+                    <span>正在等待浏览器完成授权；页面已关闭时可重新打开。</span>
+                    <a href={loginUrl} target="_blank" rel="noreferrer">重新打开登录页面</a>
+                    <button type="button" className="secondary-button" disabled>等待授权…</button>
                   </div>
                 )}
                 {!manualEditorOpen && (modelSourceError || modelSourceNotice) && (
@@ -6672,23 +7046,20 @@ function AccountSettingsPage({
                 )}
               </div>
 
-              {sourcePickerOpen && accountSettings.effectiveMode === 'independent' && (
+              {sourcePickerVisible && accountSettings.effectiveMode === 'independent' && (
                 <div className="source-picker" aria-label="更换模型来源">
                   <div className="source-picker-heading">
-                    <strong>更换模型来源</strong>
-                    <span>切换后 Rambo 会重启独立 Codex 运行时；已有 Bot 的模型和权限不会被改写。</span>
+                    <strong>{accountSettings.activeSource === null ? '选择独立配置来源' : '更换模型来源'}</strong>
+                    <span>独立配置只使用 ChatGPT 登录或手动 API；本机配置请直接选择“持续跟随本机”。</span>
                   </div>
                   <div className="source-picker-options" role="radiogroup" aria-label="模型来源">
                     {([
-                      ['local', '本机 Codex 配置副本', '使用 Rambo 独立 Codex Home 中从本机复制的配置与登录态。'],
                       ['chatgpt', 'ChatGPT 登录', '在 Rambo 独立 Codex Home 中使用 ChatGPT 登录。'],
                       ['manualApi', '手动配置 API', '使用 Codex Responses API 兼容服务。']
                     ] as Array<[ModelSourceKind, string, string]>).map(([kind, title, description]) => {
-                      const status = kind === 'local'
-                        ? accountSettings.localCopyStatus
-                        : kind === 'chatgpt'
-                          ? accountSettings.chatgptStatus
-                          : accountSettings.manualApiStatus;
+                      const status = kind === 'chatgpt'
+                        ? accountSettings.chatgptStatus
+                        : accountSettings.manualApiStatus;
                       const selected = accountSettings.activeSource === kind;
                       const unavailable = status !== 'ready';
                       return (
@@ -6700,9 +7071,10 @@ function AccountSettingsPage({
                           className={'source-picker-option' + (selected ? ' selected' : '')}
                           disabled={
                             modelSourceBusy ||
-                            runtime.status === 'starting' ||
-                            (unavailable && kind !== 'manualApi')
+                            taskRunning ||
+                            runtime.status === 'starting'
                           }
+                          aria-describedby={taskRunning ? 'account-task-source' : undefined}
                           onClick={() => {
                             if (kind === 'manualApi' && unavailable) {
                               setSourcePickerOpen(false);
@@ -6724,7 +7096,7 @@ function AccountSettingsPage({
                               ? '检查中'
                               : status === 'ready'
                                 ? kind === 'manualApi' ? '已配置' : '可用'
-                                : kind === 'manualApi' ? '去配置' : '不可用'}
+                                : kind === 'manualApi' ? '去配置' : '去登录'}
                           </span>
                         </button>
                       );
@@ -6738,7 +7110,7 @@ function AccountSettingsPage({
             </div>
           )}
 
-          {accountSettings.showConfigurationEntry && (
+          {accountSettings.showConfigurationEntry && !loginPending && (
             <div className="settings-section source-empty-section">
               <div className="settings-section-title">
                 <div>
@@ -6751,18 +7123,14 @@ function AccountSettingsPage({
                   <strong>尚未配置模型来源</strong>
                   <span>登录 ChatGPT 会写入 Rambo 的独立 Codex Home；也可以使用自己的 API 服务。</span>
                   {accountError && <small>{accountError}</small>}
-                  {loginPending && loginUrl && (
-                    <div className="login-fallback" role="status">
-                      <span>浏览器没有打开或页面已关闭？</span>
-                      <a href={loginUrl} target="_blank" rel="noreferrer">重新打开登录页面</a>
-                    </div>
-                  )}
                 </div>
                 <div className="source-empty-actions">
                   <button
                     type="button"
                     className="primary-button"
-                    disabled={busy || loginPending}
+                    disabled={busy || taskRunning || loginPending}
+                    aria-describedby={taskRunning ? 'account-task-login' : undefined}
+                    title={taskRunning ? '有任务执行中，请先结束当前任务再登录 ChatGPT' : undefined}
                     onClick={() => void login()}
                   >{loginPending ? '等待授权…' : '登录 ChatGPT'}</button>
                   <button
@@ -6777,6 +7145,21 @@ function AccountSettingsPage({
                   >配置 API</button>
                 </div>
               </div>
+              {taskRunning && (
+                <TaskRunningNotice id="account-task-login">
+                  有任务执行中。结束当前任务后，才能登录 ChatGPT 或保存并使用手动 API 配置。
+                </TaskRunningNotice>
+              )}
+              {(accountActionError || accountActionNotice) && (
+                <div
+                  className={accountActionError
+                    ? 'account-action-feedback error'
+                    : 'account-action-feedback notice'}
+                  role={accountActionError ? 'alert' : 'status'}
+                >
+                  {accountActionError ?? accountActionNotice}
+                </div>
+              )}
             </div>
           )}
 
@@ -6797,6 +7180,11 @@ function AccountSettingsPage({
                   }}
                 >取消</button>
               </div>
+              {taskRunning && (
+                <TaskRunningNotice id="account-task-manual">
+                  有任务执行中。结束当前任务后，才能保存并使用手动 API 配置。
+                </TaskRunningNotice>
+              )}
               <div className="manual-model-form">
                 <label className="settings-field">
                   <span>服务名称</span>
@@ -6810,23 +7198,138 @@ function AccountSettingsPage({
                   <input className="text-input" type="url" value={manualBaseUrl} maxLength={2_000}
                     placeholder="https://api.example.com/v1"
                     disabled={modelSourceBusy || manualSaveState === 'saving'}
-                    onChange={event => setManualBaseUrl(event.target.value)} />
+                    onChange={event => updateManualBaseUrl(event.target.value)} />
                 </label>
-                <label className="settings-field">
-                  <span>模型 ID</span>
-                  <input className="text-input" value={manualModel} maxLength={500}
-                    placeholder="由服务商提供，例如 gpt-5"
-                    disabled={modelSourceBusy || manualSaveState === 'saving'}
-                    onChange={event => setManualModel(event.target.value)} />
-                </label>
-                <label className="settings-field">
+                <label className="settings-field manual-api-key-field">
                   <span>API Key</span>
                   <input className="text-input" type="password" value={manualApiKey} maxLength={16_384}
                     autoComplete="new-password" spellCheck={false}
                     placeholder={modelSource.hasApiKey ? '已保存；留空表示不修改' : 'sk-...'}
                     disabled={modelSourceBusy || manualSaveState === 'saving'}
-                    onChange={event => setManualApiKey(event.target.value)} />
+                    onChange={event => updateManualApiKey(event.target.value)} />
                 </label>
+                <div className="settings-field manual-model-catalog-field">
+                  <div className="manual-model-catalog-heading">
+                    <div className="manual-model-catalog-copy">
+                      <div className="manual-model-catalog-title">
+                        <span>模型标签</span>
+                        <span
+                          className={
+                            'manual-model-selection-count' +
+                            (selectedManualModels.length ? ' has-selection' : '')
+                          }
+                        >
+                          已选 {selectedManualModels.length}
+                        </span>
+                      </div>
+                      <p className="field-hint">
+                        勾选候选模型加入全局模型池；接口不可用时也可以手动添加模型 ID。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button manual-model-list-button"
+                      disabled={
+                        modelSourceBusy ||
+                        manualModelsBusy ||
+                        manualSaveState === 'saving' ||
+                        !manualBaseUrl.trim() ||
+                        !manualModelsKeyReady
+                      }
+                      aria-busy={manualModelsBusy || undefined}
+                      onClick={() => void fetchManualModels()}
+                    >
+                      {manualModelsBusy ? '正在获取…' : '获取模型列表'}
+                    </button>
+                  </div>
+                  {manualModelOptions.length > 0 ? (
+                    <div className="manual-model-tag-list" role="group" aria-label="可选模型">
+                      {manualModelOptions.map(option => {
+                        const checked = manualSelectedModelIds.has(option.id);
+                        return (
+                          <label
+                            className={'manual-model-tag' + (checked ? ' selected' : '')}
+                            key={option.id}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={event => toggleManualModel(option.id, event.target.checked)}
+                            />
+                            <span>
+                              <strong>{option.label}</strong>
+                              {option.label !== option.id && <small>{option.id}</small>}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="manual-model-tag-empty">
+                      <strong>还没有可选模型</strong>
+                      <span>先获取模型列表，或在下方手动添加模型 ID。</span>
+                    </div>
+                  )}
+                  <div className="manual-model-custom-block">
+                    <div className="manual-model-custom-heading">
+                      <span>自定义模型</span>
+                      <small>按回车快速添加</small>
+                    </div>
+                    <div className="manual-model-custom-row">
+                      <input
+                        className="text-input"
+                        aria-label="自定义模型 ID"
+                        value={manualModelInput}
+                        maxLength={500}
+                        placeholder="输入模型 ID，例如 gpt-5"
+                        disabled={modelSourceBusy || manualSaveState === 'saving'}
+                        onChange={event => setManualModelInput(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key !== 'Enter') return;
+                          event.preventDefault();
+                          addManualModelTag();
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={
+                          modelSourceBusy ||
+                          manualSaveState === 'saving' ||
+                          !manualModelInput.trim()
+                        }
+                        onClick={addManualModelTag}
+                      >添加模型 ID</button>
+                    </div>
+                  </div>
+                  <div className="manual-model-feedback-stack">
+                    {manualBaseUrl.trim() && !manualModelsKeyReady && (
+                      <small className="field-hint">Base URL 已变更，请填写对应的 API Key 后获取模型列表。</small>
+                    )}
+                    {manualModelsError && (
+                      <small className="manual-model-fetch-feedback error" role="status">{manualModelsError}</small>
+                    )}
+                    {manualModelsNotice && !manualModelsError && (
+                      <small className="manual-model-fetch-feedback" role="status">{manualModelsNotice}</small>
+                    )}
+                    {manualModelRefreshSummary && (
+                      <div className="manual-model-refresh-notice" role="status">
+                        <span aria-hidden="true" />
+                        <p>{manualModelRefreshSummary}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="manual-model-selection-footer">
+                    <span className={selectedManualModels.length ? 'is-ready' : ''}>
+                      {selectedManualModels.length
+                        ? `已勾选 ${selectedManualModels.length} 个模型`
+                        : '至少勾选一个模型才能保存'}
+                    </span>
+                    {selectedManualModels.length > 0 && (
+                      <span>默认模型：{manualDefaultModel || '待选择'}</span>
+                    )}
+                  </div>
+                </div>
                 <div className="manual-model-actions">
                   <AutoSaveIndicator state={manualSaveState} error={modelSourceError} />
                   <button
@@ -6834,11 +7337,14 @@ function AccountSettingsPage({
                     className="primary-button"
                     disabled={
                       modelSourceBusy ||
+                      taskRunning ||
                       manualSaveState === 'saving' ||
                       !manualBaseUrl.trim() ||
-                      !manualModel.trim() ||
+                      !selectedManualModels.length ||
+                      !selectedManualModels.some(option => option.id === manualDefaultModel) ||
                       (!modelSource.hasApiKey && !manualApiKey.trim())
                     }
+                    aria-describedby={taskRunning ? 'account-task-manual' : undefined}
                     onClick={() => void saveManualSource()}
                   >
                     {modelSourceBusy ? '正在切换…' : '保存并使用'}
@@ -6850,76 +7356,102 @@ function AccountSettingsPage({
               </p>
             </div>
           )}
-          {(error || notice) && (
-            <div className={error ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
-              {error ?? notice}
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'model' && (
-        <section className="system-settings-panel settings-tab-panel" role="tabpanel"
-          id="system-panel-model" aria-labelledby="system-tab-model">
-          <div className="settings-section-title">
-            <div><h2>新建 Bot 初值</h2><p>只决定之后新建 Bot 复制到的具体模型与权限。已有 Bot 完全独立，修改这里不会影响它们。</p></div>
-          </div>
-          {!executionDefaultsReady && (
-            <div className="form-error" role="status">
-              {executionDefaultsError ?? '模型配置尚未就绪。'}
-            </div>
-          )}
-          <div className="global-defaults-grid">
-            <section className="global-default-card global-model-card">
-              <label className="settings-field global-model-field">
-                <span>新建 Bot 模型</span>
-                <span className="select-input-control">
-                  <select className="text-input select-input" aria-label="新建 Bot 模型" value={globalModelDraft}
-                    disabled={!models.length}
-                    onChange={event => void updateGlobalModel(event.target.value)}>
-                    {!models.length && <option value="" disabled>模型列表暂不可用</option>}
-                    {globalModelDraft && !models.some(option => option.id === globalModelDraft) && (
-                      <option value={globalModelDraft}>当前配置 · {globalModelDraft}</option>
-                    )}
-                    {models.map(option => (
-                      <option value={option.id} key={option.id}>
-                        {option.label}{option.isDefault ? ' · 产品默认' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
-                </span>
-                <small className="field-hint">创建 Bot 时复制为一个明确值，之后互不联动。</small>
-                {modelError && <small className="field-hint">暂时无法读取模型列表：{modelError}</small>}
-              </label>
-            </section>
-            <section className="global-default-card global-permission-card" aria-labelledby="global-permission-title">
-              <div className="global-default-card-heading">
-                <h3 id="global-permission-title">新建 Bot 权限</h3>
-                <p className="field-hint">创建 Bot 时复制为一个明确权限，之后互不联动。</p>
+          <div className="settings-section global-defaults-section">
+            <div className="settings-section-title">
+              <div>
+                <h2>全局默认配置</h2>
+                <p>这里保存之后新建 Bot 的模型池、默认模型和权限初值；已有 Bot 保持独立。</p>
               </div>
-              <fieldset className="permission-fieldset global-permission-fieldset">
-                <legend className="sr-only">新建 Bot 权限</legend>
-                <div className="permission-choice-grid global-permission-options">
-                  <PermissionOption name="global-permission" value="fullAccess" selected={globalPermissionDraft}
-                    onSelect={value => void updateGlobalPermission(value)}
-                    title="完全访问" description="允许 Codex 在本机执行，不限制于 Bot 工作区。" />
-                  <PermissionOption name="global-permission" value="workspaceWrite" selected={globalPermissionDraft}
-                    onSelect={value => void updateGlobalPermission(value)}
-                    title="工作区写入" description="允许在 Bot 工作区读写，并使用网络。" />
-                  <PermissionOption name="global-permission" value="readOnly" selected={globalPermissionDraft}
-                    onSelect={value => void updateGlobalPermission(value)}
-                    title="只读" description="不允许写入文件。" />
-                </div>
-              </fieldset>
-            </section>
-          </div>
-          {(globalSaveState === 'saving' || globalSaveState === 'saved' || globalSaveState === 'error') && (
-            <div className="settings-autosave-row global-default-save-status">
-              <AutoSaveIndicator state={globalSaveState} error={globalSaveError} />
             </div>
-          )}
-        </section>
+            {!executionDefaultsReady && (
+              <div className="form-error" role="status">
+                {executionDefaultsError ?? '模型配置尚未就绪。'}
+              </div>
+            )}
+            <div className="global-defaults-grid">
+              <section className="global-default-card global-model-card">
+                <div className="global-default-card-heading">
+                  <h3>全局模型池</h3>
+                  <p className="field-hint">
+                    手动 API 中勾选的标签会进入这里；新 Bot 复制当前默认模型。
+                  </p>
+                </div>
+                {globalModelsForDisplay.length > 0 && (
+                  <div className="global-model-pool" aria-label="全局模型池">
+                    {globalModelsForDisplay.map(option => (
+                      <span className="global-model-pool-tag" key={option.id}>
+                        {option.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <label className="settings-field global-model-field">
+                  <span>全局默认模型</span>
+                  <span className="select-input-control">
+                    <select
+                      className="text-input select-input"
+                      aria-label="全局默认模型"
+                      value={globalModelSelectValue}
+                      disabled={!globalModelsForDisplay.length}
+                      onChange={event => {
+                        if (manualEditorOpen) setManualDefaultModel(event.target.value);
+                        else void updateGlobalModel(event.target.value);
+                      }}
+                    >
+                      {!globalModelsForDisplay.length && (
+                        <option value="" disabled>请先获取或手动添加模型</option>
+                      )}
+                      {!manualEditorOpen &&
+                        globalModelDraft &&
+                        !globalModelsForDisplay.some(option => option.id === globalModelDraft) && (
+                        <option value={globalModelDraft}>当前配置 · {globalModelDraft}</option>
+                      )}
+                      {globalModelsForDisplay.map(option => (
+                        <option value={option.id} key={option.id}>
+                          {option.label}{option.id === globalModelSelectValue ? ' · 默认' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+                  </span>
+                  <small className="field-hint">
+                    {manualEditorOpen
+                      ? '当前选择会随手动 API 配置一起保存。'
+                      : '创建 Bot 时复制为一个明确值，之后互不联动。'}
+                  </small>
+                  {modelError && !manualEditorOpen && (
+                    <small className="field-hint">暂时无法读取模型列表：{modelError}</small>
+                  )}
+                </label>
+              </section>
+              <section className="global-default-card global-permission-card" aria-labelledby="global-permission-title">
+                <div className="global-default-card-heading">
+                  <h3 id="global-permission-title">默认权限</h3>
+                  <p className="field-hint">新建 Bot 时复制为一个明确权限，已有 Bot 不受影响。</p>
+                </div>
+                <fieldset className="permission-fieldset global-permission-fieldset">
+                  <legend className="sr-only">默认权限</legend>
+                  <div className="permission-choice-grid global-permission-options">
+                    <PermissionOption name="global-permission" value="fullAccess" selected={globalPermissionDraft}
+                      onSelect={value => void updateGlobalPermission(value)}
+                      title="完全访问" description="允许 Codex 在本机执行，不限制于 Bot 工作区。" />
+                    <PermissionOption name="global-permission" value="workspaceWrite" selected={globalPermissionDraft}
+                      onSelect={value => void updateGlobalPermission(value)}
+                      title="工作区写入" description="允许在 Bot 工作区读写，并使用网络。" />
+                    <PermissionOption name="global-permission" value="readOnly" selected={globalPermissionDraft}
+                      onSelect={value => void updateGlobalPermission(value)}
+                      title="只读" description="不允许写入文件。" />
+                  </div>
+                </fieldset>
+              </section>
+            </div>
+            {(globalSaveState === 'saving' || globalSaveState === 'saved' || globalSaveState === 'error') && (
+              <div className="settings-autosave-row global-default-save-status">
+                <AutoSaveIndicator state={globalSaveState} error={globalSaveError} />
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {activeTab === 'resources' && (

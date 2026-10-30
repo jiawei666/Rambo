@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,11 +9,23 @@ import ts from 'typescript';
 const source = readFileSync(new URL('../../src/main/bot-secret-tools.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText.replace(
+  "from './platform/process'",
+  "from './platform/process.mjs'"
+);
+const processSource = readFileSync(
+  new URL('../../src/main/platform/process.ts', import.meta.url),
+  'utf8'
+);
+const compiledProcess = ts.transpileModule(processSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText;
 
 async function withModule(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-bot-secrets-test-'));
   const modulePath = join(directory, 'bot-secret-tools.mjs');
+  mkdirSync(join(directory, 'platform'));
+  writeFileSync(join(directory, 'platform/process.mjs'), compiledProcess, { mode: 0o600 });
   writeFileSync(modulePath, compiled, { mode: 0o600 });
   try {
     const module = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);

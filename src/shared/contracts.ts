@@ -1,3 +1,5 @@
+import type { DesktopPlatform } from './platform';
+
 export type PermissionMode = 'fullAccess' | 'workspaceWrite' | 'readOnly';
 export type MessageStatus = 'complete' | 'streaming' | 'failed' | 'interrupted';
 export type TurnDispatchStatus = 'queued' | 'dispatching' | 'dispatched' | 'needs_user' | 'failed';
@@ -47,7 +49,7 @@ export interface Bot {
   /** Timestamp of the latest pin action; null means not pinned. */
   pinnedAt: string | null;
   resourceIds: string[];
-  /** Whether completed Bot replies may show a macOS notification. */
+  /** Whether completed Bot replies may show a desktop system notification. */
   notificationsEnabled: boolean;
 }
 export type SecretScope = 'global' | 'bot';
@@ -349,16 +351,42 @@ export interface CodexHomeSyncState {
   warning: string | null;
   error: string | null;
 }
+export interface ModelOption { id: string; label: string; isDefault: boolean }
 export interface ManualApiConfig {
   serviceName: string;
   baseUrl: string;
   model: string;
 }
+export interface ManualApiSaveInput extends ManualApiConfig {
+  apiKey?: string;
+  /** Checked model tags that form the global model pool for manual API mode. */
+  models: ModelOption[];
+}
 export interface ModelSourceState {
   kind: ModelSourceKind;
   manual: ManualApiConfig;
+  /** Persisted manual API model pool, retained while another source is active. */
+  models: ModelOption[];
   /** Whether an encrypted API key is already available for the manual source. */
   hasApiKey: boolean;
+}
+export interface RefreshedBotModel {
+  id: string;
+  name: string;
+  previousModel: string;
+  model: string;
+}
+export interface ModelCatalogRefresh {
+  models: ModelOption[];
+  defaultModel: string;
+  refreshedBots: RefreshedBotModel[];
+}
+export interface ModelSourceChangeResult extends ModelSourceState {
+  /** Null while ChatGPT login is still required before the model catalog can be read. */
+  catalogRefresh: ModelCatalogRefresh | null;
+}
+export interface CodexHomeSyncChangeResult extends CodexHomeSyncState {
+  catalogRefresh: ModelCatalogRefresh | null;
 }
 export interface ModelConnectionTestResult {
   ok: boolean;
@@ -374,6 +402,12 @@ export interface ModelConnectionTestResult {
 export type VoiceState = 'connecting' | 'live' | 'stopping' | 'error';
 export interface VoiceSessionState { chatId: string; state: VoiceState; realtimeSessionId: string | null; error: string | null }
 export interface VoiceTranscript { chatId: string; role: 'user' | 'assistant'; text: string; itemId: string | null; done: boolean }
+export interface VoiceAudioChunk {
+  /** Base64-encoded signed 16-bit little-endian PCM. */
+  data: string;
+  sampleRate: number;
+  numChannels: number;
+}
 export interface AccountState {
   type: string | null;
   email: string | null;
@@ -389,7 +423,6 @@ export interface AccountLoginStart {
   browserOpened?: boolean;
   browserOpenError?: string | null;
 }
-export interface ModelOption { id: string; label: string; isDefault: boolean }
 export interface PlaywrightVerificationResult { verifiedAt: string }
 export interface Memory { id: string; botId: string | null; text: string; approved: boolean; createdAt: string }
 export type TurnModelSource = 'chat' | 'bot' | 'global' | 'unknown';
@@ -433,6 +466,17 @@ export interface Snapshot {
   activeTurns: Record<string, string>;
   /** Private or group-member chats whose user message is committed and whose turn start is still pending. */
   startingTurns: Record<string, boolean>;
+  /** Counts behind hasPendingWork, used for accurate UI copy and diagnostics. */
+  pendingWork: {
+    activeTurns: number;
+    startingTurns: number;
+    busyChats: number;
+    busyGroups: number;
+    unknownOperations: number;
+    voiceSessions: number;
+  };
+  /** True while a turn is starting/running or another in-process task operation is unsettled. */
+  hasPendingWork: boolean;
   /** Transient per-group member activity for the current process. */
   groupRuntimes: Record<string, GroupRuntimeState>;
   settings: Record<string, string>;
@@ -447,7 +491,7 @@ export interface Snapshot {
   recentMessages: Record<string, string>;
   /** Number of unread user-visible Bot messages per private chat. */
   unreadCounts: Record<string, number>;
-  /** Runtime macOS notification permission and acceptance-only notification evidence. */
+  /** Runtime desktop notification support/permission state and acceptance-only notification evidence. */
   notifications: {
     runtimeState: 'unknown' | 'not-determined' | 'denied' | 'authorized' | 'provisional';
     unavailableMessage: string | null;
@@ -483,6 +527,7 @@ export type AppEvent =
   | { type: 'voiceState'; session: VoiceSessionState }
   | { type: 'voiceStopFinished'; chatId: string; error: string | null }
   | { type: 'voiceSdp'; chatId: string; sdp: string }
+  | { type: 'voiceAudio'; chatId: string; audio: VoiceAudioChunk }
   | { type: 'voiceTranscript'; transcript: VoiceTranscript }
   | { type: 'voiceEndRequested'; chatId: string; reason: string }
   | { type: 'mcpElicitation'; prompt: McpElicitationPrompt }
@@ -507,6 +552,8 @@ export interface ComposerAttachmentCleanupResult {
 }
 
 export interface RamboAPI {
+  /** Synchronous desktop platform for platform-specific labels and layout. */
+  platform: DesktopPlatform;
   pathForFile(file: File): string;
   appVersion(): Promise<string>;
   snapshot(): Promise<Snapshot>;
@@ -585,10 +632,14 @@ export interface RamboAPI {
   account(): Promise<AccountState>;
   login(): Promise<AccountLoginStart>;
   models(): Promise<ModelOption[]>;
-  setModelSource(kind: ModelSourceKind): Promise<ModelSourceState>;
-  saveManualModelSource(input: ManualApiConfig & { apiKey?: string }): Promise<ModelSourceState>;
+  manualModels(input: Pick<ManualApiConfig, 'serviceName' | 'baseUrl'> & {
+    apiKey?: string;
+  }): Promise<ModelOption[]>;
+  setModelSource(kind: ModelSourceKind): Promise<ModelSourceChangeResult>;
+  saveManualModelSource(input: ManualApiSaveInput): Promise<ModelSourceChangeResult>;
+  syncModelCatalogForCurrentSource(): Promise<ModelCatalogRefresh>;
   testModelConnection(source?: ModelSourceKind): Promise<ModelConnectionTestResult>;
-  setCodexHomeSyncMode(mode: CodexHomeSyncMode): Promise<CodexHomeSyncState>;
+  setCodexHomeSyncMode(mode: CodexHomeSyncMode): Promise<CodexHomeSyncChangeResult>;
   startVoice(chatId: string, offerSdp: string): Promise<{ chatId: string; threadId: string }>;
   stopVoice(chatId: string, reason?: string): Promise<void>;
   restartRuntime(): Promise<void>;

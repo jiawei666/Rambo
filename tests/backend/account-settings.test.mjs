@@ -35,6 +35,7 @@ const manual = {
     baseUrl: 'http://127.0.0.1:19226/v1',
     model: 'gpt-5'
   },
+  models: [{ id: 'gpt-5', label: 'GPT-5', isDefault: true }],
   hasApiKey: true
 };
 
@@ -45,6 +46,7 @@ function derive(overrides = {}) {
     modelSource: {
       kind: 'local',
       manual: { serviceName: '', baseUrl: '', model: '' },
+      models: [],
       hasApiKey: false
     },
     account,
@@ -62,7 +64,7 @@ test('no native Codex falls back to independent and keeps follow visible but dis
   assert.equal(state.effectiveMode, 'independent');
   assert.equal(state.followAvailable, false);
   assert.equal(state.followUnavailableReason, '未检测到本机 Codex');
-  assert.equal(state.activeSource, 'local');
+  assert.equal(state.activeSource, null);
   assert.equal(state.showConfigurationEntry, true);
 });
 
@@ -99,6 +101,22 @@ test('ChatGPT account identity is shown only when ChatGPT is the active source',
   assert.equal(manualApi.activeSource, 'manualApi');
   assert.equal(manualApi.activeSourceStatus, 'ready');
   assert.equal(manualApi.showAccountStatus, false);
+});
+
+test('manual API is ready only when the selected default model is in its saved model pool', () => {
+  const ready = derive({
+    syncMode: 'independent',
+    modelSource: manual
+  });
+  assert.equal(ready.manualApiStatus, 'ready');
+
+  for (const models of [[], [{ id: 'other-model', label: 'Other Model', isDefault: false }]]) {
+    const stale = derive({
+      syncMode: 'independent',
+      modelSource: { ...manual, models }
+    });
+    assert.equal(stale.manualApiStatus, 'unavailable');
+  }
 });
 
 test('independent mode only shows the direct entry when every source is unusable', () => {

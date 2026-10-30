@@ -1,0 +1,71 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - package.json
+      - package-lock.json
+      - config/**
+      - scripts/**
+      - src/**
+      - native/**
+      - tests/backend/**
+      - .github/workflows/windows-build.yml
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - config/**
+      - scripts/**
+      - src/**
+      - native/**
+      - tests/backend/**
+      - .github/workflows/windows-build.yml
+
+jobs:
+  build-x64:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      - name: Windows platform tests
+        run: >-
+          node --test
+          tests/backend/platform-helpers.test.mjs
+          tests/backend/platform-paths.test.mjs
+          tests/backend/platform-process.test.mjs
+          tests/backend/platform-target.test.mjs
+          tests/backend/platform-archive.test.mjs
+          tests/backend/platform-fs.test.mjs
+          tests/backend/desktop-shell.test.mjs
+          tests/backend/login-item.test.mjs
+          tests/backend/system-indicators.test.mjs
+      - name: Build Windows NSIS release candidate
+        run: npm run release:package -- win32-x64
+      - name: Verify Windows artifact and runtime
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'dist/win-unpacked/Rambo.exe'
+          if (-not (Test-Path $exe)) { throw "Missing packaged entrypoint: $exe" }
+          Get-Item $exe | Format-List FullName,Length,VersionInfo
+          $releaseDir = Join-Path $PWD 'dist/release'
+          $artifacts = Get-ChildItem -Path $releaseDir -Recurse -File
+          if (-not $artifacts) { throw "Missing release artifacts: $releaseDir" }
+          $artifacts | Format-Table FullName,Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rambo-windows-x64-candidate
+          path: |
+            dist/release
+            dist/win-unpacked
+          if-no-files-found: error

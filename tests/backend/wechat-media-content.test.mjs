@@ -12,10 +12,17 @@ const require = createRequire(import.meta.url);
 const source = readFileSync(new URL('../../src/main/wechat-media-content.ts', import.meta.url), 'utf8');
 const xmldomUrl = pathToFileURL(require.resolve('@xmldom/xmldom')).href;
 const pdfjsUrl = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.mjs')).href;
+const platformProcessUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(
+  readFileSync(new URL('../../src/main/platform/process.ts', import.meta.url), 'utf8'),
+  {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+  }
+).outputText).toString('base64')}`;
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText
   .replace("from '@xmldom/xmldom'", `from '${xmldomUrl}'`)
+  .replace("from './platform/process'", `from '${platformProcessUrl}'`)
   .replace("import('pdfjs-dist/legacy/build/pdf.mjs')", `import('${pdfjsUrl}')`);
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`;
 const { WechatMediaContentProcessor } = await import(moduleUrl);

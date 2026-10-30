@@ -9,7 +9,7 @@ import type {
   ResultCardMessageContent, RoutineListItem,
   RoutineDefinition, RoutineExecutionMode, RoutineRun, RoutineRunStatus, ThreadModelSource, TurnModelSource,
   TurnActivity, TurnDispatchStatus, TurnPermissionSnapshot, TurnRecord, TurnReroute, TurnStatus,
-  BotSecret, SecretScope
+  BotSecret, SecretScope, ModelOption
 } from '../shared/contracts';
 import { encodeRobotAvatar, isCurrentRobotAvatar, parseRobotAvatar, ROBOT_EYE_STYLES } from '../shared/robot-avatar';
 import { followingRun, isUnsupportedIntervalSchedule, parseRoutineSchedule } from './routine-schedule';
@@ -2889,18 +2889,139 @@ export class Store {
     return { globalPermission: 'fullAccess', ...persisted };
   }
   setSetting(key: string, value: string): void { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  private normalizedExecutionModelCatalog(
+    models: ModelOption[],
+    defaultModel: string,
+    missingDefaultMessage = '默认模型必须来自已勾选的全局模型池'
+  ): ModelOption[] {
+    const normalizedDefault = defaultModel.trim();
+    if (!normalizedDefault) throw new Error('请从全局模型池选择一个默认模型');
+    const seen = new Set<string>();
+    const normalizedModels = models.flatMap((option): ModelOption[] => {
+      const id = typeof option?.id === 'string' ? option.id.trim() : '';
+      if (!id || id.length > 500 || seen.has(id)) return [];
+      seen.add(id);
+      const label = typeof option.label === 'string' && option.label.trim()
+        ? option.label.trim().slice(0, 500)
+        : id;
+      return [{ id, label, isDefault: id === normalizedDefault }];
+    });
+    if (!normalizedModels.length) throw new Error('请至少勾选一个模型后再保存');
+    if (!normalizedModels.some(option => option.id === normalizedDefault)) {
+      throw new Error(missingDefaultMessage);
+    }
+    return normalizedModels;
+  }
+  private staleBotModelsForCatalog(
+    normalizedModels: ModelOption[]
+  ): Array<{ id: string; name: string; previousModel: string }> {
+    const modelIds = new Set(normalizedModels.map(option => option.id));
+    return (this.db.prepare('SELECT id,name,model FROM bots').all() as Row[])
+      .map(row => ({
+        id: String(row.id),
+        name: String(row.name),
+        previousModel: typeof row.model === 'string' ? row.model.trim() : ''
+      }))
+      .filter(bot => !modelIds.has(bot.previousModel));
+  }
+  private syncExecutionModelCatalogDefault(model: string): void {
+    const raw = this.settings().defaultBotModels;
+    if (!raw?.trim()) return;
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return; }
+    if (!Array.isArray(parsed)) return;
+    const models = parsed.flatMap((item): ModelOption[] => {
+      if (!item || typeof item !== 'object') return [];
+      const record = item as Record<string, unknown>;
+      const id = typeof record.id === 'string' ? record.id.trim() : '';
+      if (!id || id.length > 500) return [];
+      const label = typeof record.label === 'string' && record.label.trim()
+        ? record.label.trim().slice(0, 500)
+        : id;
+      return [{ id, label, isDefault: id === model }];
+    });
+    if (!models.some(option => option.id === model)) return;
+    this.setSetting('defaultBotModels', JSON.stringify(models));
+  }
   setExecutionDefaultModel(model: string): void {
     const normalized = model.trim();
     if (!normalized) throw new Error('新建 Bot 的模型不能为空');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.setSetting('defaultBotModel', normalized);
+      this.syncExecutionModelCatalogDefault(normalized);
       this.setSetting('modelInitializationError', '');
       this.db.exec('COMMIT');
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
       throw error;
     }
+  }
+  setExecutionModelCatalog(models: ModelOption[], defaultModel: string): void {
+    const normalizedDefault = defaultModel.trim();
+    const normalizedModels = this.normalizedExecutionModelCatalog(models, normalizedDefault);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.setSetting('defaultBotModels', JSON.stringify(normalizedModels));
+      this.setSetting('defaultBotModel', normalizedDefault);
+      this.setSetting('modelInitializationError', '');
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+      throw error;
+    }
+  }
+  refreshBotModelsForCatalog(
+    models: ModelOption[],
+    defaultModel: string
+  ): Array<{ id: string; name: string; previousModel: string; model: string }> {
+    const normalizedDefault = defaultModel.trim();
+    const normalizedModels = this.normalizedExecutionModelCatalog(
+      models,
+      normalizedDefault,
+      '默认模型必须来自新的全局模型池'
+    );
+    const staleBots = this.staleBotModelsForCatalog(normalizedModels);
+    if (!staleBots.length) return [];
+    const update = this.db.prepare('UPDATE bots SET model=? WHERE id=?');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const bot of staleBots) update.run(normalizedDefault, bot.id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return staleBots.map(bot => ({ ...bot, model: normalizedDefault }));
+  }
+  applyExecutionModelCatalogAndRefreshBots(
+    models: ModelOption[],
+    defaultModel: string
+  ): {
+    models: ModelOption[];
+    defaultModel: string;
+    refreshedBots: Array<{ id: string; name: string; previousModel: string; model: string }>;
+  } {
+    const normalizedDefault = defaultModel.trim();
+    const normalizedModels = this.normalizedExecutionModelCatalog(models, normalizedDefault);
+    const staleBots = this.staleBotModelsForCatalog(normalizedModels);
+    const update = this.db.prepare('UPDATE bots SET model=? WHERE id=?');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.setSetting('defaultBotModels', JSON.stringify(normalizedModels));
+      this.setSetting('defaultBotModel', normalizedDefault);
+      this.setSetting('modelInitializationError', '');
+      for (const bot of staleBots) update.run(normalizedDefault, bot.id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+      throw error;
+    }
+    return {
+      models: normalizedModels,
+      defaultModel: normalizedDefault,
+      refreshedBots: staleBots.map(bot => ({ ...bot, model: normalizedDefault }))
+    };
   }
   setExecutionDefaults(input: { model: string; permission: PermissionMode }): void {
     const model = input.model.trim();
@@ -2909,6 +3030,7 @@ export class Store {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.setSetting('defaultBotModel', model);
+      this.syncExecutionModelCatalogDefault(model);
       this.setSetting('defaultBotPermission', input.permission);
       this.setSetting('modelInitializationError', '');
       this.db.exec('COMMIT');

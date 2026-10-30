@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
 import type { BotSecret } from '../shared/contracts';
+import {
+  commandEnvironment,
+  commandInvocation,
+  terminateProcessTree
+} from './platform/process';
 
 export const BOT_SECRET_TOOL_NAMESPACE = 'rambo_secrets';
 
@@ -285,10 +289,17 @@ export const runSecretCommand: SecretCommandRunner = async request => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
     try {
-      child = spawn(request.command, request.args, {
+      const environment = commandEnvironment(request.env);
+      const invocation = commandInvocation(request.command, request.args, {
+        environment,
+        cwd: request.cwd
+      });
+      child = spawn(invocation.command, invocation.args, {
         cwd: request.cwd,
-        env: commandEnvironment(request.env),
+        env: environment,
         shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe']
       });
@@ -344,26 +355,11 @@ export const runSecretCommand: SecretCommandRunner = async request => {
 };
 
 function terminateProcess(child: ReturnType<typeof spawn>): void {
-  if (!child.pid) return;
-  const signal = (value: NodeJS.Signals) => {
-    try {
-      if (process.platform !== 'win32') process.kill(-child.pid!, value);
-      else child.kill(value);
-    } catch { /* the process may have exited between timeout and signal delivery */ }
-  };
-  signal('SIGTERM');
-  setTimeout(() => signal('SIGKILL'), 500).unref();
-}
-
-function commandEnvironment(secretEnvironment: Record<string, string>): NodeJS.ProcessEnv {
-  const base: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-    HOME: process.env.HOME ?? homedir(),
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
-    LANG: process.env.LANG ?? 'zh_CN.UTF-8',
-    TZ: process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-  };
-  return { ...base, ...secretEnvironment };
+  terminateProcessTree(child, {
+    platform: process.platform,
+    processGroup: process.platform !== 'win32',
+    graceMs: 500
+  });
 }
 
 function inputObject(value: unknown): Record<string, unknown> {

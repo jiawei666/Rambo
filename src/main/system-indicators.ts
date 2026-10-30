@@ -58,19 +58,18 @@ export class SystemIndicators<TImage = unknown, TMenu = unknown> {
   constructor(private readonly deps: SystemIndicatorDeps<TImage, TMenu>) {}
 
   start(): void {
-    if (this.deps.platform !== 'darwin' || this.tray) return;
+    if ((this.deps.platform !== 'darwin' && this.deps.platform !== 'win32') || this.tray) return;
     const directory = this.deps.assetsDirectory;
     const names = readPngNames(directory);
     if (!names.length) {
       // A packaged build must keep the menu-bar indicator visible; a missing
       // resource is a packaging error, not a reason to silently disappear.
-      throw new Error(`菜单栏图标资源缺失：${directory}`);
+      throw new Error(`系统托盘图标资源缺失：${directory}`);
     }
     const load = (name: string) => {
-      // Template mode lets macOS tint the glyph for both menu-bar appearances.
-      // The PNGs use transparency for the eyes; their asset color is irrelevant.
-      const image = this.deps.loadImage(join(directory, name), true);
-      if (!image) throw new Error(`无法读取菜单栏图标：${name}`);
+      // Template mode is macOS-only. Windows uses the colored source image.
+      const image = this.deps.loadImage(join(directory, name), this.deps.platform === 'darwin');
+      if (!image) throw new Error(`无法读取系统托盘图标：${name}`);
       return image;
     };
     this.brand = load('brand.png');
@@ -80,7 +79,7 @@ export class SystemIndicators<TImage = unknown, TMenu = unknown> {
       load(filenames.has(`working-${index}.png`) ? `working-${index}.png` : 'working.png')
     );
     this.tray = this.deps.createTray(this.brand);
-    this.tray.setIgnoreDoubleClickEvents(true);
+    if (this.deps.platform === 'darwin') this.tray.setIgnoreDoubleClickEvents(true);
     this.tray.setToolTip('Rambo');
     this.renderMenu();
     this.scheduleIdle();

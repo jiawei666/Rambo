@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,7 +13,17 @@ const compiled = ts.transpileModule(source, {
 }).outputText.replace(
   "from 'node:sqlite'",
   "from 'node:sqlite'"
+).replace(
+  "from './platform/fs'",
+  "from './platform/fs.mjs'"
 );
+const platformFsSource = readFileSync(
+  new URL('../../src/main/platform/fs.ts', import.meta.url),
+  'utf8'
+);
+const compiledPlatformFs = ts.transpileModule(platformFsSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText;
 
 test('connector credentials do not depend on Electron safeStorage or Keychain', () => {
   assert.doesNotMatch(source, /safeStorage|safe-storage|find-(?:generic|internet)-password/iu);
@@ -24,6 +34,8 @@ async function withModule(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-credentials-test-'));
   const modulePath = join(directory, 'connector-credentials.mjs');
   const { writeFileSync } = await import('node:fs');
+  mkdirSync(join(directory, 'platform'));
+  writeFileSync(join(directory, 'platform', 'fs.mjs'), compiledPlatformFs, { mode: 0o600 });
   writeFileSync(modulePath, compiled, { mode: 0o600 });
   try {
     const module = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);

@@ -85,3 +85,49 @@ test('菜单栏空闲时播放多帧眨眼，运行态切换 working 且不显�
     rmSync(assetsDirectory, { recursive: true, force: true });
   }
 });
+
+test('Windows tray uses the colored image and leaves double-click behavior to the window shell', async () => {
+  const { SystemIndicators, cleanup } = await loadClass();
+  const assetsDirectory = fixture();
+  const loaded = [];
+  const timers = [];
+  let ignoredCalls = 0;
+  const tray = {
+    setImage() {},
+    setToolTip() {},
+    setContextMenu() {},
+    setIgnoreDoubleClickEvents() { ignoredCalls += 1; },
+    destroy() {}
+  };
+  const indicators = new SystemIndicators({
+    platform: 'win32',
+    assetsDirectory,
+    loadImage: (path, template) => {
+      loaded.push({ path, template });
+      return path;
+    },
+    createTray: () => tray,
+    createMenu: items => items,
+    showApp() {},
+    openBot() {},
+    quit() {},
+    schedule: (callback, delay) => {
+      const timer = { callback, delay };
+      timers.push(timer);
+      return timer;
+    },
+    cancel: timer => { timer.cancelled = true; },
+    random: () => 0.25
+  });
+  try {
+    indicators.start();
+    assert.equal(loaded.length > 0, true);
+    assert.equal(loaded.every(item => item.template === false), true);
+    assert.equal(ignoredCalls, 0);
+    assert.equal(timers[0].delay, 4_000);
+  } finally {
+    indicators.dispose();
+    cleanup();
+    rmSync(assetsDirectory, { recursive: true, force: true });
+  }
+});

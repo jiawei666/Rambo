@@ -21,7 +21,8 @@ export interface AccountSettingsState {
   effectiveMode: CodexHomeSyncMode;
   followAvailable: boolean;
   followUnavailableReason: string | null;
-  activeSource: ModelSourceKind;
+  /** Independent mode has no active source until ChatGPT or manual API is selected. */
+  activeSource: ModelSourceKind | null;
   activeSourceStatus: AccountSourceStatus;
   localCopyStatus: AccountSourceStatus;
   chatgptStatus: AccountSourceStatus;
@@ -59,7 +60,8 @@ function manualApiReady(modelSource: ModelSourceState): boolean {
   return Boolean(
     modelSource.manual.baseUrl.trim() &&
     modelSource.manual.model.trim() &&
-    modelSource.hasApiKey
+    modelSource.hasApiKey &&
+    modelSource.models.some(model => model.id === modelSource.manual.model)
   );
 }
 
@@ -75,17 +77,22 @@ export function deriveAccountSettingsState(
   const manualApiStatus: AccountSourceStatus = manualApiReady(input.modelSource)
     ? 'ready'
     : 'unavailable';
-  const activeSource: ModelSourceKind = effectiveMode === 'follow'
+  const activeSource: ModelSourceKind | null = effectiveMode === 'follow'
     ? 'local'
-    : input.modelSource.kind;
+    : input.modelSource.kind === 'chatgpt' || input.modelSource.kind === 'manualApi'
+      ? input.modelSource.kind
+      : null;
   const sourceStatuses: Record<ModelSourceKind, AccountSourceStatus> = {
     local: localCopyStatus,
     chatgpt: chatgptStatus,
     manualApi: manualApiStatus
   };
-  const anySourceReady = Object.values(sourceStatuses).some(status => status === 'ready');
+  const anySourceReady = effectiveMode === 'follow'
+    ? localCopyStatus === 'ready'
+    : chatgptStatus === 'ready' || manualApiStatus === 'ready';
   const showConfigurationEntry =
     effectiveMode === 'independent' &&
+    activeSource === null &&
     !anySourceReady &&
     !input.accountLoading;
 
@@ -94,7 +101,7 @@ export function deriveAccountSettingsState(
     followAvailable,
     followUnavailableReason: followAvailable ? null : '未检测到本机 Codex',
     activeSource,
-    activeSourceStatus: sourceStatuses[activeSource],
+    activeSourceStatus: activeSource ? sourceStatuses[activeSource] : 'unavailable',
     localCopyStatus,
     chatgptStatus,
     manualApiStatus,

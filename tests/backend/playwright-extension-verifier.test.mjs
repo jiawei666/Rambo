@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,7 +13,18 @@ const tempDirectory = mkdtempSync(join(tmpdir(), 'rambo-playwright-verifier-'));
 const compiledPath = join(tempDirectory, 'playwright-extension-verifier.mjs');
 const compiled = ts.transpileModule(readFileSync(source, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
-}).outputText;
+}).outputText.replace(
+  "from './platform/process'",
+  "from './platform/process.mjs'"
+);
+const processSource = readFileSync(
+  new URL('../../src/main/platform/process.ts', import.meta.url),
+  'utf8'
+);
+mkdirSync(join(tempDirectory, 'platform'));
+writeFileSync(join(tempDirectory, 'platform/process.mjs'), ts.transpileModule(processSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText);
 writeFileSync(compiledPath, compiled);
 const { PlaywrightExtensionVerifier } = await import(pathToFileURL(compiledPath).href);
 rmSync(tempDirectory, { recursive: true, force: true });

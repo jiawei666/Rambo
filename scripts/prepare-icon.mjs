@@ -2,9 +2,25 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { currentBuildTarget } from './platform-target.mjs';
+import { resolveFfmpegBinary } from './prepare-ffmpeg.mjs';
 
-if (process.platform !== 'darwin') throw new Error('macOS 图标打包需在 macOS 执行');
 const source = resolve('assets/branding/app-logo-source.png');
+const target = currentBuildTarget();
+const ffmpeg = (await resolveFfmpegBinary(target)).binary;
+
+execFileSync(ffmpeg, [
+  '-y',
+  '-i', source,
+  '-vf', 'scale=256:256:flags=lanczos',
+  '-frames:v', '1',
+  '-f', 'ico',
+  resolve('assets/branding/app.ico')
+], { stdio: 'ignore', windowsHide: true });
+console.log('已由指定原图生成 Windows ICO 图标');
+
+if (process.platform !== 'darwin') process.exit(0);
+
 const temporary = await mkdtemp(join(tmpdir(), 'rambo-icon-'));
 try {
   const set = join(temporary, 'Rambo.iconset');

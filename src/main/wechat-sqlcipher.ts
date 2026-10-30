@@ -8,6 +8,7 @@ import {
 } from 'node:crypto';
 
 export const WECHAT_PAGE_SIZE = 4096;
+export const WECHAT_PASSPHRASE_ITERATIONS = 256_000;
 const RESERVE_SIZE = 80;
 const SALT_SIZE = 16;
 const IV_SIZE = 16;
@@ -43,6 +44,28 @@ export function sqlCipherKeyBytes(value: WechatSqlCipherKey): Buffer {
     throw new WechatSqlCipherError('微信数据库密钥必须为 32 字节');
   }
   return bytes;
+}
+
+/**
+ * WeChat 4.1 derives each database key from an account-level 32-byte
+ * passphrase and that database's 16-byte header salt.
+ */
+export function deriveWechatDatabaseKey(
+  passphraseValue: WechatSqlCipherKey,
+  saltValue: Buffer | Uint8Array
+): Buffer {
+  const passphrase = sqlCipherKeyBytes(passphraseValue);
+  const salt = Buffer.from(saltValue);
+  if (salt.length !== SALT_SIZE) {
+    throw new WechatSqlCipherError('微信数据库 salt 必须为 16 字节');
+  }
+  return pbkdf2Sync(
+    passphrase,
+    salt,
+    WECHAT_PASSPHRASE_ITERATIONS,
+    32,
+    'sha512'
+  );
 }
 
 /**

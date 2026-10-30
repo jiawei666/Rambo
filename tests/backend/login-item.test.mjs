@@ -123,3 +123,30 @@ test('the Electron adapter only changes the system login item outside acceptance
     assert.deepEqual(acceptanceCalls, []);
   });
 });
+
+test('the packaged Windows adapter registers the executable with a hidden startup argument', async () => {
+  await withModules(async ({ loginItem }) => {
+    const calls = [];
+    const systemApp = {
+      isPackaged: true,
+      platform: 'win32',
+      getPath: name => name === 'exe' ? 'C:\\Program Files\\Rambo\\Rambo.exe' : '',
+      getLoginItemSettings: settings => {
+        calls.push({ operation: 'read', settings });
+        return { openAtLogin: false };
+      },
+      setLoginItemSettings: settings => calls.push({ operation: 'write', settings })
+    };
+    const adapter = loginItem.createElectronLoginItemAdapter(systemApp);
+    assert.equal(adapter.readOpenAtLogin(), false);
+    adapter.setOpenAtLogin(true);
+    const expected = {
+      path: 'C:\\Program Files\\Rambo\\Rambo.exe',
+      args: ['--hidden']
+    };
+    assert.deepEqual(calls, [
+      { operation: 'read', settings: expected },
+      { operation: 'write', settings: { openAtLogin: true, ...expected } }
+    ]);
+  });
+});

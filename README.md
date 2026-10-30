@@ -191,7 +191,7 @@ Rambo uses an isolated Codex Home for its own configuration, authentication, ses
 
 ## Project status
 
-The current release is **v0.1.8**. The acceptance catalog tracks **155 product rules**, **267 local test cases**, **142 executable cases**, and **125 explicit implementation gaps**.
+The current release is **v0.1.9**. The acceptance catalog tracks **156 product rules**, **272 local test cases**, **146 executable cases**, and **126 explicit implementation gaps**.
 
 The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
 

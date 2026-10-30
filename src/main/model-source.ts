@@ -1,5 +1,6 @@
 import type {
   ManualApiConfig,
+  ModelOption,
   ModelSourceKind,
   ModelSourceState
 } from '../shared/contracts';
@@ -41,13 +42,26 @@ export function modelSourceStateFrom(
   settings: Record<string, string>,
   hasApiKey: boolean
 ): ModelSourceState {
+  const kind = modelSourceKindFrom(settings.modelSource);
+  const manual = manualApiConfigFrom({
+    serviceName: settings.manualModelServiceName,
+    baseUrl: settings.manualModelBaseUrl,
+    model: settings.manualModelId
+  });
+  const catalogSetting = settings.manualModelCatalog?.trim()
+    ? settings.manualModelCatalog
+    : kind === 'manualApi'
+      ? settings.defaultBotModels
+      : '';
+  const models = modelOptionsFromSetting(catalogSetting)
+    .map(option => ({
+      ...option,
+      isDefault: option.id === manual.model
+    }));
   return {
-    kind: modelSourceKindFrom(settings.modelSource),
-    manual: manualApiConfigFrom({
-      serviceName: settings.manualModelServiceName,
-      baseUrl: settings.manualModelBaseUrl,
-      model: settings.manualModelId
-    }),
+    kind,
+    manual,
+    models,
     hasApiKey
   };
 }
@@ -68,7 +82,73 @@ export function needsInitialSetup(
 }
 
 export function manualModelSourceAvailable(state: ModelSourceState): boolean {
-  return Boolean(state.manual.baseUrl && state.manual.model && state.hasApiKey);
+  return Boolean(
+    state.manual.baseUrl &&
+    state.manual.model &&
+    state.models.some(option => option.id === state.manual.model) &&
+    state.hasApiKey
+  );
+}
+
+export function normalizeModelOptions(value: unknown): ModelOption[] {
+  const records = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as any).data)
+      ? (value as any).data
+      : value && typeof value === 'object' && Array.isArray((value as any).models)
+        ? (value as any).models
+        : null;
+  if (!records) return [];
+
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const record of records) {
+    const id = typeof record === 'string'
+      ? record.trim()
+      : record && typeof record === 'object' && typeof record.id === 'string'
+        ? record.id.trim()
+        : '';
+    if (!id || id.length > 500 || seen.has(id)) continue;
+    seen.add(id);
+    const label = record && typeof record === 'object'
+      ? [record.display_name, record.displayName, record.name, record.label]
+        .find(value => typeof value === 'string' && value.trim())
+      : '';
+    models.push({
+      id,
+      label: typeof label === 'string' ? label.trim().slice(0, 500) || id : id,
+      isDefault: Boolean(record && typeof record === 'object' &&
+        (record.is_default === true || record.isDefault === true || record.default === true))
+    });
+    if (models.length >= 1_000) break;
+  }
+  return models;
+}
+
+export function modelOptionsFromSetting(value: string | undefined): ModelOption[] {
+  if (!value?.trim()) return [];
+  try {
+    return normalizeModelOptions(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+export function validateManualApiModelCatalog(
+  modelsValue: unknown,
+  defaultModelValue: string
+): ModelOption[] {
+  const defaultModel = defaultModelValue.trim();
+  if (!defaultModel) throw new Error('请从全局模型池选择一个默认模型');
+  const models = normalizeModelOptions(modelsValue);
+  if (!models.length) throw new Error('请至少勾选一个模型后再保存');
+  if (!models.some(option => option.id === defaultModel)) {
+    throw new Error('默认模型必须来自已勾选的全局模型池');
+  }
+  return models.map(option => ({
+    ...option,
+    isDefault: option.id === defaultModel
+  }));
 }
 
 export function manualProviderConfig(config: ManualApiConfig): {
@@ -114,6 +194,51 @@ export type ManualApiTestOptions = {
   now?: () => number;
   timeoutMs?: number;
 };
+
+export async function listManualApiModels(
+  config: ManualApiConfig,
+  apiKey: string,
+  options: Pick<ManualApiTestOptions, 'fetchImpl' | 'timeoutMs'> = {}
+): Promise<ModelOption[]> {
+  const validated = validateManualApiConfig(config, false);
+  if (!validated.baseUrl) throw new Error('请填写手动 API 的 Base URL');
+  if (!apiKey.trim()) throw new Error('请先填写 API Key 再获取模型列表');
+
+  const endpoint = `${validated.baseUrl.replace(/\/+$/u, '')}/models`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+  try {
+    const response = await (options.fetchImpl ?? fetch)(endpoint, {
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        accept: 'application/json'
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const detail = await safeResponseError(response);
+      throw new Error(`获取模型列表失败：HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+    }
+    const body = await response.json().catch(() => null) as unknown;
+    const records = Array.isArray(body)
+      ? body
+      : body && typeof body === 'object' && Array.isArray((body as any).data)
+        ? (body as any).data
+        : body && typeof body === 'object' && Array.isArray((body as any).models)
+          ? (body as any).models
+          : null;
+    if (!records) throw new Error('模型列表接口没有返回 data 数组');
+    const models = normalizeModelOptions(records);
+    if (!models.length) throw new Error('模型列表为空，请确认 Base URL 与 API Key');
+    return models;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('获取模型列表超时');
+    throw new Error(error instanceof Error ? error.message : String(error));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export async function testManualModelApi(
   config: ManualApiConfig,

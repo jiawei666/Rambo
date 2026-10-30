@@ -1,14 +1,29 @@
 import { EventEmitter } from 'node:events';
-import { spawn, execFileSync, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { constants, createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { RuntimeHomeManager } from './runtime-home';
+import { RealtimeAudioBridge } from './realtime-audio-bridge';
+import { extractTarGz, listTarGzEntries } from './platform/archive';
+import { renameWithRetry } from './platform/fs';
+import {
+  pathDelimiter,
+  terminateProcessTree,
+  terminateProcessTreeAsync
+} from './platform/process';
+import {
+  isSafeArchiveEntry,
+  runtimeEntryPath,
+  runtimeManifestMatches,
+  runtimeTargetFor,
+  type RuntimeTarget
+} from './platform/runtime-target';
 import type {
   CodexHomeSyncMode,
   CodexHomeSyncState,
@@ -74,7 +89,6 @@ export type RuntimeResolverDeps = {
 };
 
 const RUNTIME_RELEASE_API = 'https://api.github.com/repos/openai/codex/releases/latest';
-const RUNTIME_ASSET_NAME = 'codex-app-server-package-aarch64-apple-darwin.tar.gz';
 
 function compareVersions(left: string, right: string): number {
   const parse = (value: string) => (value.match(/^\d+\.\d+\.\d+/) ?? [value])[0]
@@ -88,8 +102,11 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-async function isExecutable(path: string): Promise<boolean> {
+async function isExecutable(path: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
   try {
+    if (platform === 'win32') {
+      return (await stat(path)).isFile() && /\.exe$/iu.test(path);
+    }
     await access(path, constants.X_OK);
     return true;
   } catch {
@@ -102,16 +119,21 @@ function readManagedRuntime(
   deps: RuntimeResolverDeps,
   source: RuntimeLayout['source']
 ): RuntimeLayout | null {
+  let target: RuntimeTarget;
+  try {
+    target = runtimeTargetFor(deps.platform, deps.arch);
+  } catch {
+    return null;
+  }
   const manifestPath = join(candidate, 'codex-package.json');
   if (!(deps.exists ?? existsSync)(manifestPath)) return null;
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     const version = String(manifest.version ?? '');
-    const binaryName = basename(String(manifest.entrypoint ?? 'bin/codex'));
-    const binary = join(candidate, String(manifest.entrypoint ?? 'bin/codex'));
-    const pathDirectory = join(candidate, String(manifest.pathDir ?? 'codex-path'));
+    const binary = runtimeEntryPath(candidate, String(manifest.entrypoint ?? ''));
+    const pathDirectory = runtimeEntryPath(candidate, String(manifest.pathDir ?? ''));
     if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-    if (binaryName !== 'codex-app-server') return null;
+    if (!runtimeManifestMatches(manifest, version, target)) return null;
     return { binary, pathDirectory, version, source };
   } catch {
     return null;
@@ -150,7 +172,8 @@ export async function resolveRuntimeLayout(
   }
   candidates.sort((left, right) => compareVersions(right.version, left.version));
   const available: Array<{ layout: RuntimeLayout; manuallyUpdated: boolean }> = [];
-  const executable = deps.isExecutable ?? isExecutable;
+  const executable = deps.isExecutable ??
+    ((path: string) => isExecutable(path, deps.platform ?? process.platform));
   for (const candidate of candidates) {
     const layout = readManagedRuntime(candidate.root, deps, candidate.source);
     if (!layout) continue;
@@ -180,7 +203,11 @@ async function readDirectory(path: string): Promise<string[]> {
   }
 }
 
-export async function fetchLatestRuntimeRelease(): Promise<RuntimeRelease> {
+export async function fetchLatestRuntimeRelease(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): Promise<RuntimeRelease> {
+  const target = runtimeTargetFor(platform, arch);
   const response = await fetch(RUNTIME_RELEASE_API, {
     headers: {
       accept: 'application/vnd.github+json',
@@ -193,10 +220,10 @@ export async function fetchLatestRuntimeRelease(): Promise<RuntimeRelease> {
   const match = tag.match(/^rust-v(\d+\.\d+\.\d+)$/);
   if (!match) throw new Error(`Codex 最新发布标签无效：${tag || '未知'}`);
   const asset = Array.isArray(release.assets)
-    ? release.assets.find((candidate: any) => candidate?.name === RUNTIME_ASSET_NAME)
+    ? release.assets.find((candidate: any) => candidate?.name === target.asset)
     : null;
   if (!asset || typeof asset.browser_download_url !== 'string') {
-    throw new Error(`Codex ${match[1]} 没有 macOS ARM64 App Server 包`);
+    throw new Error(`Codex ${match[1]} 没有 ${target.target} App Server 包`);
   }
   const digest = typeof asset.digest === 'string' ? asset.digest : '';
   const sha256 = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : '';
@@ -215,11 +242,9 @@ async function installRuntimeRelease(
   release: RuntimeRelease,
   version: string,
   destination: string,
-  onProgress?: (progress: RuntimeProgress) => void
+  onProgress?: (progress: RuntimeProgress) => void,
+  target: RuntimeTarget = runtimeTargetFor()
 ): Promise<string> {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    throw new Error(`当前没有适用于 ${process.platform}-${process.arch} 的已校验 Codex 运行时`);
-  }
   if (!/^[a-f\d]{64}$/i.test(release.sha256)) throw new Error('Codex 运行时 SHA-256 格式无效');
   const temporary = await mkdtemp(join(tmpdir(), 'rambo-runtime-'));
   try {
@@ -267,12 +292,11 @@ async function installRuntimeRelease(
     if (digest.digest('hex') !== release.sha256) throw new Error('Codex 运行时 SHA-256 不匹配');
     const extracted = join(temporary, 'extracted');
     await mkdir(extracted);
-    const listing = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' })
-      .trim().split('\n').filter(Boolean);
-    if (listing.some(entry => entry.startsWith('/') || entry.split('/').includes('..'))) {
+    const listing = listTarGzEntries(archive, { platform: target.platform });
+    if (listing.some(entry => !isSafeArchiveEntry(entry))) {
       throw new Error('Codex 运行时归档路径不安全');
     }
-    execFileSync('tar', ['-xzf', archive, '-C', extracted]);
+    extractTarGz(archive, extracted, { platform: target.platform });
     const manifestPath = join(extracted, 'codex-package.json');
     if (!existsSync(manifestPath)) throw new Error('Codex 运行时归档布局无效');
     let manifest: any;
@@ -282,15 +306,13 @@ async function installRuntimeRelease(
       throw new Error('Codex 运行时 manifest 无法解析');
     }
     if (
-      manifest?.version !== version ||
-      manifest?.variant !== 'codex-app-server' ||
-      manifest?.entrypoint !== 'bin/codex-app-server'
+      !runtimeManifestMatches(manifest, version, target)
     ) {
       throw new Error(`Codex 运行时 manifest 与 ${version} 不匹配`);
     }
     await mkdir(dirname(destination), { recursive: true });
     await rm(destination, { recursive: true, force: true });
-    await rename(extracted, destination);
+    await renameWithRetry(extracted, destination);
     await writeFile(join(destination, 'rambo-runtime.json'), JSON.stringify({
       version,
       sha256: release.sha256,
@@ -337,6 +359,7 @@ export class CodexRuntime extends EventEmitter {
     progress: null
   };
   private readonly homeManager: RuntimeHomeManager;
+  private readonly realtimeAudioBridge: RealtimeAudioBridge;
   private process: ChildProcessWithoutNullStreams | null = null;
   private pending = new Map<number, Pending>();
   private lateResponses = new Map<number, (outcome: RequestOutcome<any>) => void>();
@@ -363,6 +386,9 @@ export class CodexRuntime extends EventEmitter {
         onState: state => this.emit('homeSync', state)
       }
     );
+    this.realtimeAudioBridge = new RealtimeAudioBridge({
+      proxyUrl: resolverDeps.proxyUrl
+    });
   }
 
   get homeSyncState(): CodexHomeSyncState {
@@ -394,10 +420,12 @@ export class CodexRuntime extends EventEmitter {
 
   dispose(): void {
     this.homeManager.dispose();
+    void this.realtimeAudioBridge.close();
   }
 
   setProxyUrl(proxyUrl: string | null | undefined): void {
     this.resolverDeps.proxyUrl = proxyUrl?.trim() || null;
+    this.realtimeAudioBridge.setProxyUrl(this.resolverDeps.proxyUrl);
   }
 
   setModelSourceConfig(
@@ -426,7 +454,12 @@ export class CodexRuntime extends EventEmitter {
     if (this.updating) throw new Error('App Server 正在更新，请等待当前更新完成');
     this.updating = true;
     try {
-      const release = await (this.resolverDeps.latestRuntimeRelease ?? fetchLatestRuntimeRelease)();
+      const target = runtimeTargetFor(
+        this.resolverDeps.platform ?? process.platform,
+        this.resolverDeps.arch ?? process.arch
+      );
+      const release = await (this.resolverDeps.latestRuntimeRelease ??
+        (() => fetchLatestRuntimeRelease(target.platform, target.arch)))();
       if (!/^\d+\.\d+\.\d+$/.test(release.version)) {
         throw new Error(`Codex App Server 版本无效：${release.version || '未知'}`);
       }
@@ -453,7 +486,8 @@ export class CodexRuntime extends EventEmitter {
 
       const destination = join(this.workingDirectory, 'runtime/codex', release.version);
       const existing = readManagedRuntime(destination, this.resolverDeps, 'cache');
-      const executable = this.resolverDeps.isExecutable ?? isExecutable;
+      const executable = this.resolverDeps.isExecutable ??
+        ((path: string) => isExecutable(path, target.platform));
       const alreadyInstalled = Boolean(
         existing &&
         existing.version === release.version &&
@@ -463,9 +497,9 @@ export class CodexRuntime extends EventEmitter {
         this.setProgress({ phase: 'downloading', downloadedBytes: 0, totalBytes: null });
         const download = this.resolverDeps.downloadRuntime ?? ((
           version: string,
-          target: string,
+          destinationPath: string,
           onProgress?: (progress: RuntimeProgress) => void
-        ) => installRuntimeRelease(release, version, target, onProgress));
+        ) => installRuntimeRelease(release, version, destinationPath, onProgress, target));
         await download(release.version, destination, this.setProgress.bind(this));
         const installed = readManagedRuntime(destination, this.resolverDeps, 'cache');
         if (!installed || !(await executable(installed.binary))) {
@@ -547,6 +581,7 @@ export class CodexRuntime extends EventEmitter {
   }
 
   private async startProcess(): Promise<void> {
+    const platform = this.resolverDeps.platform ?? process.platform;
     let layout: RuntimeLayout;
     try {
       layout = await resolveRuntimeLayout(
@@ -567,11 +602,20 @@ export class CodexRuntime extends EventEmitter {
       throw error;
     }
     this.state = { ...this.state, version: layout.version, source: layout.source };
+    let realtimeWsBaseUrl: string;
+    try {
+      realtimeWsBaseUrl = await this.realtimeAudioBridge.start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setState('error', message);
+      throw error;
+    }
     const args = ['--listen', 'stdio://', '--session-source', 'app-server'];
     args.push(
       '-c', 'cli_auth_credentials_store="file"',
       '-c', `sqlite_home=${JSON.stringify(codexHome)}`,
-      ...(this.resolverDeps.configOverrides?.() ?? [])
+      ...(this.resolverDeps.configOverrides?.() ?? []),
+      '-c', `experimental_realtime_ws_base_url=${JSON.stringify(realtimeWsBaseUrl)}`
     );
     const child = this.spawnProcess(layout.binary, args, {
       cwd: this.workingDirectory,
@@ -581,9 +625,15 @@ export class CodexRuntime extends EventEmitter {
         ...(this.resolverDeps.environment?.() ?? {}),
         CODEX_HOME: codexHome,
         CODEX_SQLITE_HOME: codexHome,
-        PATH: `${layout.pathDirectory}:${process.env.PATH ?? '/usr/bin:/bin'}`
+        PATH: `${layout.pathDirectory}${pathDelimiter(platform)}${
+          process.env.PATH ?? (platform === 'win32'
+            ? 'C:\\Windows\\System32;C:\\Windows'
+            : '/usr/bin:/bin')
+        }`
       },
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: platform !== 'win32'
     });
     this.process = child;
     // stderr 可能带用户内容或令牌，首批不整包持久化。
@@ -628,7 +678,10 @@ export class CodexRuntime extends EventEmitter {
         } else if (message.method) this.emit('notification', message.method, message.params ?? {});
       } catch {
         this.fail(child, new Error('Codex 返回了无法解析的协议数据'));
-        child.kill('SIGTERM');
+        terminateProcessTree(child, {
+          platform,
+          processGroup: platform !== 'win32'
+        });
       }
     });
 
@@ -647,6 +700,7 @@ export class CodexRuntime extends EventEmitter {
     } catch (error) {
       this.fail(child, error instanceof Error ? error : new Error(String(error)));
       await this.terminate(child);
+      await this.realtimeAudioBridge.close();
       throw error;
     }
   }
@@ -696,25 +750,11 @@ export class CodexRuntime extends EventEmitter {
 
   private async terminate(child: ChildProcessWithoutNullStreams): Promise<void> {
     try { child.stdin.end(); } catch { /* already closed */ }
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    await new Promise<void>(resolve => {
-      let force: ReturnType<typeof setTimeout> | undefined;
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (force) clearTimeout(force);
-        child.off('exit', finish);
-        child.off('close', finish);
-        resolve();
-      };
-      child.once('exit', finish);
-      child.once('close', finish);
-      force = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        // Keep this promise referenced; stop() must not return before the child exits.
-      }, 3_000);
-      if (child.exitCode !== null || child.signalCode !== null) finish();
+    const platform = this.resolverDeps.platform ?? process.platform;
+    await terminateProcessTreeAsync(child, {
+      platform,
+      processGroup: platform !== 'win32',
+      graceMs: 3_000
     });
   }
 
@@ -730,6 +770,7 @@ export class CodexRuntime extends EventEmitter {
     this.lateResponses.clear();
     this.stopping = Promise.resolve().then(async () => {
       if (child) await this.terminate(child);
+      await this.realtimeAudioBridge.close();
       this.setState('stopped');
     });
     try { await this.stopping; } finally { this.stopping = null; }

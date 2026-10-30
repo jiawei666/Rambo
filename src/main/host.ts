@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { closeSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   ActivityKind, ActivityStatus, AppEvent, AccountLoginStart, AccountState, Bot, GroupChat, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
@@ -78,6 +78,8 @@ import {
   runSecretCommand,
   secretMetadataForModel
 } from './bot-secret-tools';
+import { isPathInsideOrEqual } from './platform/paths';
+import { openReadOnlyNoFollow } from './platform/fs';
 
 type TrackedUnknownOperation = UnknownTurnOperation & {
   awaitingLateResponse: boolean;
@@ -1154,6 +1156,7 @@ export class Host {
     const globalResourceIds = resourceIdsSetting(settings.globalResourceIds);
     const globalDefaultResourceIds = resourceIdsSetting(settings.globalDefaultResourceIds)
       .filter(id => globalResourceIds.includes(id));
+    const pendingWork = this.pendingWorkState();
     return {
       codexHome: join(resolve(this.store.directory), 'codex-home'),
       codexHomeSync: this.runtime.homeSyncState,
@@ -1161,6 +1164,7 @@ export class Host {
       modelSource: this.modelSourceStatus?.() ?? {
         kind: 'local',
         manual: { serviceName: '', baseUrl: '', model: '' },
+        models: [],
         hasApiKey: false
       },
       bots: this.store.bots(), chats: this.store.chats(),
@@ -1179,6 +1183,8 @@ export class Host {
       settings: this.store.settings(), executionDefaults: this.executionDefaultsReadiness(),
       runtime: this.runtime.state, activeTurns: Object.fromEntries(this.activeTurns),
       startingTurns: Object.fromEntries([...this.startingTurns.keys()].map(chatId => [chatId, true])),
+      pendingWork,
+      hasPendingWork: Object.values(pendingWork).some(count => count > 0),
       groupRuntimes: Object.fromEntries(this.groupRuntimes),
       recentMessages: this.store.recentMessages(), unreadCounts: this.store.unreadCounts(),
       notifications: {
@@ -1195,6 +1201,21 @@ export class Host {
     if (this.notificationEvidence.length > 100) this.notificationEvidence.shift();
   }
   changed(): void { this.publish({ type: 'changed' }); }
+
+  hasPendingWork(): boolean {
+    return Object.values(this.pendingWorkState()).some(count => count > 0);
+  }
+
+  private pendingWorkState(): Snapshot['pendingWork'] {
+    return {
+      activeTurns: this.activeTurns.size,
+      startingTurns: this.startingTurns.size,
+      busyChats: this.busyChats.size,
+      busyGroups: this.busyGroups.size,
+      unknownOperations: this.unknownOperations.size,
+      voiceSessions: this.voiceSessions.size
+    };
+  }
 
   invalidateConnection(connectionId: string): void {
     this.wechatReader.invalidate(connectionId);
@@ -2269,7 +2290,7 @@ export class Host {
         ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型和权限，这两项会同时用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail 应用专用密码并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新连接凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
         : '当前上下文没有自管理写入工具；不要声称已修改自身资料、运行配置、记忆或 Routine，应引导用户在对应 Bot 私聊或设置中完成。',
       routineToolsEnabled
-        ? '长期记忆和职责变更按各自规则处理。只要从当前对话判断用户希望未来执行或重复执行某项工作，即使没说“创建定时任务”，也应主动整理创建 Routine。先结合对话、近期上下文、当前时间和当前 Bot 已保存的职责与记忆推断标题、执行内容、计划、触发时间、一次性或周期属性以及执行方式，不要逐项向用户索取已有或可可靠推断的信息。用户以“几分钟后”等相对时间委托时，先结合当前时间和用户时区换算成明确日期与 HH:mm，换算不含歧义时直接创建，不要要求用户重复提供本来能算出的时间。用户要一天内多个任意时刻时，只创建一条 Routine 并把全部 HH:mm 填入 triggerTimes，例如 00:00、01:30、04:50；不得拆成多条任务，也不得把“每 30 分钟”静默改成每天一次。先判断任务性质与执行约束，再自主选择执行方式：需要持续理解、沟通或开放判断时选 chat；目标确定、结果可计算或可核验、适合命令或脚本稳定复现时选 script；先理解判断、再执行确定性步骤时选 hybrid。确定性计算、日期换算、批量变换和重复命令通常满足 script 的条件，但不要仅因任务简单而默认 chat，也不要忽略交互、外部副作用、权限和结果核验要求。script/hybrid 要写清可复用模板。只有实际缺失关键信息，且该缺失会在安全或不可逆操作中造成实质歧义时，才向用户提出最短的必要问题；收到答复后再创建。Bot 自己想到的自动化建议仍先征求用户同意。Routine 创建成功后的本轮回复只确认任务名称、计划、执行方式和执行内容；这是登记未来工作，不要提前计算或回答未来结果。未来结果由实际 Routine 完成后按交接规则返回。一次性定义仅在结果成功交回 Bot 私聊后自动清理，失败或中断也按同样规则清理；不要要求用户或 Bot 再调用 delete_routine，已有运行记录、聊天结果和成果继续保留。任务由本机后台服务执行；窗口关闭不影响，Mac 真正睡眠或关机时不保证按时执行。工具成功返回后，以真实结果为准直接告知用户完成状态；不要继续声称“正在创建”或“稍等”，也不得调用 rambo_voice.end_current_voice_session，除非当前确实存在用户正在使用的 Live 语音会话。'
+        ? '长期记忆和职责变更按各自规则处理。只要从当前对话判断用户希望未来执行或重复执行某项工作，即使没说“创建定时任务”，也应主动整理创建 Routine。先结合对话、近期上下文、当前时间和当前 Bot 已保存的职责与记忆推断标题、执行内容、计划、触发时间、一次性或周期属性以及执行方式，不要逐项向用户索取已有或可可靠推断的信息。用户以“几分钟后”等相对时间委托时，先结合当前时间和用户时区换算成明确日期与 HH:mm，换算不含歧义时直接创建，不要要求用户重复提供本来能算出的时间。用户要一天内多个任意时刻时，只创建一条 Routine 并把全部 HH:mm 填入 triggerTimes，例如 00:00、01:30、04:50；不得拆成多条任务，也不得把“每 30 分钟”静默改成每天一次。先判断任务性质与执行约束，再自主选择执行方式：需要持续理解、沟通或开放判断时选 chat；目标确定、结果可计算或可核验、适合命令或脚本稳定复现时选 script；先理解判断、再执行确定性步骤时选 hybrid。确定性计算、日期换算、批量变换和重复命令通常满足 script 的条件，但不要仅因任务简单而默认 chat，也不要忽略交互、外部副作用、权限和结果核验要求。script/hybrid 要写清可复用模板。只有实际缺失关键信息，且该缺失会在安全或不可逆操作中造成实质歧义时，才向用户提出最短的必要问题；收到答复后再创建。Bot 自己想到的自动化建议仍先征求用户同意。Routine 创建成功后的本轮回复只确认任务名称、计划、执行方式和执行内容；这是登记未来工作，不要提前计算或回答未来结果。未来结果由实际 Routine 完成后按交接规则返回。一次性定义仅在结果成功交回 Bot 私聊后自动清理，失败或中断也按同样规则清理；不要要求用户或 Bot 再调用 delete_routine，已有运行记录、聊天结果和成果继续保留。任务由本机后台服务执行；窗口关闭不影响，电脑真正睡眠或关机时不保证按时执行。工具成功返回后，以真实结果为准直接告知用户完成状态；不要继续声称“正在创建”或“稍等”，也不得调用 rambo_voice.end_current_voice_session，除非当前确实存在用户正在使用的 Live 语音会话。'
         : '没有提供定时任务创建工具时，不要声称已保存周期任务定义。',
       memoryToolsEnabled
         ? `你自行整理并保存长期记忆，不需用户逐项批准。用户明确要求记住或修订时立即保存；日常交流告一段落后，也应把稳定且有后续价值的内容整理保存。\n\n${MEMORY_CLASSIFICATION_GUIDANCE}\n\n自管理工具的 delete_memory 只作用于当前 Bot 私有记忆，不能删除共享“关于我”或其他 Bot 记忆。只有收到工具 success=true 后才能告诉用户“已保存”或“已删除”；失败、没有结果或没有调用时必须如实说明未完成。`
@@ -3250,7 +3271,7 @@ export class Host {
         let commandCwd: string;
         try { commandCwd = realpathSync(requestedCwd); }
         catch { throw new Error('命令工作目录不存在或不可访问。'); }
-        if (commandCwd !== workspaceRoot && !commandCwd.startsWith(`${workspaceRoot}${sep}`)) {
+        if (!isPathInsideOrEqual(workspaceRoot, commandCwd)) {
           throw new Error('命令工作目录必须位于当前 Bot 工作区内。');
         }
         const environment: Record<string, string> = {};
@@ -4176,7 +4197,7 @@ export class Host {
         }
       }
       if (!candidate) return null;
-      descriptor = openSync(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptor = openReadOnlyNoFollow(candidate);
       const file = fstatSync(descriptor);
       if (!file.isFile()) {
         closeSync(descriptor);
@@ -4193,7 +4214,7 @@ export class Host {
         '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
       };
-      const fileName = candidate.slice(candidate.lastIndexOf(sep) + 1);
+      const fileName = basename(candidate);
       const mimeType = mimeTypes[extname(candidate).toLocaleLowerCase()] ?? 'application/octet-stream';
       return { descriptor, path: candidate, mimeType, size: file.size, fileName };
     } catch {
@@ -5685,6 +5706,22 @@ export class Host {
         waiter.resolve({ chatId, threadId: session.threadId });
       }
       this.publish({ type: 'voiceSdp', chatId, sdp: p.sdp });
+      return;
+    }
+    if (method === 'thread/realtime/outputAudio/delta') {
+      const data = p.audio?.data;
+      const sampleRate = p.audio?.sampleRate;
+      const numChannels = p.audio?.numChannels;
+      if (
+        typeof data !== 'string' || !data || data.length > 1_000_000 ||
+        !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 96_000 ||
+        !Number.isInteger(numChannels) || numChannels < 1 || numChannels > 2
+      ) return;
+      this.publish({
+        type: 'voiceAudio',
+        chatId,
+        audio: { data, sampleRate, numChannels }
+      });
       return;
     }
     if (method === 'thread/realtime/item/started' && p.item?.type === 'transcriptSegment') {

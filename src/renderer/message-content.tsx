@@ -28,6 +28,11 @@ import type {
   ResultCardMessageContent,
   VisualizationMessageContent
 } from '../shared/contracts';
+import {
+  fileManagerName,
+  revealInFileManagerDoneLabel,
+  revealInFileManagerLabel
+} from '../shared/platform';
 
 type TranscriptMessage = Message | GroupMessage;
 
@@ -800,8 +805,15 @@ function useAttachmentContextMenu(asset: AttachmentAsset | null | undefined) {
   const reveal = async () => {
     if (!asset) return;
     setPosition(null);
-    try { await window.rambo.revealMessageAsset(asset.messageId, asset.source); setError(''); setActionMessage('已在 Finder 中显示'); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : '无法在 Finder 中定位文件'); }
+    try {
+      await window.rambo.revealMessageAsset(asset.messageId, asset.source);
+      setError('');
+      setActionMessage(revealInFileManagerDoneLabel(window.rambo.platform));
+    } catch (cause) {
+      setError(cause instanceof Error
+        ? cause.message
+        : `无法在${fileManagerName(window.rambo.platform)}中定位文件`);
+    }
   };
 
   const menu = position && asset
@@ -829,7 +841,7 @@ function useAttachmentContextMenu(asset: AttachmentAsset | null | undefined) {
             <FileActionIcon kind="open" /><span>用本机应用打开</span>
           </button>
           <button type="button" role="menuitem" onClick={() => void reveal()}>
-            <FileActionIcon kind="folder" /><span>在 Finder 中显示</span>
+            <FileActionIcon kind="folder" /><span>{revealInFileManagerLabel(window.rambo.platform)}</span>
           </button>
         </> : <a role="menuitem" href={asset.resolved} target="_blank" rel="noreferrer">
           <FileActionIcon kind="open" /><span>打开</span>

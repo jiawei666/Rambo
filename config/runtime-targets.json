@@ -1,0 +1,35 @@
+{
+  "schema": "rambo.runtime-targets.v1",
+  "version": "0.165.0",
+  "releaseRepository": "openai/codex",
+  "targets": {
+    "darwin-arm64": {
+      "target": "aarch64-apple-darwin",
+      "asset": "codex-app-server-package-aarch64-apple-darwin.tar.gz",
+      "sha256": "db80061560c75c440efe11d347f5bebcf78aa895b40e38ca47623d8a37b41cd7",
+      "entrypoint": "bin/codex-app-server",
+      "pathDir": "codex-path"
+    },
+    "darwin-x64": {
+      "target": "x86_64-apple-darwin",
+      "asset": "codex-app-server-package-x86_64-apple-darwin.tar.gz",
+      "sha256": "d61cc6997e95d548dcc7c4ba4b71bd1395ea7407fc06f2a4f22a8d91ba9c5cbd",
+      "entrypoint": "bin/codex-app-server",
+      "pathDir": "codex-path"
+    },
+    "win32-x64": {
+      "target": "x86_64-pc-windows-msvc",
+      "asset": "codex-app-server-package-x86_64-pc-windows-msvc.tar.gz",
+      "sha256": "23a2b31fce7fcfe26da8ec8ea3ddc5d3e620c3a4e92cf8f89fa519604d10094e",
+      "entrypoint": "bin/codex-app-server.exe",
+      "pathDir": "codex-path"
+    },
+    "win32-arm64": {
+      "target": "aarch64-pc-windows-msvc",
+      "asset": "codex-app-server-package-aarch64-pc-windows-msvc.tar.gz",
+      "sha256": "b438db352fd89b04c9ae1bb919ca46bd7ebab89cb24b9d516f763c3bf4e4bcf8",
+      "entrypoint": "bin/codex-app-server.exe",
+      "pathDir": "codex-path"
+    }
+  }
+}

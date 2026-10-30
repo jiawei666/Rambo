@@ -12,7 +12,7 @@ import {
   stat
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 
 const MAX_FILES = 512;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
@@ -40,8 +40,9 @@ interface FileRecord {
 }
 
 function safeRelativePath(value: string): boolean {
-  return Boolean(value) && !value.startsWith('/') && !value.includes('\\') &&
-    !value.includes('\0') && value.split(sep).every(part => part && part !== '.' && part !== '..');
+  return Boolean(value) && !isAbsolute(value) && !win32.isAbsolute(value) &&
+    !value.includes('\0') &&
+    value.split(/[\\/]+/u).every(part => part && part !== '.' && part !== '..');
 }
 
 function boundedDescription(text: string): string {

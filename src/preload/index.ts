@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { RamboAPI, AppEvent } from '../shared/contracts';
+import { desktopPlatform } from '../shared/platform';
 
 const invoke = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`rambo:${method}`, ...args);
 const api: RamboAPI = {
+  platform: desktopPlatform(process.platform),
   pathForFile: file => webUtils.getPathForFile(file),
   appVersion: () => invoke('appVersion'),
   snapshot: () => invoke('snapshot'),
@@ -88,8 +90,10 @@ const api: RamboAPI = {
   account: () => invoke('account'),
   login: () => invoke('login'),
   models: () => invoke('models'),
+  manualModels: input => invoke('manualModels', input),
   setModelSource: kind => invoke('setModelSource', kind),
   saveManualModelSource: input => invoke('saveManualModelSource', input),
+  syncModelCatalogForCurrentSource: () => invoke('syncModelCatalogForCurrentSource'),
   testModelConnection: source => invoke('testModelConnection', source),
   setCodexHomeSyncMode: mode => invoke('setCodexHomeSyncMode', mode),
   startVoice: (id, offerSdp) => invoke('startVoice', id, offerSdp),

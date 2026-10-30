@@ -1,5 +1,6 @@
 import { lstatSync, realpathSync, rmSync } from 'node:fs';
-import { basename, join, sep } from 'node:path';
+import { basename, join } from 'node:path';
+import { isPathInside, samePath } from './platform/paths';
 
 function exists(path: string): boolean {
   try { lstatSync(path); return true; }
@@ -29,7 +30,8 @@ export function removeManagedBotDirectory(storeDirectory: string, botId: string)
   }
   const realBotsDirectory = realpathSync(botsDirectory);
   const realBotDirectory = realpathSync(botDirectory);
-  if (realBotDirectory !== join(realBotsDirectory, botId) || !realBotDirectory.startsWith(realBotsDirectory + sep)) {
+  if (!samePath(realBotDirectory, join(realBotsDirectory, botId)) ||
+      !isPathInside(realBotsDirectory, realBotDirectory)) {
     throw new Error('Bot 专属目录越出应用管理范围，已停止清理');
   }
   rmSync(botDirectory, { recursive: true, force: false });

@@ -1,6 +1,6 @@
 {
   "name": "rambo",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",
@@ -26,7 +26,15 @@
     "start": "node scripts/desktop.mjs preview",
     "runtime:prepare": "node scripts/prepare-runtime.mjs",
     "icon:prepare": "node scripts/prepare-icon.mjs",
-    "package:mac": "npm run icon:prepare && npm run runtime:prepare && npm run build && electron-builder --mac --dir && node scripts/sign-mac.mjs"
+    "package:mac": "node scripts/package-desktop.mjs darwin host dir",
+    "package:mac:arm64": "node scripts/package-desktop.mjs darwin arm64 dir",
+    "package:mac:x64": "node scripts/package-desktop.mjs darwin x64 dir",
+    "package:win": "node scripts/package-desktop.mjs win32 x64 nsis",
+    "package:win:arm64": "node scripts/package-desktop.mjs win32 arm64 nsis",
+    "package:win:dir": "node scripts/package-desktop.mjs win32 x64 dir",
+    "package:win:arm64:dir": "node scripts/package-desktop.mjs win32 arm64 dir",
+    "release:package": "node .agents/skills/rambo-release/scripts/package-release.mjs",
+    "release:verify": "node .agents/skills/rambo-release/scripts/verify-release.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
@@ -39,7 +47,6 @@
     "electron": "42.11.15",
     "electron-builder": "^26.0.0",
     "electron-vite": "6.0.0",
-    "ffmpeg-static": "5.3.0",
     "mermaid": "12.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -84,6 +91,25 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Rambo 使用麦克风进行已启用的唤醒与 Codex Live 对话。"
       }
+    },
+    "win": {
+      "icon": "assets/branding/app.ico",
+      "executableName": "Rambo",
+      "artifactName": "Rambo-v${version}-Windows-${arch}.${ext}",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Rambo",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {
@@ -93,5 +119,8 @@
     "mailparser": "^3.12.3",
     "nodemailer": "^10.2.1",
     "pdfjs-dist": "6.4.299"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "5.3.0"
   }
 }

@@ -34,10 +34,38 @@ function installAcceptanceRuntime(profile) {
   mkdirSync(join(runtimeRoot, 'codex-path'), { recursive: true });
   writeFileSync(join(runtimeRoot, 'bin/codex-app-server'), `#!/usr/bin/env node
 const { randomUUID } = require('node:crypto');
+const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const readline = require('node:readline');
 const input = readline.createInterface({ input: process.stdin });
-const turns = new Map();
+const statePath = process.env.RAMBO_FIXTURE_TURN_STATE || '';
+const loginStatePath = process.env.RAMBO_FIXTURE_LOGIN_STATE || '';
+let persistedTurns = {};
+if (statePath) {
+  try {
+    persistedTurns = JSON.parse(readFileSync(statePath, 'utf8'));
+  } catch {
+    persistedTurns = {};
+  }
+}
+const turns = new Map(Object.entries(persistedTurns));
 const autoCompletes = new Map();
+
+function persistTurns() {
+  if (!statePath) return;
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, JSON.stringify(Object.fromEntries(turns)));
+}
+
+// A new App Server process cannot still be running turns owned by the previous
+// process. Reflect that real lifecycle boundary so restart recovery sees the
+// turns as interrupted instead of waiting forever for completion notifications.
+for (const entries of turns.values()) {
+  for (const entry of entries) {
+    if (entry.status === 'inProgress') entry.status = 'interrupted';
+  }
+}
+persistTurns();
 
 function send(message) {
   process.stdout.write(JSON.stringify(message) + '\\n');
@@ -45,6 +73,22 @@ function send(message) {
 
 function notify(method, params) {
   send({ method, params });
+}
+
+function readLoginState() {
+  if (!loginStatePath) return 'connected';
+  try {
+    return readFileSync(loginStatePath, 'utf8').trim() || 'connected';
+  } catch {
+    return 'connected';
+  }
+}
+
+function scheduleFixtureLogin() {
+  if (!loginStatePath) return;
+  setTimeout(() => {
+    writeFileSync(loginStatePath, 'connected');
+  }, 300).unref();
 }
 
 function completeTurn(threadId, turnId, status = 'completed', delay = 30) {
@@ -61,6 +105,39 @@ function clearAutoComplete(threadId, turnId) {
   const timer = autoCompletes.get(key);
   if (timer) clearTimeout(timer);
   autoCompletes.delete(key);
+}
+
+function modelCatalog() {
+  let config = '';
+  try {
+    config = readFileSync(join(process.env.CODEX_HOME || '', 'config.toml'), 'utf8');
+  } catch {
+    config = '';
+  }
+  if (/^\\s*model\\s*=\\s*"local-fixture-model"\\s*$/mu.test(config)) {
+    return [{
+      id: 'local-fixture-model',
+      model: 'local-fixture-model',
+      displayName: 'Local Fixture Model',
+      isDefault: true
+    }, {
+      id: 'local-fixture-model-alt',
+      model: 'local-fixture-model-alt',
+      displayName: 'Local Fixture Model Alt',
+      isDefault: false
+    }];
+  }
+  return [{
+    id: 'fixture-model',
+    model: 'fixture-model',
+    displayName: 'Fixture Model',
+    isDefault: true
+  }, {
+    id: 'fixture-model-alt',
+    model: 'fixture-model-alt',
+    displayName: 'Fixture Model Alt',
+    isDefault: false
+  }];
 }
 
 function resultFor(method, params) {
@@ -81,25 +158,20 @@ function resultFor(method, params) {
     };
   }
   if (method === 'model/list') {
+    if (readLoginState() === 'required') {
+      throw new Error('ChatGPT login required');
+    }
     return {
-      data: [{
-        id: 'fixture-model',
-        model: 'fixture-model',
-        displayName: 'Fixture Model',
-        isDefault: true
-      }, {
-        id: 'fixture-model-alt',
-        model: 'fixture-model-alt',
-        displayName: 'Fixture Model Alt',
-        isDefault: false
-      }],
+      data: modelCatalog(),
       nextCursor: null
     };
   }
   if (method === 'account/read') {
+    if (readLoginState() === 'required') return { account: null };
     return { account: { type: 'chatgpt', email: 'fixture@example.com' } };
   }
   if (method === 'account/login/start') {
+    scheduleFixtureLogin();
     return { authUrl: 'https://example.com/rambo-fixture-login' };
   }
   if (method === 'skills/extraRoots/set') return {};
@@ -111,19 +183,24 @@ function resultFor(method, params) {
   if (method === 'thread/start') {
     const threadId = randomUUID();
     turns.set(threadId, []);
+    persistTurns();
     return { thread: { id: threadId }, model: 'fixture-model', modelProvider: 'openai' };
   }
   if (method === 'thread/resume') {
     const threadId = typeof params?.threadId === 'string' ? params.threadId : randomUUID();
     if (!turns.has(threadId)) turns.set(threadId, []);
+    persistTurns();
     return { thread: { id: threadId }, model: 'fixture-model', modelProvider: 'openai' };
   }
   if (method === 'thread/delete') {
     turns.delete(params?.threadId);
+    persistTurns();
     return {};
   }
   if (method === 'thread/turns/list') {
-    return { data: [...(turns.get(params?.threadId) ?? [])] };
+    const data = [...(turns.get(params?.threadId) ?? [])];
+    if (params?.sortDirection === 'desc') data.reverse();
+    return { data };
   }
   if (method === 'turn/start') {
     const threadId = typeof params?.threadId === 'string' ? params.threadId : '';
@@ -131,15 +208,22 @@ function resultFor(method, params) {
     const text = Array.isArray(params?.input)
       ? params.input.map(item => item?.text ?? '').join('\\n')
       : '';
-    const entry = { id: turnId, status: 'inProgress', items: [] };
+    const entry = {
+      id: turnId,
+      status: 'inProgress',
+      startedAt: Math.floor(Date.now() / 1000),
+      items: []
+    };
     const list = turns.get(threadId) ?? [];
     list.push(entry);
     turns.set(threadId, list);
+    persistTurns();
     if (text.includes('隐藏问候 seed') || !text.trim()) {
       const delay = text.trim() ? 2500 : 40;
       const timer = setTimeout(() => {
         autoCompletes.delete(threadId + ':' + turnId);
         entry.status = 'completed';
+        persistTurns();
         notify('turn/started', { threadId, turn: entry });
         completeTurn(threadId, turnId, 'completed', 40);
       }, delay);
@@ -157,6 +241,7 @@ function resultFor(method, params) {
     const entry = (turns.get(params?.threadId) ?? [])
       .find(turn => turn.id === params?.turnId);
     if (entry) entry.status = 'interrupted';
+    persistTurns();
     if (entry) completeTurn(params.threadId, entry.id, 'interrupted', 20);
     return {};
   }
@@ -519,6 +604,8 @@ export function createElectronTest(prefix) {
       const env = {
         ...process.env,
         RAMBO_ACCEPTANCE_RUN: run,
+        RAMBO_FIXTURE_TURN_STATE: join(profile, 'fixture-turn-state.json'),
+        RAMBO_FIXTURE_LOGIN_STATE: join(profile, 'fixture-login-state.txt'),
         HOME: home,
         CODEX_HOME: nativeCodexHome
       };

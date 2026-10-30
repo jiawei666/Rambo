@@ -8,12 +8,12 @@ import {
   mkdir,
   readdir,
   readFile,
-  rename,
   rm,
   writeFile
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { CodexHomeSyncMode, CodexHomeSyncState } from '../shared/contracts';
+import { renameWithRetry } from './platform/fs';
 
 /** Resources copied from the local Codex Home into Rambo's isolated copy. */
 export const CODEX_HOME_SYNC_RESOURCES = [
@@ -290,7 +290,7 @@ export class RuntimeHomeManager {
     const keyring = /^\s*cli_auth_credentials_store\s*=\s*["'](?:keyring|auto)["']/m.test(config);
     const authFile = await exists(join(this.state.sourcePath, 'auth.json'));
     if (keyring && !authFile) {
-      this.state.warning = '本机 Codex 使用 Keychain/auto 认证，无法复制 auth.json；请在 Rambo 内独立登录 ChatGPT 或配置 API。';
+      this.state.warning = '本机 Codex 使用系统凭证库/auto 认证，无法复制 auth.json；请在 Rambo 内独立登录 ChatGPT 或配置 API。';
     }
   }
 
@@ -331,7 +331,7 @@ export class RuntimeHomeManager {
     const temporary = `${this.stateFile}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600, flag: 'wx' });
-      await rename(temporary, this.stateFile);
+      await renameWithRetry(temporary, this.stateFile);
     } finally {
       await rm(temporary, { force: true });
     }
@@ -414,14 +414,14 @@ export class RuntimeHomeManager {
           backup: backupPath,
           hadBackup: destinationExists
         });
-        if (destinationExists) await rename(destination, backupPath);
-        if (stagedExists) await rename(staged, destination);
+        if (destinationExists) await renameWithRetry(destination, backupPath);
+        if (stagedExists) await renameWithRetry(staged, destination);
       }
     } catch (error) {
       for (const item of applied.reverse()) {
         await rm(item.destination, { recursive: true, force: true }).catch(() => {});
         if (item.hadBackup) {
-          await rename(item.backup, item.destination).catch(() => {});
+          await renameWithRetry(item.backup, item.destination).catch(() => {});
         }
       }
       throw error;
@@ -460,7 +460,7 @@ export class RuntimeHomeManager {
           const temporary = `${destination}.${randomUUID()}.rambo-import`;
           try {
             await copyFile(source, temporary, constants.COPYFILE_EXCL);
-            await rename(temporary, destination);
+            await renameWithRetry(temporary, destination);
           } finally {
             await rm(temporary, { force: true });
           }
@@ -474,7 +474,7 @@ export class RuntimeHomeManager {
         mode: 0o600,
         flag: 'wx'
       });
-      await rename(temporary, marker);
+      await renameWithRetry(temporary, marker);
     } finally {
       await rm(temporary, { force: true });
     }

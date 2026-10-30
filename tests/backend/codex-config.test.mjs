@@ -15,6 +15,15 @@ const modelSource = ts.transpileModule(
   }
 ).outputText;
 const modelSourceUrl = `data:text/javascript;base64,${Buffer.from(modelSource).toString('base64')}`;
+const platformFsUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(
+  await readFile(new URL('../../src/main/platform/fs.ts', import.meta.url), 'utf8'),
+  {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext
+    }
+  }
+).outputText).toString('base64')}`;
 const configSource = ts.transpileModule(
   await readFile(new URL('../../src/main/codex-config.ts', import.meta.url), 'utf8'),
   {
@@ -23,7 +32,9 @@ const configSource = ts.transpileModule(
       module: ts.ModuleKind.ESNext
     }
   }
-).outputText.replace("from './model-source'", `from '${modelSourceUrl}'`);
+).outputText
+  .replace("from './model-source'", `from '${modelSourceUrl}'`)
+  .replace("from './platform/fs'", `from '${platformFsUrl}'`);
 const module = await import(
   `data:text/javascript;base64,${Buffer.from(configSource).toString('base64')}`
 );

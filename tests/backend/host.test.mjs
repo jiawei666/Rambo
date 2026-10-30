@@ -46,7 +46,9 @@ const compiledHost = ts.transpileModule(hostSource, { compilerOptions }).outputT
   .replaceAll("from './routine-scheduler'", "from './routine-scheduler.mjs'")
   .replaceAll("from './chat-content-tools'", "from './chat-content-tools.mjs'")
   .replaceAll("from './wechat-tools'", "from './wechat-tools.mjs'")
-  .replaceAll("from './wechat-adapter'", "from './wechat-adapter.mjs'");
+  .replaceAll("from './wechat-adapter'", "from './wechat-adapter.mjs'")
+  .replaceAll("from './platform/paths'", "from './platform/paths.mjs'")
+  .replaceAll("from './platform/fs'", "from './platform/fs.mjs'");
 const compiledConnectors = ts.transpileModule(connectorsSource, { compilerOptions }).outputText
   .replaceAll("from './store'", "from './store.mjs'");
 const compiledExecutionConfig = ts.transpileModule(executionConfigSource, { compilerOptions }).outputText
@@ -68,7 +70,8 @@ const compiledBotResourceTools = ts.transpileModule(botResourceToolsSource, { co
 const compiledBotCredentialTools = ts.transpileModule(botCredentialToolsSource, { compilerOptions }).outputText
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
 const compiledBotSecretTools = ts.transpileModule(botSecretToolsSource, { compilerOptions }).outputText
-  .replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
+  .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
+  .replaceAll("from './platform/process'", "from './platform/process.mjs'");
 const compiledDirectMcp = ts.transpileModule(directMcpSource, { compilerOptions }).outputText
   .replaceAll("from './connector-credentials'", "from './connector-credentials.mjs'")
   .replaceAll("from './store'", "from './store.mjs'");
@@ -80,7 +83,14 @@ const compiledWechatAdapter = ts.transpileModule(wechatAdapterSource, { compiler
 const compiledWechatTools = ts.transpileModule(wechatToolsSource, { compilerOptions }).outputText
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
   .replaceAll("from './wechat-adapter'", "from './wechat-adapter.mjs'");
-const compiledConnectorCredentials = ts.transpileModule(compiledCredentialTools, { compilerOptions }).outputText;
+const compiledConnectorCredentials = ts.transpileModule(compiledCredentialTools, { compilerOptions }).outputText
+  .replaceAll("from './platform/fs'", "from './platform/fs.mjs'");
+const platformPathsSource = readFileSync(new URL('../../src/main/platform/paths.ts', import.meta.url), 'utf8');
+const platformFsSource = readFileSync(new URL('../../src/main/platform/fs.ts', import.meta.url), 'utf8');
+const platformProcessSource = readFileSync(new URL('../../src/main/platform/process.ts', import.meta.url), 'utf8');
+const compiledPlatformPaths = ts.transpileModule(platformPathsSource, { compilerOptions }).outputText;
+const compiledPlatformFs = ts.transpileModule(platformFsSource, { compilerOptions }).outputText;
+const compiledPlatformProcess = ts.transpileModule(platformProcessSource, { compilerOptions }).outputText;
 const compiledMailAdapter = ts.transpileModule(
   readFileSync(new URL('../../src/main/mail-adapter.ts', import.meta.url), 'utf8'),
   { compilerOptions }
@@ -237,6 +247,10 @@ function installCodexConnectionFixture(runtime, mode = 'completed') {
 
 async function withHost(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-host-test-'));
+  mkdirSync(join(directory, 'platform'));
+  writeFileSync(join(directory, 'platform', 'paths.mjs'), compiledPlatformPaths, { mode: 0o600 });
+  writeFileSync(join(directory, 'platform', 'fs.mjs'), compiledPlatformFs, { mode: 0o600 });
+  writeFileSync(join(directory, 'platform', 'process.mjs'), compiledPlatformProcess, { mode: 0o600 });
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule, { mode: 0o600 });
   writeFileSync(join(directory, 'routine-scheduler.mjs'), compiledScheduler, { mode: 0o600 });
   writeFileSync(join(directory, 'contracts.mjs'), ts.transpileModule(contractsSource, { compilerOptions }).outputText, { mode: 0o600 });
@@ -432,9 +446,13 @@ test('a version 12 duplicate chat migration keeps only the surviving thread in h
     const migratedHost = new (await import(`${pathToFileURL(join(directory, 'host.mjs')).href}?host-v12-${Date.now()}`)).Host(
       migrated, runtime, () => {}
     );
-    assert.equal(migratedHost.threadChats.get('thread-kept-v12'), chat.id);
-    assert.equal(migratedHost.threadChats.has('thread-hidden-v12'), false);
-    assert.deepEqual(migrated.allChats().map(value => value.id), [chat.id]);
+    try {
+      assert.equal(migratedHost.threadChats.get('thread-kept-v12'), chat.id);
+      assert.equal(migratedHost.threadChats.has('thread-hidden-v12'), false);
+      assert.deepEqual(migrated.allChats().map(value => value.id), [chat.id]);
+    } finally {
+      migratedHost.dispose();
+    }
   });
 });
 
@@ -4212,6 +4230,16 @@ test('stop is a separate host action from steering a running turn', async () => 
     const start = runtime.requests.find(request => request.method === 'turn/start');
     start.resolve({ turn: { id: 'turn-long', status: 'inProgress' } });
     await sending;
+    assert.equal(host.hasPendingWork(), true);
+    assert.equal(host.snapshot().hasPendingWork, true);
+    assert.deepEqual(host.snapshot().pendingWork, {
+      activeTurns: 1,
+      startingTurns: 0,
+      busyChats: 0,
+      busyGroups: 0,
+      unknownOperations: 0,
+      voiceSessions: 0
+    });
 
     const steering = host.send(chat.id, 'refine the current request');
     await waitFor(() => runtime.requests.some(request => request.method === 'turn/steer'));
@@ -4231,6 +4259,16 @@ test('stop is a separate host action from steering a running turn', async () => 
     });
     assert.equal(host.activeTurns.has(chat.id), false);
     assert.equal(store.turns(chat.id)[0].status, 'interrupted');
+    assert.equal(host.hasPendingWork(), false);
+    assert.equal(host.snapshot().hasPendingWork, false);
+    assert.deepEqual(host.snapshot().pendingWork, {
+      activeTurns: 0,
+      startingTurns: 0,
+      busyChats: 0,
+      busyGroups: 0,
+      unknownOperations: 0,
+      voiceSessions: 0
+    });
   });
 });
 
@@ -4844,6 +4882,36 @@ test('a new Live private thread receives secret management tools and autonomy in
     const realtimeStart = runtime.requests.find(request => request.method === 'thread/realtime/start');
     assert.equal(realtimeStart.params.threadId, store.chat(chat.id).threadId);
     await voiceStart;
+  });
+});
+
+test('Live output audio notifications are forwarded only for the active voice thread', async () => {
+  await withHost(async ({ store, runtime, host, events }) => {
+    const { chat } = store.createBot('Live audio Bot', 'a');
+    runtime.turnList = [{ status: 'completed' }];
+    const started = await host.startVoice(chat.id, 'v=0\r\n');
+
+    runtime.emit('notification', 'thread/realtime/outputAudio/delta', {
+      threadId: started.threadId,
+      audio: { data: 'AAE=', sampleRate: 24_000, numChannels: 1 }
+    });
+    runtime.emit('notification', 'thread/realtime/outputAudio/delta', {
+      threadId: started.threadId,
+      audio: { data: '', sampleRate: 24_000, numChannels: 1 }
+    });
+    runtime.emit('notification', 'thread/realtime/outputAudio/delta', {
+      threadId: 'different-thread',
+      audio: { data: 'AgI=', sampleRate: 24_000, numChannels: 1 }
+    });
+
+    assert.deepEqual(
+      events.filter(event => event.type === 'voiceAudio'),
+      [{
+        type: 'voiceAudio',
+        chatId: chat.id,
+        audio: { data: 'AAE=', sampleRate: 24_000, numChannels: 1 }
+      }]
+    );
   });
 });
 

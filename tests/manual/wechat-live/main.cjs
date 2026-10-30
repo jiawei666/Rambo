@@ -86,9 +86,20 @@ function compileModule(file, replacements = []) {
 async function loadDiagnosticModules() {
   const sqlCipherUrl = compileModule(join(projectRoot, 'src/main/wechat-sqlcipher.ts'));
   const xmldomUrl = pathToFileURL(require.resolve('@xmldom/xmldom')).href;
-  const wizardUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-wizard.ts'), [
+  const commonUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-common.ts'), [
+    ['./wechat-sqlcipher', sqlCipherUrl]
+  ]);
+  const macUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-macos.ts'), [
     ['./wechat-sqlcipher', sqlCipherUrl],
+    ['./wechat-connector-common', commonUrl],
     ['@xmldom/xmldom', xmldomUrl]
+  ]);
+  const windowsUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-windows.ts'), [
+    ['./wechat-connector-common', commonUrl]
+  ]);
+  const wizardUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-wizard.ts'), [
+    ['./wechat-connector-macos', macUrl],
+    ['./wechat-connector-windows', windowsUrl]
   ]);
   const adapterUrl = compileModule(join(projectRoot, 'src/main/wechat-adapter.ts'));
   const transportUrl = compileModule(join(projectRoot, 'src/main/wechat-worker-transport.ts'));

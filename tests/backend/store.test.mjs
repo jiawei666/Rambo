@@ -639,6 +639,162 @@ test('saving valid execution defaults clears a previous initialization error', a
   });
 });
 
+test('manual model catalog persists as the global pool and keeps one default', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.setExecutionModelCatalog([
+        { id: 'model-a', label: 'Model A', isDefault: false },
+        { id: 'model-b', label: 'Model B', isDefault: false }
+      ], 'model-a');
+      assert.equal(store.settings().defaultBotModel, 'model-a');
+      assert.deepEqual(JSON.parse(store.settings().defaultBotModels), [
+        { id: 'model-a', label: 'Model A', isDefault: true },
+        { id: 'model-b', label: 'Model B', isDefault: false }
+      ]);
+
+      store.setExecutionDefaultModel('model-b');
+      assert.equal(store.settings().defaultBotModel, 'model-b');
+      assert.deepEqual(JSON.parse(store.settings().defaultBotModels), [
+        { id: 'model-a', label: 'Model A', isDefault: false },
+        { id: 'model-b', label: 'Model B', isDefault: true }
+      ]);
+      assert.throws(
+        () => store.setExecutionModelCatalog([{ id: 'model-a', label: 'Model A' }], 'model-b'),
+        /默认模型必须来自/u
+      );
+      assert.throws(
+        () => store.setExecutionModelCatalog([], 'model-a'),
+        /至少勾选一个模型/u
+      );
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test('new manual model catalog refreshes only Bots whose saved model disappeared', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.setExecutionModelCatalog([
+        { id: 'model-a', label: 'Model A', isDefault: true }
+      ], 'model-a');
+      const stale = store.createBot('Legacy researcher', 'brand-a');
+      store.updateBotExecutionConfig(stale.bot.id, {
+        model: 'retired-model',
+        permission: 'workspaceWrite'
+      });
+      const valid = store.createBot('Current writer', 'brand-b');
+      const archived = store.createBot('Archived operator', 'brand-c');
+      store.updateBotExecutionConfig(archived.bot.id, {
+        model: 'archived-retired-model',
+        permission: 'readOnly'
+      });
+      store.setBotArchived(archived.bot.id, true);
+
+      const refreshed = store.refreshBotModelsForCatalog([
+        { id: 'model-b', label: 'Model B', isDefault: true },
+        { id: 'model-a', label: 'Model A', isDefault: false }
+      ], 'model-b');
+
+      assert.deepEqual(
+        refreshed.map(bot => ({
+          id: bot.id,
+          name: bot.name,
+          previousModel: bot.previousModel,
+          model: bot.model
+        })).sort((left, right) => left.name.localeCompare(right.name)),
+        [
+          {
+            id: archived.bot.id,
+            name: 'Archived operator',
+            previousModel: 'archived-retired-model',
+            model: 'model-b'
+          },
+          {
+            id: stale.bot.id,
+            name: 'Legacy researcher',
+            previousModel: 'retired-model',
+            model: 'model-b'
+          }
+        ]
+      );
+      assert.equal(store.bot(stale.bot.id).model, 'model-b');
+      assert.equal(store.bot(stale.bot.id).permission, 'workspaceWrite');
+      assert.equal(store.bot(valid.bot.id).model, 'model-a');
+      assert.equal(store.bot(archived.bot.id).model, 'model-b');
+      assert.equal(store.bot(archived.bot.id).permission, 'readOnly');
+      assert.throws(
+        () => store.refreshBotModelsForCatalog([
+          { id: 'model-a', label: 'Model A', isDefault: true }
+        ], 'model-b'),
+        /默认模型必须来自新的全局模型池/u
+      );
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test('source model catalog and stale Bot refresh commit atomically', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      store.setExecutionModelCatalog([
+        { id: 'api-model', label: 'API Model', isDefault: true }
+      ], 'api-model');
+      const stale = store.createBot('API user', 'brand-a');
+      store.updateBotExecutionConfig(stale.bot.id, {
+        model: 'api-model',
+        permission: 'workspaceWrite'
+      });
+      const valid = store.createBot('Local user', 'brand-b');
+      store.updateBotExecutionConfig(valid.bot.id, {
+        model: 'local-model',
+        permission: 'readOnly'
+      });
+
+      const result = store.applyExecutionModelCatalogAndRefreshBots([
+        { id: 'local-model', label: 'Local Model', isDefault: false },
+        { id: 'local-model-alt', label: 'Local Model Alt', isDefault: true }
+      ], 'local-model-alt');
+
+      assert.equal(result.defaultModel, 'local-model-alt');
+      assert.deepEqual(result.models, [
+        { id: 'local-model', label: 'Local Model', isDefault: false },
+        { id: 'local-model-alt', label: 'Local Model Alt', isDefault: true }
+      ]);
+      assert.deepEqual(result.refreshedBots.map(bot => ({
+        name: bot.name,
+        previousModel: bot.previousModel,
+        model: bot.model
+      })), [{
+        name: 'API user',
+        previousModel: 'api-model',
+        model: 'local-model-alt'
+      }]);
+      assert.equal(store.settings().defaultBotModel, 'local-model-alt');
+      assert.deepEqual(JSON.parse(store.settings().defaultBotModels), result.models);
+      assert.equal(store.bot(stale.bot.id).model, 'local-model-alt');
+      assert.equal(store.bot(stale.bot.id).permission, 'workspaceWrite');
+      assert.equal(store.bot(valid.bot.id).model, 'local-model');
+      assert.equal(store.bot(valid.bot.id).permission, 'readOnly');
+
+      assert.throws(
+        () => store.applyExecutionModelCatalogAndRefreshBots([
+          { id: 'local-model', label: 'Local Model', isDefault: true }
+        ], 'missing-model'),
+        /默认模型必须来自/u
+      );
+      assert.equal(store.settings().defaultBotModel, 'local-model-alt');
+      assert.equal(store.bot(stale.bot.id).model, 'local-model-alt');
+    } finally {
+      store.close();
+    }
+  });
+});
+
 test('group creation can be cancelled without persistence and submitted membership survives reopening outside Bot chats', async () => {
   await withDirectory(async (Store, directory) => {
     const actionsPath = join(directory, 'group-create-actions.mjs');

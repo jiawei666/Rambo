@@ -57,7 +57,11 @@ import {
   type CodexHomeSyncMode,
   type CodexHomeSyncState,
   type VoiceState,
+  type ManualApiConfig,
+  type ManualApiSaveInput,
   type ModelConnectionTestResult,
+  type ModelCatalogRefresh,
+  type ModelOption,
   type ModelSourceKind,
   type ModelSourceState
 } from '../shared/contracts';
@@ -74,21 +78,32 @@ import {
 } from '../shared/notifications';
 import type { PermissionMode } from '../shared/contracts';
 import {
+  listManualApiModels,
   manualApiConfigFrom,
   manualModelSourceAvailable,
   manualProviderConfig,
   modelSourceKindFrom,
   modelSourceStateFrom,
+  modelOptionsFromSetting,
   testManualModelApi,
-  validateManualApiConfig
+  validateManualApiConfig,
+  validateManualApiModelCatalog
 } from './model-source';
 import { applyManualProviderConfig, clearManualProviderConfig } from './codex-config';
+import {
+  applicationMenuTemplate,
+  browserWindowOptions
+} from './platform/desktop-shell';
+import { desktopPlatform, nativeExecutableName } from '../shared/platform';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'rambo-asset',
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 }]);
 app.setName('Rambo');
+const desktop = desktopPlatform(process.platform);
+if (desktop === 'win32') app.setAppUserModelId('local.rambo.desktop');
+const startHidden = process.argv.includes('--hidden');
 // 验收模式只接受台账创建的目录；出错就拒绝启动，不能回退到日常数据。
 let acceptanceRunId: string | null = null;
 if (process.env.RAMBO_ACCEPTANCE_RUN) {
@@ -148,8 +163,8 @@ function wechatMediaToolPaths(): { ffmpegPath: string | null; silkDecoderPath: s
   const packagedMedia = join(process.resourcesPath, 'media-tools');
   const developmentMedia = join(appRoot, 'out/media-tools');
   const ffmpegCandidates = app.isPackaged
-    ? [join(packagedMedia, 'ffmpeg')]
-    : [join(developmentMedia, 'ffmpeg')];
+    ? [join(packagedMedia, nativeExecutableName('ffmpeg', desktop))]
+    : [join(developmentMedia, nativeExecutableName('ffmpeg', desktop))];
   if (!app.isPackaged) {
     try {
       const require = createRequire(join(appRoot, 'package.json'));
@@ -158,10 +173,14 @@ function wechatMediaToolPaths(): { ffmpegPath: string | null; silkDecoderPath: s
     } catch { /* report a localized tool error when a video is requested */ }
   }
   const decoderCandidates = app.isPackaged
-    ? [join(packagedMedia, 'rambo-wechat-silk-decoder')]
+    ? [join(packagedMedia, nativeExecutableName('rambo-wechat-silk-decoder', desktop))]
     : [
-        join(developmentMedia, 'rambo-wechat-silk-decoder'),
-        join(appRoot, 'native/wechat-silk-decoder/target/release/rambo-wechat-silk-decoder')
+        join(developmentMedia, nativeExecutableName('rambo-wechat-silk-decoder', desktop)),
+        join(
+          appRoot,
+          'native/wechat-silk-decoder/target/release',
+          nativeExecutableName('rambo-wechat-silk-decoder', desktop)
+        )
       ];
   return {
     ffmpegPath: ffmpegCandidates.find(path => existsSync(path)) ?? null,
@@ -194,6 +213,71 @@ function manualModelApiKey(): string {
   return credential.apiKey;
 }
 
+function manualModelApiKeyFor(config: ManualApiConfig, providedApiKey?: string): string {
+  const apiKey = typeof providedApiKey === 'string' ? providedApiKey.trim() : '';
+  if (apiKey) return apiKey;
+  const current = modelSourceState();
+  if (current.manual.baseUrl !== config.baseUrl) {
+    throw new Error('Base URL 已变更，请重新填写 API Key 后再获取模型列表');
+  }
+  return manualModelApiKey();
+}
+
+function savedManualModelCatalog(): ModelOption[] {
+  const settings = store.settings();
+  const raw = settings.manualModelCatalog?.trim()
+    ? settings.manualModelCatalog
+    : modelSourceKindFrom(settings.modelSource) === 'manualApi'
+      ? settings.defaultBotModels
+      : '';
+  return modelOptionsFromSetting(raw);
+}
+
+function manualModelSourceAvailableForSwitch(): boolean {
+  const current = modelSourceState();
+  return manualModelSourceAvailable({
+    ...current,
+    kind: 'manualApi',
+    models: savedManualModelCatalog()
+  });
+}
+
+function chooseModelCatalogDefault(
+  models: ModelOption[],
+  preferredDefault?: string
+): string {
+  const ids = new Set(models.map(option => option.id.trim()).filter(Boolean));
+  const preferred = preferredDefault?.trim();
+  if (preferred && ids.has(preferred)) return preferred;
+  const declaredDefault = models.find(option => option.isDefault && ids.has(option.id.trim()));
+  if (declaredDefault) return declaredDefault.id.trim();
+  const currentDefault = store.settings().defaultBotModel?.trim();
+  if (currentDefault && ids.has(currentDefault)) return currentDefault;
+  const first = models.find(option => option.id.trim())?.id.trim();
+  if (!first) throw new Error('当前模型来源没有返回可用模型');
+  return first;
+}
+
+function applyModelCatalog(
+  models: ModelOption[],
+  preferredDefault?: string
+): ModelCatalogRefresh {
+  const defaultModel = chooseModelCatalogDefault(models, preferredDefault);
+  return store.applyExecutionModelCatalogAndRefreshBots(models, defaultModel);
+}
+
+async function syncCurrentModelCatalog(): Promise<ModelCatalogRefresh> {
+  const source = modelSourceState();
+  if (source.kind === 'manualApi') {
+    const models = savedManualModelCatalog();
+    if (!models.some(option => option.id === source.manual.model)) {
+      throw new Error('手动 API 的默认模型不在已保存的全局模型池中');
+    }
+    return applyModelCatalog(models, source.manual.model);
+  }
+  return applyModelCatalog(await host.models());
+}
+
 async function applyModelSourceRuntimeConfig(): Promise<void> {
   const source = modelSourceState();
   const configPath = join(store.directory, 'codex-home', 'config.toml');
@@ -209,17 +293,18 @@ async function applyModelSourceRuntimeConfig(): Promise<void> {
   runtime.setModelSourceConfig([], {});
 }
 
-function persistModelSourceConfig(input: {
-  serviceName?: string;
-  baseUrl?: string;
-  model?: string;
-  apiKey?: string;
-}): { previousKind: ModelSourceKind; previousSettings: Record<string, string> } {
+function persistModelSourceConfig(input: Partial<ManualApiSaveInput>): {
+  previousKind: ModelSourceKind;
+  previousSettings: Record<string, string>;
+  models: ModelOption[];
+  defaultModel: string;
+} {
   const config = validateManualApiConfig(manualApiConfigFrom({
     serviceName: typeof input.serviceName === 'string' ? input.serviceName : '',
     baseUrl: typeof input.baseUrl === 'string' ? input.baseUrl : '',
     model: typeof input.model === 'string' ? input.model : ''
   }));
+  const models = validateManualApiModelCatalog(input.models, config.model);
   const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
   const settings = store.settings();
   const previousKind = modelSourceKindFrom(settings.modelSource);
@@ -227,7 +312,10 @@ function persistModelSourceConfig(input: {
     manualModelServiceName: settings.manualModelServiceName ?? '',
     manualModelBaseUrl: settings.manualModelBaseUrl ?? '',
     manualModelId: settings.manualModelId ?? '',
-    manualModelCredentialRef: settings.manualModelCredentialRef ?? ''
+    manualModelCredentialRef: settings.manualModelCredentialRef ?? '',
+    manualModelCatalog: settings.manualModelCatalog ?? '',
+    defaultBotModel: settings.defaultBotModel ?? '',
+    defaultBotModels: settings.defaultBotModels ?? ''
   };
   const previousRef = previousSettings.manualModelCredentialRef.trim();
   if (!apiKey && !previousRef) throw new Error('请填写手动 API 的 API Key');
@@ -248,7 +336,8 @@ function persistModelSourceConfig(input: {
   store.setSetting('manualModelBaseUrl', config.baseUrl);
   store.setSetting('manualModelId', config.model);
   store.setSetting('manualModelCredentialRef', reference);
-  return { previousKind, previousSettings };
+  store.setSetting('manualModelCatalog', JSON.stringify(models));
+  return { previousKind, previousSettings, models, defaultModel: config.model };
 }
 
 function restoreManualModelSettings(previous: Record<string, string>): void {
@@ -256,10 +345,13 @@ function restoreManualModelSettings(previous: Record<string, string>): void {
   store.setSetting('manualModelBaseUrl', previous.manualModelBaseUrl!);
   store.setSetting('manualModelId', previous.manualModelId!);
   store.setSetting('manualModelCredentialRef', previous.manualModelCredentialRef!);
+  store.setSetting('manualModelCatalog', previous.manualModelCatalog!);
+  store.setSetting('defaultBotModel', previous.defaultBotModel!);
+  store.setSetting('defaultBotModels', previous.defaultBotModels!);
 }
 
 async function restartRuntimeForModelSource(): Promise<void> {
-  if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再切换模型来源');
+  if (host.hasPendingWork()) throw new Error('有任务执行中，请先停止任务再切换模型来源');
   await runtime.stop();
   try {
     await runtime.start();
@@ -271,10 +363,21 @@ async function restartRuntimeForModelSource(): Promise<void> {
   }
 }
 
+async function restoreRuntimeForModelSource(kind: ModelSourceKind): Promise<void> {
+  store.setSetting('modelSource', kind);
+  await applyModelSourceRuntimeConfig().catch(() => {});
+  await runtime.stop().catch(() => {});
+  await runtime.start().catch(() => {});
+  await host.syncMcpMetadata().catch(() => {});
+}
+
 async function testModelConnection(
   requestedSource?: ModelSourceKind
 ): Promise<ModelConnectionTestResult> {
   const current = modelSourceState();
+  if (host.hasPendingWork()) {
+    throw new Error('有任务执行中，请先停止任务再测试模型连接');
+  }
   if (requestedSource !== undefined && requestedSource !== current.kind) {
     throw new Error('只能测试当前生效的模型来源');
   }
@@ -764,7 +867,7 @@ async function applyPendingCodexHomeSync(): Promise<void> {
     !state.pending ||
     state.syncing ||
     state.decisionRequired ||
-    host.activeTurns.size > 0
+    host.hasPendingWork()
   ) return;
   codexHomeSyncApplying = (async () => {
     try {
@@ -1016,7 +1119,7 @@ function registerIPC(): void {
           type: 'connectorAuthProgress',
           connectionId: challenge.connectionId,
           phase: 'verifying',
-          message: '临时副本已清理，正在用本机读取服务验证聊天数据库。'
+          message: '账号密钥材料已在本机内存中处理，正在验证聊天数据库。'
         });
         const payload = {
           kind: 'wechat-sqlcipher' as const,
@@ -1115,7 +1218,7 @@ function registerIPC(): void {
         type: 'connectorAuthProgress',
         connectionId: challenge.connectionId,
         phase: 'finishing-capture',
-        message: '本轮已结束，正在验证候选密钥；微信副本与授权进程会保持运行，缺少密钥时可继续补抓。',
+        message: '本轮已结束，正在验证账号密钥材料；当前捕获会话保持运行，缺少密钥时可继续补抓。',
         canFinishCapture: false
       });
       return requested;
@@ -1496,7 +1599,7 @@ function registerIPC(): void {
           }
           if (!url.hostname) throw new Error('代理地址缺少主机名');
         }
-        if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再修改代理');
+        if (host.hasPendingWork()) throw new Error('有任务执行中，请先停止任务再修改代理');
         const previous = store.settings().runtimeProxy?.trim() ?? '';
         store.setSetting(key, proxy);
         runtime.setProxyUrl(proxy);
@@ -1511,7 +1614,17 @@ function registerIPC(): void {
           await runtime.start().catch(() => {});
           throw error;
         }
-      } else if (key === 'defaultBotModel') store.setExecutionDefaultModel(settingValue);
+      } else if (key === 'defaultBotModel') {
+        const source = modelSourceState();
+        if (
+          source.kind === 'manualApi' &&
+          source.models.length &&
+          !source.models.some(option => option.id === settingValue.trim())
+        ) {
+          throw new Error('全局默认模型必须从手动 API 的全局模型池中选择');
+        }
+        store.setExecutionDefaultModel(settingValue);
+      }
       else store.setSetting(key, settingValue);
       host.changed();
     },
@@ -1757,6 +1870,9 @@ function registerIPC(): void {
     },
     account: () => host.account(),
     login: async () => {
+      if (host.hasPendingWork()) {
+        throw new Error('有任务执行中，请先停止任务再登录 ChatGPT');
+      }
       const result = await host.login();
       // Automated runs must not open a real system browser. The renderer still
       // receives the URL and exercises the visible retry path.
@@ -1772,7 +1888,32 @@ function registerIPC(): void {
         };
       }
     },
-    models: () => host.models(),
+    models: async () => {
+      const source = modelSourceState();
+      if (source.kind === 'manualApi') {
+        if (!source.models.length) {
+          throw new Error('手动 API 尚未配置全局模型池');
+        }
+        return source.models.map(option => ({
+          ...option,
+          isDefault: option.id === source.manual.model
+        }));
+      }
+      return host.models();
+    },
+    manualModels: async inputValue => {
+      const input = object(inputValue);
+      const config = manualApiConfigFrom({
+        serviceName: typeof input.serviceName === 'string' ? input.serviceName : '',
+        baseUrl: typeof input.baseUrl === 'string' ? input.baseUrl : '',
+        model: ''
+      });
+      validateManualApiConfig(config, false);
+      return listManualApiModels(
+        config,
+        manualModelApiKeyFor(config, typeof input.apiKey === 'string' ? input.apiKey : '')
+      );
+    },
     setModelSource: async kindValue => {
       const kind = modelSourceKindFrom(kindValue);
       if (kind !== kindValue) throw new Error('无效的模型来源');
@@ -1784,31 +1925,39 @@ function registerIPC(): void {
       ) {
         throw new Error('持续跟随本机时只能使用本机 Codex 配置副本；请先切换到独立配置');
       }
-      if (kind !== current.kind && host.activeTurns.size > 0) {
+      if (kind !== current.kind && host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再切换模型来源');
       }
-      if (kind === 'manualApi' && !manualModelSourceAvailable(current)) {
-        throw new Error('请先填写并保存手动 API 的服务名称、Base URL、模型 ID 和 API Key');
+      if (kind === 'manualApi' && !manualModelSourceAvailableForSwitch()) {
+        throw new Error('请先保存手动 API 的服务名称、Base URL、API Key 和至少一个模型');
       }
       store.setSetting('modelSource', kind);
+      let catalogRefresh: ModelCatalogRefresh | null = null;
       try {
         await applyModelSourceRuntimeConfig();
         await restartRuntimeForModelSource();
+        try {
+          catalogRefresh = await syncCurrentModelCatalog();
+        } catch (error) {
+          const account = kind === 'chatgpt'
+            ? await host.account().catch(() => null)
+            : null;
+          if (!account?.requiresLogin) throw error;
+        }
       } catch (error) {
-        store.setSetting('modelSource', current.kind);
-        await applyModelSourceRuntimeConfig();
+        await restoreRuntimeForModelSource(current.kind);
         throw new Error(`模型来源切换失败，已保留原来源：${
           error instanceof Error ? error.message : String(error)
         }`);
       }
       host.changed();
-      return modelSourceState();
+      return { ...modelSourceState(), catalogRefresh };
     },
     setCodexHomeSyncMode: async (modeValue: CodexHomeSyncMode) => {
       if (modeValue !== 'follow' && modeValue !== 'independent') {
         throw new Error('无效的 Codex Home 同步模式');
       }
-      if (modeValue === 'follow' && host.activeTurns.size > 0) {
+      if (modeValue === 'follow' && host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再应用 Codex 配置同步');
       }
       const currentSource = modelSourceState();
@@ -1825,15 +1974,14 @@ function registerIPC(): void {
             await applyModelSourceRuntimeConfig();
           }
           const state = await runtime.setHomeSyncMode('follow');
+          const catalogRefresh = await syncCurrentModelCatalog();
           host.changed();
-          return state;
+          return { ...state, catalogRefresh };
         } catch (error) {
-          store.setSetting('modelSource', currentSource.kind);
-          await applyModelSourceRuntimeConfig().catch(() => {});
           if (previousMode === 'independent') {
             await runtime.setHomeSyncMode('independent', false).catch(() => {});
           }
-          await runtime.start().catch(() => {});
+          await restoreRuntimeForModelSource(currentSource.kind);
           throw new Error(`无法开启持续跟随，已保留原配置：${
             error instanceof Error ? error.message : String(error)
           }`);
@@ -1841,26 +1989,41 @@ function registerIPC(): void {
       }
       const state = await runtime.setHomeSyncMode(modeValue);
       host.changed();
-      return state;
+      return { ...state, catalogRefresh: null };
     },
     saveManualModelSource: async inputValue => {
-      const input = object(inputValue);
-      const { previousKind, previousSettings } = persistModelSourceConfig(input);
-      if (store.settings().modelSource === 'manualApi' && host.activeTurns.size === 0) {
-        try {
-          await applyModelSourceRuntimeConfig();
-          await restartRuntimeForModelSource();
-        } catch (error) {
-          restoreManualModelSettings(previousSettings);
-          store.setSetting('modelSource', previousKind);
-          await applyModelSourceRuntimeConfig();
-          throw new Error(`手动 API 配置保存失败，已保留原来源：${
-            error instanceof Error ? error.message : String(error)
-          }`);
-        }
+      if (host.hasPendingWork()) {
+        throw new Error('有任务执行中，请先停止任务再保存手动 API 配置');
       }
+      const input = object(inputValue);
+      const {
+        previousKind,
+        previousSettings,
+        models,
+        defaultModel
+      } = persistModelSourceConfig(input);
+      try {
+        store.setSetting('modelSource', 'manualApi');
+        await applyModelSourceRuntimeConfig();
+        await restartRuntimeForModelSource();
+        const catalogRefresh = applyModelCatalog(models, defaultModel);
+        host.changed();
+        return { ...modelSourceState(), catalogRefresh };
+      } catch (error) {
+        restoreManualModelSettings(previousSettings);
+        await restoreRuntimeForModelSource(previousKind);
+        throw new Error(`手动 API 配置保存失败，已保留原来源：${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
+    },
+    syncModelCatalogForCurrentSource: async () => {
+      if (host.hasPendingWork()) {
+        throw new Error('有任务执行中，请先停止任务再刷新全局模型配置');
+      }
+      const catalogRefresh = await syncCurrentModelCatalog();
       host.changed();
-      return modelSourceState();
+      return catalogRefresh;
     },
     testModelConnection: source => testModelConnection(source),
     startVoice: (chatId, offerSdp) => host.startVoice(id(chatId), text(offerSdp, 128_000)),
@@ -1869,7 +2032,7 @@ function registerIPC(): void {
       reason === undefined ? undefined : text(reason, 2_000)
     ),
     restartRuntime: async () => {
-      if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务');
+      if (host.hasPendingWork()) throw new Error('有任务执行中，请先停止任务');
       await runtime.stop(); await runtime.start();
       try {
         await host.syncMcpMetadata();
@@ -1878,9 +2041,9 @@ function registerIPC(): void {
       }
     },
     updateRuntime: async () => {
-      if (host.activeTurns.size) throw new Error('有任务执行中，请先停止任务再更新 App Server');
+      if (host.hasPendingWork()) throw new Error('有任务执行中，请先停止任务再更新 App Server');
       const result = await runtime.updateRuntime(() => {
-        if (host.activeTurns.size) {
+        if (host.hasPendingWork()) {
           throw new Error('App Server 已下载，但有任务开始执行；请停止任务后再次点击更新');
         }
       });
@@ -1902,12 +2065,11 @@ function registerIPC(): void {
 
 function showWindow(): void {
   if (window && !window.isDestroyed()) { window.show(); window.focus(); return; }
-  window = new BrowserWindow({
+  window = new BrowserWindow(browserWindowOptions(desktop, {
     title: acceptanceRunId ? `Rambo · 验收 ${acceptanceRunId}` : 'Rambo', width: 1100, height: 760, minWidth: 760, minHeight: 560,
-    backgroundColor: '#ffffff', titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
+    backgroundColor: '#ffffff',
     webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
-  });
+  }));
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
@@ -1933,18 +2095,22 @@ function showWindow(): void {
 }
 
 function installSystemIndicators(): void {
-  if (process.platform !== 'darwin' || acceptanceRunId) return;
+  if (acceptanceRunId) return;
   const assetsDirectory = join(app.getAppPath(), 'assets/branding/tray-frames');
   const indicators = new SystemIndicators<Electron.NativeImage, Electron.Menu>({
-    platform: process.platform,
+    platform: desktop,
     assetsDirectory,
     loadImage: (path, template) => {
       const image = nativeImage.createFromPath(path);
-      if (image.isEmpty()) throw new Error(`菜单栏图标为空：${path}`);
+      if (image.isEmpty()) throw new Error(`系统托盘图标为空：${path}`);
       if (template) image.setTemplateImage(true);
       return image;
     },
-    createTray: image => new Tray(image as Electron.NativeImage),
+    createTray: image => {
+      const tray = new Tray(image as Electron.NativeImage);
+      tray.on('double-click', showWindow);
+      return tray;
+    },
     createMenu: items => Menu.buildFromTemplate(items as Electron.MenuItemConstructorOptions[]),
     showApp: showWindow,
     openBot: botId => {
@@ -2044,8 +2210,8 @@ else {
         const result = await dialog.showMessageBox({
           type: 'warning',
           title: '准备连接微信',
-          message: '首次连接需要暂时退出微信，并启动 Rambo 管理的临时副本。',
-          detail: '请先保存微信中的未发送内容。连接完成后会删除副本，并在原微信当时处于打开状态时重新启动它。',
+          message: 'macOS 微信连接需要先退出当前微信。',
+          detail: 'Rambo 会创建并重签独立微信副本，完成后清理该副本；主微信应用不会被修改。Windows 使用进程内存扫描，不会显示此提示。',
           buttons: ['取消', '继续'],
           defaultId: 1,
           cancelId: 0
@@ -2061,7 +2227,15 @@ else {
         });
         return result.canceled ? null : result.filePaths[0] ?? null;
       }
-    }, app.getPath('home'), undefined, { manualStopOnly: true });
+    }, app.getPath('home'), {
+      platform: desktop,
+      environment: process.env,
+      resourcesDirectory: app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'out'),
+      windowsAppDataDirectory: app.getPath('appData'),
+      windowsDocumentsDirectory: app.getPath('documents')
+    }, {
+      manualStopOnly: true
+    });
     const wechatMediaProcessor = new WechatMediaContentProcessor(wechatMediaToolPaths());
     host = new Host(
       store, runtime, emit, mailRuntime, connectorCredentials,
@@ -2148,23 +2322,23 @@ else {
     installMessageAssetProtocol();
     loginItem = new LoginItemController(store, createElectronLoginItemAdapter({
       isPackaged: app.isPackaged,
-      platform: process.platform,
-      getLoginItemSettings: () => app.getLoginItemSettings(),
-      setLoginItemSettings: settings => app.setLoginItemSettings(settings)
+      platform: desktop,
+      getLoginItemSettings: settings => app.getLoginItemSettings(settings),
+      setLoginItemSettings: settings => app.setLoginItemSettings(settings),
+      getPath: name => app.getPath(name)
     }, {
       // Automated acceptance uses an isolated profile, but macOS Login Items
       // are still a machine-global user setting. Never mutate them from a run.
-      allowSystemChanges: !acceptanceRunId
+      allowSystemChanges: !acceptanceRunId,
+      windowsArgs: ['--hidden']
     }));
     loginItem.applyStoredPreference();
     registerIPC();
     installSystemIndicators();
-    Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: 'Rambo', submenu: [{ role: 'about' }, { label: '显示 Rambo', click: showWindow }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
-      { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-      { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }
-    ]));
-    showWindow();
+    Menu.setApplicationMenu(Menu.buildFromTemplate(
+      applicationMenuTemplate(desktop, showWindow)
+    ));
+    if (!startHidden) showWindow();
     void runtime.start().then(() => {
       void host.syncMcpMetadata().catch(error => {
         console.error('[Rambo] MCP metadata refresh failed after runtime start', error);

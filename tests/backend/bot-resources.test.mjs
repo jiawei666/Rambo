@@ -209,6 +209,33 @@ test('resource discovery is isolated by home and recognizes current plugin layou
   });
 });
 
+test('default resource discovery prefers USERPROFILE on Windows-style launch environments', async () => {
+  await withDirectories(async ({ discoverBotResources, clearBotResourceCache, homeA, homeB }) => {
+    const originalUserProfile = process.env.USERPROFILE;
+    const originalHome = process.env.HOME;
+    try {
+      process.env.USERPROFILE = homeA;
+      process.env.HOME = homeB;
+      clearBotResourceCache();
+      const discovered = discoverBotResources();
+      assert.equal(
+        discovered.resources.some(resource => resource.id === 'skill:custom-codex'),
+        true
+      );
+      assert.equal(
+        discovered.resources.some(resource => resource.id === 'plugin:different-plugin'),
+        false
+      );
+    } finally {
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      clearBotResourceCache();
+    }
+  });
+});
+
 test('MCP metadata is cache-keyed without retaining configuration secrets', async () => {
   await withDirectories(async ({ discoverBotResources, clearBotResourceCache, homeA }) => {
     const metadata = {

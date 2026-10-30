@@ -59,7 +59,7 @@ input.on('line', line => {
   if (message.method === 'initialize') {
     result = { userAgent: 'codex_cli_rs/${version}', platformFamily: 'unix', platformOs: 'macos' };
   } else if (message.method === 'account/read') {
-    result = loginStartedAt && Date.now() - loginStartedAt > 1200
+    result = loginStartedAt && Date.now() - loginStartedAt > 5000
       ? { account: { type: 'chatgpt', email: 'clean-user@example.com' } }
       : { account: null };
   } else if (message.method === 'account/login/start') {
@@ -135,7 +135,7 @@ test('Rambo 使用独立运行时、复制本机 Codex 配置并可重启', asyn
     await expect(page.locator('[data-sidebar-action="create"]')).toBeVisible();
     await page.getByRole('button', { name: '展开侧栏' }).click();
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await page.getByRole('tab', { name: '账号', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     await expect(page.locator('.runtime-card-status')).toContainText('Codex 已连接', { timeout: 30_000 });
     await expect(page.locator('.current-source-card')).toContainText(
       /检测到本机登录态|fixture@example.com/,
@@ -206,7 +206,7 @@ test('Rambo 使用独立运行时、复制本机 Codex 配置并可重启', asyn
     expect(processEnvironment(restarted[0].pid).HTTPS_PROXY).toBe(configuredProxy);
     await page.reload();
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await page.getByRole('tab', { name: '账号', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     await expect(page.getByLabel('代理地址')).toHaveValue(configuredProxy);
   } finally {
     try {
@@ -272,7 +272,7 @@ test('ChatGPT 登录返回可重开地址并自动刷新账号状态', async () 
       timeout: 30_000
     });
     await expect(page.locator('.current-source-card')).toContainText('clean-user@example.com');
-    await expect(page.getByText('ChatGPT 登录已完成，账号已连接。', { exact: true })).toBeVisible();
+    await expect(page.getByText('ChatGPT 登录已完成，账号已连接。')).toBeVisible();
     await expect(retryLink).toHaveCount(0);
     await expect(page.locator('[data-sidebar-action="create"]')).toBeVisible();
   } finally {
@@ -285,7 +285,7 @@ test('ChatGPT 登录返回可重开地址并自动刷新账号状态', async () 
   }
 });
 
-test('未配置运行时首次启动自动打开账号设置且关闭后不重复弹出', async () => {
+test('未配置运行时首次启动自动打开模型配置设置且关闭后不重复弹出', async () => {
   test.setTimeout(60_000);
   mkdirSync(join(root, 'acceptance-runs'), { recursive: true });
   const run = realpathSync(mkdtempSync(join(root, 'acceptance-runs', 'first-run-')));
@@ -318,7 +318,7 @@ test('未配置运行时首次启动自动打开账号设置且关闭后不重�
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: '系统设置', exact: true }))
       .toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('tab', { name: '账号', exact: true }))
+    await expect(page.getByRole('tab', { name: '模型配置', exact: true }))
       .toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
     await expect(page.locator('[data-sidebar-action="configure"]')).toBeVisible();
@@ -333,7 +333,7 @@ test('未配置运行时首次启动自动打开账号设置且关闭后不重�
     await expect(page.getByRole('heading', { name: '系统设置', exact: true })).toHaveCount(0);
     await page.getByLabel('配置 Codex').click();
     await expect(page.getByRole('heading', { name: '系统设置', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: '账号', exact: true }))
+    await expect(page.getByRole('tab', { name: '模型配置', exact: true }))
       .toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
   } finally {
@@ -368,6 +368,16 @@ test('全新用户直接使用内置 App Server，并可通过独立按钮更新
   const archiveSha256 = createHash('sha256').update(archive).digest('hex');
   let responseRequestCount = 0;
   const server = createServer((request, response) => {
+    if (request.url === '/v1/models' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        data: [
+          { id: 'clean-user-model', name: 'Clean User Model' },
+          { id: 'clean-user-model-alt', name: 'Clean User Model Alt' }
+        ]
+      }));
+      return;
+    }
     if (request.url === '/v1/responses' && request.method === 'POST') {
       responseRequestCount += 1;
       const reply = () => {
@@ -436,7 +446,7 @@ test('全新用户直接使用内置 App Server，并可通过独立按钮更新
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: '系统设置', exact: true }))
       .toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('tab', { name: '账号', exact: true }))
+    await expect(page.getByRole('tab', { name: '模型配置', exact: true }))
       .toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
     await expect(page.locator('.runtime-card-status')).toContainText('Codex 已连接', { timeout: 30_000 });
@@ -488,8 +498,14 @@ test('全新用户直接使用内置 App Server，并可通过独立按钮更新
     const secret = 'sk-clean-user-fixture-secret';
     await page.getByLabel('服务名称').fill('Clean User API');
     await page.getByLabel('Base URL').fill(`http://127.0.0.1:${address.port}/v1`);
-    await page.getByLabel('模型 ID').fill('clean-user-model');
     await page.getByLabel('API Key').fill(secret);
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '已获取 2 个可选模型' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '保存并使用', exact: true })).toBeDisabled();
+    await page.locator('.manual-model-tag').filter({
+      has: page.getByText('clean-user-model', { exact: true })
+    })
+      .locator('input[type="checkbox"]').check();
     await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect(page.getByRole('heading', { name: '手动 API 配置', exact: true })).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
@@ -533,8 +549,9 @@ test('全新用户直接使用内置 App Server，并可通过独立按钮更新
     expect(existsSync(`${runtimeConfigPath}.rambo-base-missing`)).toBe(true);
 
     await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toBeDisabled();
-    await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeDisabled();
+    await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toHaveCount(0);
+    await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeEnabled();
+    await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toContainText('去登录');
     await expect(page.getByRole('radio', { name: /手动配置 API/ })).toHaveAttribute('aria-checked', 'true');
   } finally {
     try {

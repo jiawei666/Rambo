@@ -1,7 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  ensurePrivateDirectorySync,
+  protectPrivateFileSync
+} from './platform/fs';
 
 export type ConnectorCredentialPayload =
   | { kind: 'imap-password'; email: string; password: string }
@@ -77,8 +81,8 @@ export class ConnectorCredentialsError extends Error {
 
 /**
  * Encrypts connector secrets with a per-install AES-256-GCM key and stores the
- * ciphertext in SQLite. The local key file is mode 0600 and no macOS Keychain
- * access is required.
+ * ciphertext in SQLite. The local key file is protected by the platform user
+ * boundary and no system credential manager access is required.
  */
 export class ConnectorCredentials implements ConnectorCredentialStore {
   private readonly directory: string;
@@ -87,8 +91,7 @@ export class ConnectorCredentials implements ConnectorCredentialStore {
 
   constructor(userDataDirectory: string, cipher?: ConnectorCredentialCipher) {
     this.directory = join(userDataDirectory, 'connector-credentials');
-    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    chmodSync(this.directory, 0o700);
+    ensurePrivateDirectorySync(this.directory);
     this.cipher = cipher ?? new LocalAesCredentialCipher(this.directory);
     const databasePath = join(this.directory, 'credentials.sqlite');
     this.db = new DatabaseSync(databasePath);
@@ -234,7 +237,7 @@ class LocalAesCredentialCipher implements ConnectorCredentialCipher {
     try {
       const stored = readFileSync(this.keyPath);
       if (stored.length !== 32) throw new Error('credential key length');
-      chmodSync(this.keyPath, 0o600);
+      protectPrivateFileSync(this.keyPath);
       this.key = stored;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -242,6 +245,7 @@ class LocalAesCredentialCipher implements ConnectorCredentialCipher {
       }
       const created = randomBytes(32);
       writeFileSync(this.keyPath, created, { mode: 0o600, flag: 'wx' });
+      protectPrivateFileSync(this.keyPath);
       this.key = created;
     }
     return this.key;
@@ -261,7 +265,7 @@ function validateReference(value: string): void {
 }
 
 function protectIfPresent(path: string): void {
-  if (existsSync(path)) chmodSync(path, 0o600);
+  if (existsSync(path)) protectPrivateFileSync(path);
 }
 
 function encodeSealedValue(sealed: Buffer): Pick<StoredCredential, 'nonce' | 'tag' | 'ciphertext'> {

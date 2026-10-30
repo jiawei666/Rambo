@@ -1,5 +1,85 @@
 # 实施进度
 
+## 2026-10-30 · Q208 双平台发版 Skill 与独立 App Server 校验
+
+- `rambo-release` Skill 从 macOS 单平台发布改为默认双平台：macOS ARM64 与 Windows x64 分别在匹配原生构建机执行 `npm run release:package -- <target>`，各自生成安装包、SHA-256 和 release metadata；两个平台合并后必须通过 `npm run release:verify -- darwin-arm64,win32-x64` 才能进入 tag/Release。
+- 发布脚本现在直接验证包内 `runtime/codex/0.165.0`：只允许一个固定版本，核对 `codex-package.json`、`rambo-runtime.json`、官方归档 SHA-256、入口路径，并读取 Mach-O/PE 头确认真实架构。macOS ARM64 必须是 `aarch64-apple-darwin`/arm64，Windows x64 必须是 `x86_64-pc-windows-msvc`/x64。
+- 修复 `scripts/prepare-runtime.mjs` 的一个现有缺口：复用旧运行时目录时原先可能只保留 `codex-package.json` 的目标信息，`rambo-runtime.json` 缺少 `target`；现在会补齐并校验，避免发版只靠外部 manifest 猜测平台。
+- 新增 Windows NSIS 固定产物名 `Rambo-v<version>-Windows-<arch>.exe`，Windows CI 改为运行双平台发版脚本的 Windows 分支并上传 NSIS 与 release metadata。正式 README/Skill 仍明确 Windows CI 不等于 Windows 真机产品验收。
+- 验证通过：`npm run typecheck`；发版工具后端测试 **3/3**；`npm run test:catalog`；`npm run package:mac`；使用现有 macOS 候选包执行 `package-release.mjs darwin-arm64 --skip-build`，实际确认包内 App Server 为 `0.165.0 / aarch64-apple-darwin / arm64` 并生成 zip、SHA-256 和 metadata；双平台校验在缺少 Windows 安装包时按预期失败并阻止发布。
+- 证据边界：本机是 macOS ARM64，只实际构建并校验了 macOS 包；Windows NSIS 构建路径、PE x64 校验和双平台合并需要 Windows x64 构建机或 Windows CI 实际执行。当前没有 Windows 真机安装、启动、登录、Bot/Routine、托盘、音频、微信扫描或 NSIS 卸载证据，不能宣称 Windows 已完整可用。
+
+## 2026-10-30 · Q207 来源切换统一刷新全局模型与失效 Bot
+
+- `setModelSource`、ChatGPT 登录完成和 `setCodexHomeSyncMode('follow')` 现在复用同一套模型目录同步：读取当前来源的真实模型列表，自动选择一个有效默认模型，写回全局模型池，并把模型已失效的历史 Bot 统一切到该默认模型。覆盖手动 API → ChatGPT、ChatGPT 登录完成、手动 API → 持续跟随本机，以及切回手动 API。
+- 独立配置中选择尚未登录的 ChatGPT 时，不再只剩“不可用”状态：来源选项可直接进入登录流程，当前来源卡也提供明确的“登录 ChatGPT”按钮；授权完成后自动同步全局模型池、默认模型和失效 Bot，并就地显示实际刷新结果。
+- 修复旧数据或残缺手动 API 配置被误显示为“已配置”的问题：不再把一个未进入已保存模型池的 `manualModelId` 临时伪造成可用模型；空的手动模型目录会回退到当前来源的全局模型池，仍不完整时点击“手动配置 API”只打开配置表单，不再反复调用主进程并报错。
+- 全局模型池、默认模型和失效 Bot 的模型更新在 Store 单一事务中提交；目录读取或运行时切换失败时恢复原来源和原运行时配置，不在失败后留下 API 模型池搭配本机运行时的半完成状态。
+- 手动 API 已勾选模型池改为独立持久化，不再被本机/ChatGPT 目录覆盖；切回手动 API 时恢复原模型列表和默认模型。`ModelSourceState.models` 明确表示已保存的手动 API 模型池，当前来源目录继续由 `models()` 返回。
+- 切换来源的常驻说明和结果反馈明确提示会真实统一刷新；结果包含新默认模型、全局模型数量和实际刷新的历史 Bot 数量/名称。ChatGPT 尚未登录时先完成来源切换，登录完成后自动执行同一目录同步。
+- 验证通过：`npm run typecheck`；Model Source + Store 定向后端 **57/57**；`npx electron-vite build`；相关 Electron **4/4**，其中新增用例覆盖“独立 API → 选择 ChatGPT 登录 → 授权完成 → 全局默认模型与历史 Bot 统一刷新”，扩展用例继续覆盖 API → ChatGPT、API → 持续跟随本机及权限保持；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`、`npm run test:acceptance` **21/21**；`git diff --check`。
+- 补充验证：Model Source + 账号设置定向后端 **14/14**，覆盖不存在已保存模型池时状态为不可切换、空手动目录回退 `defaultBotModels`；重建 Electron 后相关模型配置流程 **4/4** 通过。
+- 证据边界：真实 Electron 使用隔离 profile、mock App Server 与本机 HTTP 模型目录夹具；未执行真实 ChatGPT 外部授权回调、真实第三方模型目录、安装版或完整 A09 旅程，不能据此宣称整条规则或发布验收通过。
+
+## 2026-10-30 · P10 macOS/Windows 平台抽象与双平台基础兼容
+
+- 新增 P10/Q206，明确最终产品 macOS 与 Windows 都完整可用，平台差异统一通过共享契约和主进程适配层处理；当前实际产品验收仍只在 macOS，Windows 真机与 ARM64 不能由源码、CI 或交叉编译推导通过。
+- 新增 `src/shared/platform.ts` 与 `src/main/platform/{paths,fs,process,archive,runtime-target,desktop-shell}.ts`。统一处理路径大小写与包含判断、私有目录/文件 ACL、Windows 原子替换重试、命令和 `PATH`/`PATHEXT` 解析、`.cmd/.bat` 的 `cmd.exe` 转义、原生 `.exe` 直接启动、`taskkill.exe` 进程树终止、Windows 自带 `tar.exe`、四个运行时目标、窗口外壳、应用菜单和托盘模式。
+- Windows 裸命令现在先从 `cwd`、`PATH`、`PATHEXT` 解析；`.cmd/.bat` 采用与 cross-spawn 一致的转义，`node_modules/.bin` shim 使用双层转义；`run_with_secret` 不再让 shell 拼接用户参数。子进程环境补齐 `USERPROFILE`、`HOME`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`、`ComSpec` 和 `PATHEXT`。
+- 归档安全校验同时拒绝 POSIX 绝对路径、Windows 绝对路径和盘符相对路径（如 `C:foo`）；`scripts/platform-target.mjs` 与运行时准备脚本共用相同判定。
+- 登录启动、托盘、菜单、文件管理器文案、路径脱敏和微信连接器均接入平台抽象；微信继续遵守 Q201：macOS 使用受管副本重签，Windows 使用 `Weixin.exe` 内存扫描，平台不匹配直接失败。
+- 验证通过：`npm run typecheck`；平台定向测试 **40/40**；微信/凭证/Bot 数据定向测试 **30/30**；Host **120/120**；`npm run build`；`npm run test:catalog`。GitHub `rust-v0.165.0` 的 darwin-arm64、darwin-x64、win32-x64、win32-arm64 四个运行时 SHA-256 与 `config/runtime-targets.json` 一致。
+- 证据边界：当时 `.github/workflows/windows-build.yml` 只配置 Windows x64 类型检查、平台单测和 unpacked 打包；后续 Q208 已改为构建并上传带 Windows 专用 App Server 的 NSIS 候选，但仍未在 GitHub Actions 实际运行，也不包含 Windows 真机 UI、通知、登录启动、音频、微信或 NSIS 安装/卸载验收。Windows ARM64 脚本存在但未验证；不能把本轮写成 Windows 已完整可用。
+
+## 2026-10-30 · Q207 模型区视觉整理与失效模型统一刷新
+
+- 手动 API 的模型选择区改为全宽分区面板：标题与已选计数、获取按钮、候选标签、自定义模型输入、反馈状态和已选摘要分层展示；标签使用主题化圆形勾选，桌面、暗色和窄窗口不再挤在表单左半列。
+- 保存新的手动 API 模型池前，界面会明确提示将统一刷新多少个历史 Bot、目标默认模型和 Bot 名称摘要，不使用“是否刷新”确认框。
+- 保存成功后仅把模型已不在新池内的 Bot 切到新默认模型，包括归档 Bot；仍有效的 Bot、全部 Bot 权限及其他数据保持不变。Store 方法在单个事务内完成选择性刷新，主进程在来源配置与运行时切换成功后调用。
+- 验证通过：`npm run typecheck`；Store 定向测试 **48/48**；`npx electron-vite build`；新增真实 Electron “保存新模型池会提示并自动统一刷新失效模型的历史 Bot” **1/1**；相关模型配置 Electron **3/3**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`；`git diff --check`。验收目录为 **156 条规则 / 156 个完整场景 / 272 个局部案例 / 146 implemented / 126 gaps**。
+
+## 2026-10-30 · Q205 模型标签多选与全局默认配置
+
+- 独立配置来源收敛为“ChatGPT 登录 / 手动配置 API”；本机 Codex 配置副本只通过顶层“持续跟随本机”使用，切回持续跟随即可恢复本机配置，不再在独立配置内重复提供本机来源。
+- 手动 API 表单不再单独填写模型 ID，只填写服务名称、Base URL 和 API Key。`/models` 返回结果先展示为候选模型标签；只有勾选标签才进入全局模型池，取消勾选会移出。接口失败或目录为空时，可通过输入框和“添加模型 ID”生成自定义标签，再勾选入池。
+- 未勾选手动 API 模型时保存按钮禁用；全局默认模型只能从模型池中选择，后端同时校验默认模型属于已保存模型池。账号状态判定也要求默认模型存在于池内，避免旧数据或缺失模型被显示为可用来源。
+- “新建 Bot 初值”统一改名为“全局默认配置”，展示模型池、默认模型和默认权限。新建 Bot 复制当时的默认模型与权限，已有 Bot 保持独立；手动 API 来源保存后，应用级 `models()` 直接返回持久化模型池，不再每次请求远端 `/models`。
+- 验证通过：`npm run typecheck`；Model Source、账号设置与 Store 定向后端 **61/61**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`；验收结构 **21/21**；`npx electron-vite build`；相关真实 Electron **5/5**，覆盖全局默认配置自动保存、模型配置 Tab 分层、手动 API 候选标签/自定义 ID/切回持续跟随、401 保留来源和全新用户内置运行时手动模型配置。验收目录为 **155 条规则 / 155 个完整场景 / 269 个局部案例 / 144 implemented / 125 gaps**。
+- 证据边界：真实 Electron 使用隔离 profile 和本机 HTTP fixture，未使用真实第三方 API Key、真实供应商分页或非标准 `/models` 目录；未打包、未安装、未部署。完整 `npm run build` 仍受并行改动中的原生媒体脚本错误影响，本轮以 `npx electron-vite build` 验证 Electron 代码构建；`change-checks` 选中的 Host 全量测试当前也被并行平台文件拆分阻断在 `platform/process` 模块解析，失败发生在测试加载阶段，未用于本轮模型配置结论。
+
+## 2026-10-30 · Q204 手动 API 模型目录与“模型配置”Tab
+
+- 手动 API 的模型 ID 输入旁新增“获取模型列表”按钮，调用 `GET <Base URL>/models` 并携带 `Authorization: Bearer <API Key>`。新输入的 Key 优先；复用已保存 Key 时要求 Base URL 与已保存值一致，避免把旧 Key 发往新主机。结果按 OpenAI `data` 数组归一化、去重并限制数量，仍保留手动模型 ID 输入作为兼容路径。
+- 手动 API 成为当前来源后，应用级 `models()` 同样读取该服务的 `/models`，不再调用 Codex `model/list`。保存来源和运行时重建后会刷新“新建 Bot 模型”选项，已有 Bot 的模型与权限不被改写。
+- 系统设置移除独立“新建 Bot 初值”Tab，原“账号”Tab 更名为“模型配置”；同一页依次包含 Codex 运行时、配置模式、当前来源与连接测试、手动 API 配置、新建 Bot 初值。
+- 验证通过：`npm run typecheck`；Model Source 定向测试 **6/6**；验收结构 **21/21**；`npm run build`；模型配置与手动 API 模型目录相关 Electron **3/3**；全新用户内置运行时、手动 API 拉取模型目录与更新 **2/2**；`git diff --check`。验收目录为 **155 条规则 / 155 个完整场景 / 269 个局部案例 / 144 implemented / 125 gaps**。证据边界：模型目录使用本机 HTTP fixture，尚未用真实第三方 API Key、真实供应商分页或非标准模型目录服务验收。
+
+## 2026-10-30 · Q203 任务执行期间账号操作稳定禁用
+
+- 账号页“测试连接”“登录 ChatGPT”等按钮闪动的直接原因是：按钮先进入局部 `busy`，主进程随后因活动任务拒绝，局部错误又被账号轮询覆盖或落到页面底部。现在由宿主统一计算 `hasPendingWork`，覆盖启动中/执行中的 turn、私聊与群聊派发、未确认操作和 Live 会话，并在 Snapshot 中暴露分项计数供界面稳定判断。
+- 主进程对所有会改变运行时、来源、登录态或连接状态的入口使用同一门禁：更新 App Server、重启运行时、代理保存、切换到持续跟随、来源切换、ChatGPT 登录、手动 API 保存、连接测试和测试后的重启重试。绕过 UI 直接调用 IPC 同样会被拒绝。
+- 账号页在存在未结束工作时提前禁用上述控件，并在运行时、配置模式、来源、登录和手动 API 区域持续显示就地原因；任务结束后按真实状态恢复。账号读取错误、配置错误和登录操作错误分开保存，账号轮询不再清掉登录反馈。
+- 手动 API 保存改为原子流程：先统一校验宿主门禁，再持久化配置并重启运行时；任一步失败都会恢复原设置、来源和配置，不留下“凭证已保存但来源未切换”的半完成状态。
+- 修复验收 App Server 夹具的重启恢复建模：持久化 thread/turn 历史，旧进程遗留的 `inProgress` 在进程重启时转为 `interrupted`，并补上真实 `startedAt`；`thread/turns/list` 按请求的 `sortDirection` 返回。这样恢复核对不会因旧→新顺序或缺失时间而永久锁住操作。
+- 新增真实 Electron 用例覆盖任务执行中稳定禁用、就地原因、直接 IPC 拒绝、手动 API 状态不变、来源保持本机配置和任务结束恢复；前置用例会等待隐藏问候与活动 turn 闭环，避免把串行测试残留误判为产品状态。
+- 验证通过：`node scripts/change-checks.mjs --run` 的 TypeScript、Host **119/119**、验收流程 **21/21**、构建和相关真实 Electron **51 passed / 1 skipped**；单独串行运行 `private-chat` 与 `runtime-startup` 为 **42 passed / 1 skipped**。验收目录为 **155 条规则 / 155 个完整场景 / 268 个局部案例 / 143 implemented / 125 gaps**。
+- 证据边界：本轮使用隔离 profile、mock App Server 和真实 Electron UI 验证交互与主进程门禁；未重新执行真实 ChatGPT 外部登录回调、真实外部模型来源切换或安装版验收。跳过项仍是依赖外部真实模型行为的一次性 Routine smoke，不代表 A09 整条规则或全量发布完成。
+
+## 2026-10-30 · Live 通话音量增益与限幅
+
+- Live 远端音频不再只依赖 `HTMLAudioElement` 的默认 `1.0` 音量。通话开始时创建交互式 Web Audio 播放上下文，远端音轨经 `2.0` 固定增益（约 `+6.0 dB`）和动态压缩限幅后送到 macOS 当前输出设备，避免简单放大造成持续削波。
+- 输入麦克风的回声消除、降噪和 AGC 不变，其他提示音也不受影响；系统输出音量和设备选择仍是最终响度边界。Web Audio 无法启动时回退到当前媒体元素直接播放，结束时统一断开播放源、关闭上下文并释放回退元素。
+- 新增播放链单元测试，核对远端流、增益、限幅参数和 `source → gain → limiter → destination` 顺序；V14 同步补充真实通话听感、系统音量控制、设备断开与合盖验收条件。
+- 证据边界：本轮只有播放图构建和参数测试，尚未用真实账号、耳机/扬声器完成 Live 听感、最大系统音量、长时间通话破音和设备切换验证，不能宣称 V14 整条规则通过。
+
+## 2026-10-30 · Q201 微信连接按平台分流
+
+- 用户最终确认“Windows 就走 Windows 那套，苹果就走重签这套”。微信连接器已拆成平台 facade、macOS 受管副本重签适配器、Windows 进程内存扫描适配器和公共 SQLCipher 数据库校验；`options.backend` 与当前系统不匹配时直接失败，不做跨平台兜底。
+- macOS 生产路径固定为创建临时微信副本、保留原 entitlements 并加入 `get-task-allow` 后重签，再通过一次管理员授权启动副本和 Frida `CCCrypt` 捕获每个数据库的 raw AES key。密钥只在内存中匹配，验证完成后清理临时副本并恢复原微信；旧重签路径保留为正式 macOS 路径。
+- Windows 不复制、不重签、不修改微信。新增 Rust 扫描器枚举 `Weixin.exe`，仅读取已提交且可读写页面，按 2 MB 分块并保留 99 字节重叠，扫描 `x'<64位hex key><32位hex salt>'`；TypeScript 侧优先按 salt 匹配，再用数据库首页 HMAC 验证 raw key。账号根目录支持 `%APPDATA%\Tencent\xwechat\config\*.ini` 中的 `MyDocument:` 或绝对路径；用户在选择器中返回账号目录、`db_storage` 或其子目录时，会向上归一化到同一个 `xwechat_files` 账号根。
+- 当前验证通过：`tsc --noEmit`；微信连接器定向测试 `17/17`（含 Windows 多账号 `db_storage` 选择、超时解析和完整 capture 超时诊断）；微信相关后端合并测试 `214/214`；验收结构测试 `21/21`；Windows 扫描器 Rust 单元测试 `3/3`；`x86_64-pc-windows-msvc` 交叉 `cargo check`；`git diff --check`。Windows 扫描器尚无真实 Windows 微信环境，macOS 受管副本真实读取仍需按当前微信版本复验。
+- 证据边界：Windows 源码接入、交叉编译检查和合成 SQLCipher 夹具不等于 Windows 真机可用；PC 协议发送、服务器接受、消息入库与收件人送达均未验证。
+
 ## 2026-10-29 · ChatGPT 登录空提示与完成态同步修复
 
 - 干净环境中点击“登录 ChatGPT”后只出现“登录流程已启动，完成后重新打开此页面”的直接原因有两层：旧验收运行时对 `account/login/start` 返回空对象，Rambo 又把空结果当成成功；同时登录完成后的账号状态只更新了设置页局部，顶层侧栏仍保留“配置 Codex”。

@@ -5,6 +5,7 @@ native/wechat-silk-decoder/target/
 .DS_Store
 .playwright-mcp/
 runtime/codex/
+.cache/ffmpeg/
 *.log
 *.pyc
 __pycache__/

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cpSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -12,27 +21,48 @@ const projectRoot = new URL('../..', import.meta.url).pathname;
 const require = createRequire(import.meta.url);
 const xmldomEntry = pathToFileURL(require.resolve('@xmldom/xmldom')).href;
 const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext };
-const wizardSource = await import('node:fs/promises').then(fs =>
-  fs.readFile(new URL('../../src/main/wechat-connector-wizard.ts', import.meta.url), 'utf8')
-);
-const sqlCipherSource = await import('node:fs/promises').then(fs =>
-  fs.readFile(new URL('../../src/main/wechat-sqlcipher.ts', import.meta.url), 'utf8')
-);
-const compiledSqlCipher = ts.transpileModule(sqlCipherSource, { compilerOptions }).outputText;
-const compiledWizard = ts.transpileModule(wizardSource, { compilerOptions }).outputText
-  .replace('function parsePlistString(', 'export function parsePlistString(')
-  .replace('function hasGetTaskAllow(', 'export function hasGetTaskAllow(')
-  .replaceAll("from './wechat-sqlcipher'", "from './wechat-sqlcipher.mjs'")
-  .replaceAll("from '@xmldom/xmldom'", `from '${xmldomEntry}'`);
+const moduleSources = [
+  ['platform/paths', 'platform/paths'],
+  ['platform/fs', 'platform/fs'],
+  ['wechat-platform-types', 'wechat-platform-types'],
+  ['wechat-connector-common', 'wechat-connector-common'],
+  ['wechat-connector-macos', 'wechat-connector-macos'],
+  ['wechat-connector-windows', 'wechat-connector-windows'],
+  ['wechat-connector-wizard', 'wechat-connector-wizard'],
+  ['wechat-sqlcipher', 'wechat-sqlcipher']
+];
+const compiledModules = new Map(await Promise.all(moduleSources.map(async ([name, sourceName]) => {
+  const source = await import('node:fs/promises').then(fs =>
+    fs.readFile(new URL(`../../src/main/${sourceName}.ts`, import.meta.url), 'utf8')
+  );
+  const output = ts.transpileModule(source, { compilerOptions }).outputText
+    .replaceAll(/from '(\.\/wechat-[^']+)'/gu, "from '$1.mjs'")
+    .replaceAll("from './platform/paths'", "from './platform/paths.mjs'")
+    .replaceAll("from './platform/fs'", "from './platform/fs.mjs'")
+    .replaceAll("from '@xmldom/xmldom'", `from '${xmldomEntry}'`);
+  return [name, output];
+})));
 
 async function withWizard(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-wechat-wizard-test-'));
-  writeFileSync(join(directory, 'wechat-sqlcipher.mjs'), compiledSqlCipher, { mode: 0o600 });
-  writeFileSync(join(directory, 'wechat-connector-wizard.mjs'), compiledWizard, { mode: 0o600 });
+  mkdirSync(join(directory, 'platform'));
+  for (const [name, output] of compiledModules) {
+    writeFileSync(join(directory, `${name}.mjs`), output, { mode: 0o600 });
+  }
   try {
-    const wizard = await import(`${pathToFileURL(join(directory, 'wechat-connector-wizard.mjs')).href}?${Date.now()}`);
-    const sqlCipher = await import(`${pathToFileURL(join(directory, 'wechat-sqlcipher.mjs')).href}?${Date.now()}`);
-    await run({ wizard, sqlCipher, directory });
+    const imported = {};
+    for (const [name] of moduleSources) {
+      imported[name] = await import(
+        `${pathToFileURL(join(directory, `${name}.mjs`)).href}?${Date.now()}-${name}`
+      );
+    }
+    await run({
+      wizard: imported['wechat-connector-wizard'],
+      mac: imported['wechat-connector-macos'],
+      windows: imported['wechat-connector-windows'],
+      sqlCipher: imported['wechat-sqlcipher'],
+      directory
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -86,7 +116,60 @@ function createCaptureFixture(sqlCipher, directory, key, keyForDatabase = () => 
   return { home, userData, sourceApp, accountDirectory, info, uvPath, pythonPath };
 }
 
-function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[key]], uvPath, pythonPath, failCopy = false, originalRunning = false, managedClone = false }) {
+function createWindowsCaptureFixture(sqlCipher, directory, key) {
+  const appData = join(directory, 'windows-app-data');
+  const documents = join(directory, 'windows-documents');
+  const xwechatRoot = join(documents, 'xwechat_files');
+  const accountDirectory = join(xwechatRoot, 'wxid_windows');
+  const databasePaths = [
+    'contact/contact.db',
+    'session/session.db',
+    'message/message_0.db',
+    'message/media_0.db'
+  ];
+  const salt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+  const encrypted = sqlCipher.encryptWechatDatabaseFixture(
+    Buffer.alloc(sqlCipher.WECHAT_PAGE_SIZE),
+    key,
+    salt
+  );
+  for (const path of databasePaths) {
+    const target = join(accountDirectory, 'db_storage', path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, encrypted, { mode: 0o600 });
+  }
+  const configDirectory = join(appData, 'Tencent', 'xwechat', 'config');
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(join(configDirectory, 'account.ini'), documents, { mode: 0o600 });
+  const scannerPath = join(directory, 'rambo-wechat-key-scanner.exe');
+  writeFileSync(scannerPath, '', { mode: 0o700 });
+  return {
+    appData,
+    documents,
+    xwechatRoot,
+    accountDirectory,
+    scannerPath,
+    key,
+    salt: salt.toString('hex')
+  };
+}
+
+function captureRuntime({
+  sourceApp,
+  info,
+  accountDirectory,
+  key,
+  roundKeys = [[key]],
+  uvPath,
+  pythonPath,
+  failCopy = false,
+  originalRunning = false,
+  managedClone = false,
+  officialSession = false,
+  officialAttachable = false,
+  captureKind = 'aes-key',
+  officialAttachFailure = false
+}) {
   let entitlementReadCount = 0;
   let spawnedExecutable = '';
   let stoppedClone = null;
@@ -97,6 +180,12 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
   let captureCommand = '';
   let osascriptTimeout = null;
   let adminCaptureCount = 0;
+  let directCaptureArgs = [];
+  let captureHook = '';
+  let captureDriver = '';
+  let copyCalled = false;
+  let resignCalled = false;
+  let uvCalled = false;
   const runFakeCaptureDriver = (port, token) => new Promise((resolve, reject) => {
     const socket = createConnection({ host: '127.0.0.1', port });
     let buffer = '';
@@ -108,7 +197,7 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
       for (const value of roundKeys[round] ?? []) {
         if (sentKeys.has(value)) continue;
         sentKeys.add(value);
-        send({ type: 'key', value, keyCount: sentKeys.size });
+        send({ type: 'key', kind: captureKind, value, keyCount: sentKeys.size });
         send({ type: 'status', phase: 'key-count', keyCount: sentKeys.size });
       }
     };
@@ -119,6 +208,13 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
     socket.once('error', fail);
     socket.once('connect', () => {
       send({ type: 'hello', token });
+      if (officialAttachFailure) {
+        send({ type: 'status', phase: 'attaching', keyCount: 0 });
+        send({ type: 'status', phase: 'failed', keyCount: 0, error: 'PermissionDeniedError' });
+        terminal = true;
+        socket.end();
+        return;
+      }
       send({ type: 'status', phase: 'attaching', keyCount: 0 });
       send({ type: 'status', phase: 'attached', keyCount: 0 });
       send({ type: 'status', phase: 'hook-ready', keyCount: 0 });
@@ -163,19 +259,30 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
     captureCommand: () => captureCommand,
     osascriptTimeout: () => osascriptTimeout,
     adminCaptureCount: () => adminCaptureCount,
+    directCaptureArgs: () => directCaptureArgs,
+    captureHook: () => captureHook,
+    captureDriver: () => captureDriver,
+    copyCalled: () => copyCalled,
+    resignCalled: () => resignCalled,
+    uvCalled: () => uvCalled,
     runtime: {
+      platform: 'darwin',
       runFile: async (file, args, options = {}) => {
         if (file === uvPath) {
+          uvCalled = true;
           return { stdout: JSON.stringify({ python: pythonPath, version: '16.7.19' }), stderr: '' };
         }
         if (file === '/usr/bin/plutil') return { stdout: info, stderr: '' };
         if (file === '/usr/bin/codesign') {
+          if (args.includes('--force')) resignCalled = true;
           if (args[0] === '-d' && args.includes('--verbose=4')) {
             return { stdout: 'Authority=Developer ID Application: Tencent Developer\nTeamIdentifier=AB12CD34EF', stderr: '' };
           }
           if (args[0] === '-d' && args.includes('--entitlements')) {
             entitlementReadCount += 1;
-            const value = managedClone || entitlementReadCount > 1 ? '<true/>' : '<false/>';
+            const value = managedClone || officialAttachable || entitlementReadCount > 1
+              ? '<true/>'
+              : '<false/>';
             return {
               stdout: `<plist><dict><key>com.apple.security.get-task-allow</key>${value}</dict></plist>`,
               stderr: ''
@@ -184,6 +291,7 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
           return { stdout: '', stderr: '' };
         }
         if (file === '/bin/cp') {
+          copyCalled = true;
           if (failCopy) {
             throw Object.assign(new Error('copy failed'), {
               stdout: '', stderr: `Permission denied /Users/tester/Library/tmp ${key}`, code: 'EACCES'
@@ -207,6 +315,14 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
           adminCaptureCount += 1;
           return runFakeCaptureDriver(Number(match[1]), match[2]);
         }
+        if (officialSession && file === pythonPath) {
+          directCaptureArgs = args;
+          captureCommand = args.join(' ');
+          osascriptTimeout = options.timeout ?? null;
+          captureHook = readFileSync(args[2], 'utf8');
+          captureDriver = readFileSync(args[1], 'utf8');
+          return runFakeCaptureDriver(Number(args[4]), args[5]);
+        }
         throw new Error(`Unexpected command in test: ${file}`);
       },
       spawn: executable => {
@@ -215,10 +331,13 @@ function captureRuntime({ sourceApp, info, accountDirectory, key, roundKeys = [[
         return { pid: 777, unref() {} };
       },
       processIds: async () => {
+        if (officialSession) return [777];
         if (!originalRunning) return [];
         return processCheckCount++ === 0 ? [101] : [];
       },
-      processCommand: async () => spawnedExecutable,
+      processCommand: async () => officialSession
+        ? join(sourceApp, 'Contents', 'MacOS', 'WeChat')
+        : spawnedExecutable,
       delay: async () => {},
       stopClone: async (pid, captureRoot) => { stoppedClone = { pid, captureRoot }; }
     },
@@ -231,7 +350,7 @@ function captureWithAutomaticRoundControls(instance, connectionId, onProgress = 
   let lastStoppedKeyCount = 0;
   return instance.capture(connectionId, state => {
     onProgress(state);
-    const match = /^已捕获 (\d+) 个候选密钥/u.exec(state.message);
+    const match = /^已捕获 (\d+) 个/u.exec(state.message);
     const keyCount = match ? Number(match[1]) : 0;
     if (state.canFinishCapture && keyCount > lastStoppedKeyCount) {
       lastStoppedKeyCount = keyCount;
@@ -245,12 +364,12 @@ function captureWithAutomaticRoundControls(instance, connectionId, onProgress = 
 }
 
 test('temporary signing adds get-task-allow while preserving WeChat entitlements', async () => {
-  await withWizard(async ({ wizard }) => {
+  await withWizard(async ({ mac }) => {
     const original = `<?xml version="1.0"?><plist version="1.0"><dict>
       <key>com.apple.application-identifier</key><string>TEAM.com.tencent.xinWeChat</string>
       <key>com.apple.security.get-task-allow</key><false/>
     </dict></plist>`;
-    const changed = wizard.withGetTaskAllow(original);
+    const changed = mac.withGetTaskAllow(original);
     assert.match(changed, /com\.apple\.application-identifier/u);
     assert.match(changed, /TEAM\.com\.tencent\.xinWeChat/u);
     assert.match(changed, /<true\s*\/>/u);
@@ -260,16 +379,16 @@ test('temporary signing adds get-task-allow while preserving WeChat entitlements
 });
 
 test('WeChat Info.plist string fields are parsed with xmldom sibling nodes', async () => {
-  await withWizard(async ({ wizard }) => {
+  await withWizard(async ({ mac }) => {
     const plist = '<plist><dict>\n  <key>CFBundleIdentifier</key>\n  <string>com.tencent.xinWeChat</string>\n</dict></plist>';
-    assert.equal(wizard.parsePlistString(plist, 'CFBundleIdentifier'), 'com.tencent.xinWeChat');
+    assert.equal(mac.parsePlistString(plist, 'CFBundleIdentifier'), 'com.tencent.xinWeChat');
   });
 });
 
 test('post-signing entitlement verification recognizes get-task-allow', async () => {
-  await withWizard(async ({ wizard }) => {
+  await withWizard(async ({ mac }) => {
     const plist = '<plist><dict>\n  <key>com.apple.security.get-task-allow</key>\n  <true/>\n</dict></plist>';
-    assert.equal(wizard.hasGetTaskAllow(plist), true);
+    assert.equal(mac.hasGetTaskAllow(plist), true);
   });
 });
 
@@ -285,6 +404,7 @@ test('capture completes the isolated clone, signing, key capture, SQLCipher veri
     };
     let beforeCaptureCalled = false;
     const instance = new wizard.WechatConnectorWizard(fixture.userData, prompts, fixture.home, fake.runtime, {
+      backend: 'managed-clone',
       captureSeconds: 300,
       beforeCapture: async () => { beforeCaptureCalled = true; }
     });
@@ -305,7 +425,7 @@ test('capture completes the isolated clone, signing, key capture, SQLCipher veri
     assert.ok(progress.includes('临时微信副本已启动；请先完成登录，确认进入微信后再开始密钥捕获。'));
     assert.ok(progress.some(message => message.includes('采集最长 300 秒')));
     assert.equal(beforeCaptureCalled, true);
-    assert.ok(progress.includes('已捕获 1 个候选密钥；密钥内容只在本机内存中处理。'));
+    assert.ok(progress.includes('已捕获 1 个候选密钥；内容只在本机内存中处理。'));
     assert.doesNotMatch(JSON.stringify(progress), new RegExp(key, 'u'));
     assert.deepEqual([...new Set(phases)], ['checking', 'closing', 'selecting-account', 'copying', 'signing', 'launching', 'capturing', 'verifying']);
     assert.equal(fake.stoppedClone()?.pid, 777);
@@ -329,6 +449,7 @@ test('capture reuses the managed clone and leaves it running after SQLCipher ver
       chooseAccountDirectory: async () => fixture.accountDirectory
     };
     const instance = new wizard.WechatConnectorWizard(fixture.userData, prompts, fixture.home, fake.runtime, {
+      backend: 'managed-clone',
       captureSeconds: 300,
       manualStopOnly: true,
       reuseManagedClone: true,
@@ -378,6 +499,7 @@ test('incomplete SQLCipher coverage continues in the same clone and privileged c
       chooseAccountDirectory: async () => fixture.accountDirectory
     };
     const instance = new wizard.WechatConnectorWizard(fixture.userData, prompts, fixture.home, fake.runtime, {
+      backend: 'managed-clone',
       manualStopOnly: true,
       reuseManagedClone: true
     });
@@ -406,7 +528,9 @@ test('capture reports the failing system step and redacts command diagnostics', 
     const fixture = createCaptureFixture(sqlCipher, directory, key);
     const fake = captureRuntime({ ...fixture, key, failCopy: true });
     const prompts = { confirmCloseWechat: async () => false, chooseAccountDirectory: async () => fixture.accountDirectory };
-    const instance = new wizard.WechatConnectorWizard(fixture.userData, prompts, fixture.home, fake.runtime);
+    const instance = new wizard.WechatConnectorWizard(fixture.userData, prompts, fixture.home, fake.runtime, {
+      backend: 'managed-clone'
+    });
 
     await assert.rejects(
       instance.capture('fixture-connection', () => {}),
@@ -418,6 +542,262 @@ test('capture reports the failing system step and redacts command diagnostics', 
         assert.doesNotMatch(error.message, new RegExp(key, 'u'));
         return true;
       }
+    );
+  });
+});
+
+test('Windows memory backend scans raw AES keys without copying, signing, or fallback', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '7a'.repeat(32);
+    const fixture = createWindowsCaptureFixture(sqlCipher, directory, key);
+    const calls = [];
+    const prompts = {
+      confirmCloseWechat: async () => {
+        throw new Error('Windows backend must not close WeChat');
+      },
+      chooseAccountDirectory: async () => {
+        throw new Error('a single detected Windows account should be selected automatically');
+      }
+    };
+    const instance = new wizard.WechatConnectorWizard(
+      join(directory, 'windows-user-data'),
+      prompts,
+      fixture.documents,
+      {
+        platform: 'win32',
+        environment: {
+          APPDATA: fixture.appData,
+          USERPROFILE: fixture.documents
+        },
+        windowsAppDataDirectory: fixture.appData,
+        windowsDocumentsDirectory: fixture.documents,
+        windowsScannerPath: fixture.scannerPath,
+        windowsWechatVersionInfo: {
+          version: '4.1.15',
+          build: '270135'
+        },
+        runFile: async (file, args) => {
+          calls.push({ file, args });
+          assert.equal(file, fixture.scannerPath);
+          return {
+            stdout: [
+              JSON.stringify({ type: 'status', phase: 'scanning', candidateCount: 0 }),
+              JSON.stringify({
+                type: 'candidate',
+                key: fixture.key,
+                salt: fixture.salt
+              }),
+              JSON.stringify({ type: 'status', phase: 'complete', candidateCount: 1 })
+            ].join('\n'),
+            stderr: ''
+          };
+        }
+      }
+    );
+    const phases = [];
+    const messages = [];
+    const captured = await instance.capture('windows-memory', state => {
+      phases.push(state.phase);
+      messages.push(state.message);
+    });
+
+    assert.equal(instance.backend, 'windows-memory');
+    assert.equal(captured.accountId, 'wxid_windows');
+    assert.equal(captured.wechatVersion, '4.1.15');
+    assert.equal(captured.wechatBuild, '270135');
+    assert.equal(Object.keys(captured.keys).length, 4);
+    assert.ok(Object.values(captured.keys).every(value => value.encKey === key));
+    assert.deepEqual(
+      [...new Set(phases)],
+      ['checking', 'capturing', 'verifying', 'complete']
+    );
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 2), ['--timeout-ms', '75000']);
+    assert.doesNotMatch(JSON.stringify(messages), new RegExp(key, 'u'));
+    assert.ok(messages.some(message => message.includes('不会复制、重签或修改微信')));
+  });
+});
+
+test('Windows scanner timeout is surfaced through the capture flow', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '5f'.repeat(32);
+    const fixture = createWindowsCaptureFixture(sqlCipher, directory, key);
+    const messages = [];
+    const instance = new wizard.WechatConnectorWizard(
+      join(directory, 'windows-user-data'),
+      {
+        confirmCloseWechat: async () => true,
+        chooseAccountDirectory: async () => fixture.accountDirectory
+      },
+      fixture.documents,
+      {
+        platform: 'win32',
+        windowsAppDataDirectory: fixture.appData,
+        windowsDocumentsDirectory: fixture.documents,
+        windowsScannerPath: fixture.scannerPath,
+        runFile: async () => ({
+          stdout: JSON.stringify({
+            type: 'status',
+            phase: 'timeout',
+            candidateCount: 0
+          }),
+          stderr: ''
+        })
+      }
+    );
+
+    await assert.rejects(
+      instance.capture('windows-timeout', state => messages.push(state.message)),
+      /Windows 微信内存扫描超时/u
+    );
+    assert.ok(messages.some(message => message.includes('不会复制、重签或修改微信')));
+    assert.doesNotMatch(JSON.stringify(messages), new RegExp(key, 'u'));
+  });
+});
+
+test('Windows account selection accepts a db_storage directory for a multi-account root', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '6d'.repeat(32);
+    const fixture = createWindowsCaptureFixture(sqlCipher, directory, key);
+    const secondAccount = join(fixture.xwechatRoot, 'wxid_second');
+    cpSync(join(fixture.accountDirectory, 'db_storage'), join(secondAccount, 'db_storage'), {
+      recursive: true
+    });
+    const prompts = {
+      confirmCloseWechat: async () => {
+        throw new Error('Windows backend must not close WeChat');
+      },
+      chooseAccountDirectory: async () => join(secondAccount, 'db_storage')
+    };
+    const instance = new wizard.WechatConnectorWizard(
+      join(directory, 'windows-user-data'),
+      prompts,
+      fixture.documents,
+      {
+        platform: 'win32',
+        windowsAppDataDirectory: fixture.appData,
+        windowsDocumentsDirectory: fixture.documents,
+        windowsScannerPath: fixture.scannerPath,
+        windowsWechatVersionInfo: {
+          version: '4.1.15',
+          build: '270135'
+        },
+        runFile: async () => ({
+          stdout: [
+            JSON.stringify({ type: 'candidate', key: fixture.key, salt: fixture.salt }),
+            JSON.stringify({ type: 'status', phase: 'complete', candidateCount: 1 })
+          ].join('\n'),
+          stderr: ''
+        })
+      }
+    );
+
+    const captured = await instance.capture('windows-multi-account', () => {});
+    assert.equal(captured.accountId, 'wxid_second');
+    assert.equal(captured.dataDirectory, realpathSync(secondAccount));
+    assert.equal(Object.keys(captured.keys).length, 4);
+  });
+});
+
+test('Windows scanner failures redact keys and give an elevation hint', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '8b'.repeat(32);
+    const fixture = createWindowsCaptureFixture(sqlCipher, directory, key);
+    const instance = new wizard.WechatConnectorWizard(
+      join(directory, 'windows-user-data'),
+      {
+        confirmCloseWechat: async () => true,
+        chooseAccountDirectory: async () => fixture.accountDirectory
+      },
+      fixture.documents,
+      {
+        platform: 'win32',
+        windowsAppDataDirectory: fixture.appData,
+        windowsDocumentsDirectory: fixture.documents,
+        windowsScannerPath: fixture.scannerPath,
+        runFile: async () => {
+          throw Object.assign(new Error('scanner failed'), {
+            code: 'EACCES',
+            stderr: `OpenProcess failed ${key} C:\\Users\\tester\\Weixin.exe`
+          });
+        }
+      }
+    );
+
+    await assert.rejects(
+      instance.capture('windows-scan-failure', () => {}),
+      error => {
+        assert.match(error.message, /管理员身份运行 Rambo/u);
+        assert.match(error.message, /<用户目录>/u);
+        assert.doesNotMatch(error.message, new RegExp(key, 'u'));
+        assert.doesNotMatch(error.message, /C:\\Users\\tester/u);
+        return true;
+      }
+    );
+  });
+});
+
+test('Windows account root parser accepts MyDocument and absolute paths', async () => {
+  await withWizard(async ({ windows }) => {
+    const documents = join(tmpdir(), 'rambo-windows-documents');
+    assert.equal(
+      windows.parseWindowsWechatDataRoot('MyDocument:\\\r\n', documents),
+      documents
+    );
+    assert.equal(
+      windows.parseWindowsWechatDataRoot('D:\\WeChatFiles', documents),
+      'D:\\WeChatFiles'
+    );
+    assert.equal(windows.parseWindowsWechatDataRoot('relative/path', documents), null);
+  });
+});
+
+test('Windows scanner output parser keeps only bounded valid candidates', async () => {
+  await withWizard(async ({ windows }) => {
+    const key = '9c'.repeat(32);
+    const salt = 'de'.repeat(16);
+    const parsed = windows.parseWindowsScannerOutput([
+      JSON.stringify({ type: 'candidate', key: key.toUpperCase(), salt }),
+      JSON.stringify({ type: 'candidate', key, salt }),
+      JSON.stringify({ type: 'candidate', key: 'short', salt }),
+      JSON.stringify({ type: 'status', candidateCount: 2 }),
+      'not json'
+    ].join('\n'));
+    assert.deepEqual(parsed, {
+      candidates: [{ key, salt }],
+      reportedCount: 2,
+      timedOut: false
+    });
+  });
+});
+
+test('Windows scanner output parser surfaces an explicit timeout', async () => {
+  await withWizard(async ({ windows }) => {
+    const parsed = windows.parseWindowsScannerOutput(
+      JSON.stringify({ type: 'status', phase: 'timeout', candidateCount: 0 })
+    );
+    assert.deepEqual(parsed, {
+      candidates: [],
+      reportedCount: 0,
+      timedOut: true
+    });
+  });
+});
+
+test('explicit backend cannot override the current platform adapter', async () => {
+  await withWizard(async ({ wizard }) => {
+    assert.throws(
+      () => new wizard.WechatConnectorWizard(
+        join(tmpdir(), 'rambo-platform-mismatch'),
+        {
+          confirmCloseWechat: async () => true,
+          chooseAccountDirectory: async () => null
+        },
+        tmpdir(),
+        { platform: 'win32' },
+        { backend: 'managed-clone' }
+      ),
+      /后端与当前操作系统不匹配/u
     );
   });
 });

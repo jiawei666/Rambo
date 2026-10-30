@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
 import { DOMParser } from '@xmldom/xmldom';
+import { terminateProcessTree } from './platform/process';
 
 export type WechatMediaContentItem =
   | { type: 'inputText'; text: string }
@@ -51,7 +52,11 @@ function runProcess(
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
-      child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn(binary, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: process.platform !== 'win32'
+      });
     } catch {
       reject(new Error('无法启动本机媒体处理器'));
       return;
@@ -68,13 +73,21 @@ function runProcess(
       else resolve(output ?? Buffer.alloc(0));
     };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      terminateProcessTree(child, {
+        platform: process.platform,
+        processGroup: process.platform !== 'win32',
+        graceMs: 0
+      });
       finish(new Error('微信媒体处理超时'));
     }, timeoutMs);
     child.stdout?.on('data', (chunk: Buffer) => {
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes) {
-        child.kill('SIGKILL');
+        terminateProcessTree(child, {
+          platform: process.platform,
+          processGroup: process.platform !== 'win32',
+          graceMs: 0
+        });
         finish(new Error('微信媒体处理结果超过大小限制'));
         return;
       }

@@ -35,6 +35,19 @@
   },
   "areas": [
     {
+      "id": "release-tooling",
+      "label": "双平台发版 Skill、产物与 App Server 校验",
+      "paths": [
+        ".agents/skills/rambo-release/**",
+        "tests/backend/release-package.test.mjs",
+        ".github/workflows/windows-build.yml",
+        "config/runtime-targets.json"
+      ],
+      "checks": ["backend-unit", "acceptance-structure"],
+      "backendTargets": ["tests/backend/release-package.test.mjs"],
+      "reason": "发版必须同时验证平台产物、架构和各自内置的 Codex App Server"
+    },
+    {
       "id": "docs-decisions",
       "label": "产品决策、验收文档与证据",
       "paths": ["AGENTS.md", "README.md", "docs/**", ".agents/skills/**"],
@@ -79,6 +92,37 @@
       "checks": ["typecheck", "electron-e2e"],
       "e2eTargets": ["tests/e2e/avatar-picker.spec.mjs"],
       "reason": "头像眼型首帧和鼠标跟随需要真实 Electron 渲染验证"
+    },
+    {
+      "id": "desktop-platform",
+      "label": "macOS 与 Windows 桌面平台抽象",
+      "paths": [
+        "src/shared/platform.ts",
+        "src/main/platform/**",
+        "scripts/platform-target.mjs",
+        "tests/backend/platform-helpers.test.mjs",
+        "tests/backend/platform-paths.test.mjs",
+        "tests/backend/platform-process.test.mjs",
+        "tests/backend/platform-target.test.mjs",
+        "tests/backend/platform-archive.test.mjs",
+        "tests/backend/platform-fs.test.mjs",
+        "tests/backend/desktop-shell.test.mjs",
+        "tests/backend/login-item.test.mjs",
+        "tests/backend/system-indicators.test.mjs"
+      ],
+      "checks": ["typecheck", "backend-unit"],
+      "backendTargets": [
+        "tests/backend/platform-helpers.test.mjs",
+        "tests/backend/platform-paths.test.mjs",
+        "tests/backend/platform-process.test.mjs",
+        "tests/backend/platform-target.test.mjs",
+        "tests/backend/platform-archive.test.mjs",
+        "tests/backend/platform-fs.test.mjs",
+        "tests/backend/desktop-shell.test.mjs",
+        "tests/backend/login-item.test.mjs",
+        "tests/backend/system-indicators.test.mjs"
+      ],
+      "reason": "平台路径、进程启动、归档、登录项、托盘和窗口外壳必须同时覆盖 macOS 与 Windows 语义"
     },
     {
       "id": "composer-attachments",
@@ -182,6 +226,7 @@
         "src/main/chat-content-tools.ts",
         "src/main/host.ts",
         "src/main/login-item.ts",
+        "src/main/realtime-audio-bridge.ts",
         "src/main/routine-schedule.ts",
         "src/main/routine-scheduler.ts",
         "src/main/runtime.ts",
@@ -234,12 +279,21 @@
         "src/main/wechat-adapter.ts",
         "src/main/wechat-sqlcipher.ts",
         "src/main/wechat-tools.ts",
+        "src/main/wechat-platform-types.ts",
+        "src/main/wechat-connector-common.ts",
+        "src/main/wechat-connector-macos.ts",
+        "src/main/wechat-connector-windows.ts",
+        "src/main/wechat-connector-wizard.ts",
+        "native/wechat-windows-key-scanner/**",
+        "scripts/build-native-media.mjs",
+        "tests/backend/wechat-connector-wizard.test.mjs",
         "tests/backend/wechat-adapter.test.mjs",
         "tests/backend/wechat-sqlcipher.test.mjs",
         "tests/backend/wechat-tools.test.mjs"
       ],
       "checks": ["typecheck", "backend-unit"],
       "backendTargets": [
+        "tests/backend/wechat-connector-wizard.test.mjs",
         "tests/backend/wechat-adapter.test.mjs",
         "tests/backend/wechat-tools.test.mjs",
         "tests/backend/connector-credentials.test.mjs",
@@ -258,14 +312,19 @@
     },
     {
       "id": "electron-voice-waveform-analysis",
-      "label": "真实 Web Audio 语音频谱分析",
+      "label": "真实 Web Audio 语音频谱分析与 PCM 播放",
       "paths": [
+        "src/renderer/voice-playback.ts",
         "src/renderer/voice-waveform-model.ts",
+        "tests/backend/voice-playback.test.mjs",
         "tests/backend/voice-waveform-model.test.mjs",
         "tests/e2e/voice-waveform-analysis.spec.mjs"
       ],
       "checks": ["backend-unit", "electron-e2e"],
-      "backendTargets": ["tests/backend/voice-waveform-model.test.mjs"],
+      "backendTargets": [
+        "tests/backend/voice-playback.test.mjs",
+        "tests/backend/voice-waveform-model.test.mjs"
+      ],
       "e2eTargets": [
         "tests/e2e/voice-waveform-analysis.spec.mjs",
         "tests/e2e/private-chat.spec.mjs"
@@ -296,9 +355,24 @@
     {
       "id": "build-config",
       "label": "构建与打包配置",
-      "paths": ["electron.vite.config.ts", "playwright.config.mjs", "package-lock.json"],
+      "paths": [
+        "electron.vite.config.ts",
+        "playwright.config.mjs",
+        "package.json",
+        "package-lock.json",
+        "config/**",
+        "native/**",
+        "scripts/build-native-media.mjs",
+        "scripts/package-desktop.mjs",
+        "scripts/prepare-ffmpeg.mjs",
+        "scripts/prepare-icon.mjs",
+        "scripts/prepare-runtime.mjs",
+        "scripts/sign-mac.mjs",
+        "assets/branding/app.ico",
+        ".github/workflows/**"
+      ],
       "checks": ["typecheck", "build"],
-      "reason": "构建配置变化需要验证产物可生成"
+      "reason": "平台目标、原生工具或打包配置变化必须验证 Electron 产物可生成"
     },
     {
       "id": "package-manifest",

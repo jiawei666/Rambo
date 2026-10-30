@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { BotResource } from '../shared/contracts';
 
 export interface BotResourceDiscovery {
@@ -77,7 +77,7 @@ export interface BotResourceDiscoveryOptions {
 }
 
 function accountHome(): string {
-  return process.env.HOME || homedir();
+  return process.env.USERPROFILE || process.env.HOME || homedir();
 }
 
 function resourceRoots(home: string): Array<{ path: string; source: string; bundled?: boolean }> {
@@ -158,7 +158,7 @@ function pluginMcpConfiguration(
     if (typeof next.command === 'string' && /^\.{1,2}[\\/]/u.test(next.command)) {
       next.command = resolve(pluginRoot, next.command);
     }
-    if (typeof next.cwd === 'string' && !next.cwd.startsWith('/')) {
+    if (typeof next.cwd === 'string' && !isAbsolute(next.cwd)) {
       next.cwd = resolve(pluginRoot, next.cwd);
     }
     mcpServers[name] = next;

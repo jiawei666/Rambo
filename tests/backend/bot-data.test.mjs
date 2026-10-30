@@ -9,11 +9,23 @@ import ts from 'typescript';
 const sourcePath = new URL('../../src/main/bot-data.ts', import.meta.url);
 const compiled = ts.transpileModule(readFileSync(sourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText.replace(
+  "from './platform/paths'",
+  "from './platform/paths.mjs'"
+);
+const platformPathsSource = readFileSync(
+  new URL('../../src/main/platform/paths.ts', import.meta.url),
+  'utf8'
+);
+const compiledPlatformPaths = ts.transpileModule(platformPathsSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText;
 
 async function withDirectory(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-bot-data-test-'));
   const modulePath = join(directory, 'bot-data.mjs');
+  mkdirSync(join(directory, 'platform'));
+  writeFileSync(join(directory, 'platform', 'paths.mjs'), compiledPlatformPaths, { mode: 0o600 });
   writeFileSync(modulePath, compiled, { mode: 0o600 });
   try {
     const { removeManagedBotDirectory } = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);

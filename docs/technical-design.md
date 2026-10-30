@@ -50,7 +50,7 @@ flowchart TD
 
 ### 包中是什么
 
-安装包内置上游运行时，但不软链接本机 Codex 二进制。当前固定基线为 macOS ARM64 `codex-app-server` `0.165.0`，归档 SHA-256 为 `db80061560c75c440efe11d347f5bebcf78aa895b40e38ca47623d8a37b41cd7`，发布时复制到 `Contents/Resources/runtime/codex/0.165.0`。Rambo 启动包内或用户手动更新的 `codex-app-server --listen stdio:// --session-source app-server` 子进程；不连接本机 daemon，不使用本机 `codex app-server`。基础包与 Voice 可选组件必须使用同一版本/目标架构，Computer Use 继续作为独立组件处理。官方独立包、完整 CLI 包和 Voice 资源差异见 [历史隔离方案](history-isolation-plan.md) 与 [App Server 证据](app-server-evidence.md)；不是把 Codex 桌面 GUI 或模型权重放进包。
+安装包按构建目标内置上游运行时，但不软链接本机 Codex 二进制。当前固定基线为 `codex-app-server` `0.165.0`：macOS ARM64 使用 `aarch64-apple-darwin`，Windows x64 使用 `x86_64-pc-windows-msvc`；每个包只能包含本目标二进制，运行时目标、归档 SHA-256、入口和 manifest 统一以 `config/runtime-targets.json` 为准。macOS 发布时复制到 `Contents/Resources/runtime/codex/0.165.0`，Windows 发布时复制到 `resources/runtime/codex/0.165.0`。Rambo 启动包内或用户手动更新的 `codex-app-server --listen stdio:// --session-source app-server` 子进程；不连接本机 daemon，不使用本机 `codex app-server`。基础包与 Voice 可选组件必须使用同一版本/目标架构，Computer Use 继续作为独立组件处理。官方独立包、完整 CLI 包和 Voice 资源差异见 [历史隔离方案](history-isolation-plan.md) 与 [App Server 证据](app-server-evidence.md)；不是把 Codex 桌面 GUI 或模型权重放进包。
 
 Rambo 的内置运行时位于 `<Resources>/runtime/codex/<version>/`，用户手动更新的运行时位于 `<userData>/runtime/codex/<version>/`，均按独立 package 的 manifest 保留全部相对布局。现有独立包包含 `bin/codex-app-server`、`bin/codex-code-mode-host`、`codex-path/rg` 和 `codex-package.json`。用户目录中带 `updateChannel: "manual"` 的版本优先，应用更新带来的新内置基线不得自动覆盖；损坏或缺失时回退到仍可用的内置基线。独立包本身没有 Voice Host 或 Computer Use 服务；Voice 需作为同版本可选组件补齐，Computer Use 需独立服务。相关体积和资源清单见 [独立包清单](evidence/codex-app-server-0.163.0-darwin-arm64-inventory.json)。
 

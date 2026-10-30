@@ -71,6 +71,132 @@ test('manual connection test sends a real minimal Responses request and reports 
   assert.match(result.message, /Responses 响应/u);
 });
 
+test('manual model catalog uses the configured API key and normalizes model records', async () => {
+  let observed = null;
+  const models = await module.listManualApiModels({
+    serviceName: 'Local gateway',
+    baseUrl: 'https://api.example.com/v1/',
+    model: ''
+  }, 'sk-model-list', {
+    fetchImpl: async (url, init) => {
+      observed = { url, init };
+      return new Response(JSON.stringify({
+        data: [
+          { id: 'model-b', display_name: 'Model B' },
+          { id: 'model-a', name: 'Model A', is_default: true },
+          { id: 'model-a', display_name: 'Duplicate A' },
+          { id: '', name: 'Missing id' }
+        ]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  assert.equal(observed.url, 'https://api.example.com/v1/models');
+  assert.equal(observed.init.method, 'GET');
+  assert.equal(observed.init.headers.authorization, 'Bearer sk-model-list');
+  assert.deepEqual(models, [
+    { id: 'model-b', label: 'Model B', isDefault: false },
+    { id: 'model-a', label: 'Model A', isDefault: true }
+  ]);
+});
+
+test('manual model catalog fails visibly for an invalid response', async () => {
+  await assert.rejects(() => module.listManualApiModels({
+    serviceName: '', baseUrl: 'https://api.example.com/v1', model: ''
+  }, 'sk-test', {
+    fetchImpl: async () => new Response(JSON.stringify({ data: [] }), { status: 200 })
+  }), /模型列表为空/u);
+
+  await assert.rejects(() => module.listManualApiModels({
+    serviceName: '', baseUrl: 'https://api.example.com/v1', model: ''
+  }, 'sk-test', {
+    fetchImpl: async () => new Response('forbidden', { status: 403 })
+  }), /获取模型列表失败：HTTP 403：forbidden/u);
+});
+
+test('manual model catalog requires an explicitly selected default model', () => {
+  assert.deepEqual(module.validateManualApiModelCatalog([
+    { id: 'model-a', label: 'Model A' },
+    { id: 'model-b', label: 'Model B' },
+    { id: 'model-a', label: 'Duplicate A' }
+  ], 'model-b'), [
+    { id: 'model-a', label: 'Model A', isDefault: false },
+    { id: 'model-b', label: 'Model B', isDefault: true }
+  ]);
+  assert.throws(
+    () => module.validateManualApiModelCatalog([], 'model-a'),
+    /至少勾选一个模型/u
+  );
+  assert.throws(
+    () => module.validateManualApiModelCatalog([{ id: 'model-a', label: 'Model A' }], 'model-b'),
+    /默认模型必须来自/u
+  );
+});
+
+test('manual source state exposes the saved model pool and requires its default', () => {
+  const state = module.modelSourceStateFrom({
+    modelSource: 'manualApi',
+    manualModelServiceName: 'Fixture API',
+    manualModelBaseUrl: 'https://api.example.com/v1',
+    manualModelId: 'model-b',
+    defaultBotModels: JSON.stringify([
+      { id: 'model-a', label: 'Model A', isDefault: false },
+      { id: 'model-b', label: 'Model B', isDefault: false }
+    ])
+  }, true);
+  assert.deepEqual(state.models, [
+    { id: 'model-a', label: 'Model A', isDefault: false },
+    { id: 'model-b', label: 'Model B', isDefault: true }
+  ]);
+  assert.equal(module.manualModelSourceAvailable(state), true);
+  assert.equal(module.manualModelSourceAvailable({ ...state, models: [] }), false);
+
+  const localState = module.modelSourceStateFrom({
+    modelSource: 'local',
+    manualModelServiceName: 'Fixture API',
+    manualModelBaseUrl: 'https://api.example.com/v1',
+    manualModelId: 'model-b',
+    manualModelCatalog: JSON.stringify([
+      { id: 'model-a', label: 'Model A' },
+      { id: 'model-b', label: 'Model B' }
+    ]),
+    defaultBotModels: JSON.stringify([
+      { id: 'local-model', label: 'Local Model' }
+    ])
+  }, true);
+  assert.equal(localState.kind, 'local');
+  assert.deepEqual(localState.models, [
+    { id: 'model-a', label: 'Model A', isDefault: false },
+    { id: 'model-b', label: 'Model B', isDefault: true }
+  ]);
+
+  const missingPool = module.modelSourceStateFrom({
+    modelSource: 'local',
+    manualModelServiceName: 'Incomplete API',
+    manualModelBaseUrl: 'https://api.example.com/v1',
+    manualModelId: 'legacy-model'
+  }, true);
+  assert.deepEqual(missingPool.models, []);
+  assert.equal(module.manualModelSourceAvailable(missingPool), false);
+
+  const emptyCatalogFallback = module.modelSourceStateFrom({
+    modelSource: 'manualApi',
+    manualModelServiceName: 'Legacy API',
+    manualModelBaseUrl: 'https://api.example.com/v1',
+    manualModelId: 'model-b',
+    manualModelCatalog: '',
+    defaultBotModels: JSON.stringify([
+      { id: 'model-b', label: 'Model B' }
+    ])
+  }, true);
+  assert.deepEqual(emptyCatalogFallback.models, [
+    { id: 'model-b', label: 'Model B', isDefault: true }
+  ]);
+  assert.equal(module.manualModelSourceAvailable(emptyCatalogFallback), true);
+});
+
 test('manual connection test fails visibly for HTTP errors and timeouts', async () => {
   await assert.rejects(() => module.testManualModelApi({
     serviceName: '', baseUrl: 'https://api.example.com/v1', model: 'model'

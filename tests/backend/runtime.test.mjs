@@ -8,14 +8,54 @@ import { test } from 'node:test';
 import ts from 'typescript';
 
 const runtimeSourcePath = new URL('../../src/main/runtime.ts', import.meta.url);
-const compiledRuntime = ts.transpileModule(readFileSync(runtimeSourcePath, 'utf8'), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
-}).outputText.replace("from './runtime-home'", "from './runtime-home.mjs'");
+const compilerOptions = {
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.ESNext
+};
+const runtimeTargetConfigUrl = new URL('../../config/runtime-targets.json', import.meta.url).href;
+
+function compileTypeScriptModule(sourceUrl, { runtimeTarget = false } = {}) {
+  let output = ts.transpileModule(readFileSync(sourceUrl, 'utf8'), { compilerOptions }).outputText;
+  if (runtimeTarget) {
+    output = output.replace(
+      "'../../../config/runtime-targets.json'",
+      JSON.stringify(runtimeTargetConfigUrl)
+    );
+  }
+  return output.replace(
+    /(from\s+['"])(\.[^'"]+)(['"])/gu,
+    (match, prefix, specifier, suffix) =>
+      specifier.endsWith('.mjs') ? match : `${prefix}${specifier}.mjs${suffix}`
+  );
+}
+
+const compiledRuntime = compileTypeScriptModule(runtimeSourcePath);
 
 async function withRuntime(run) {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-runtime-test-'));
   const modulePath = join(directory, 'runtime.mjs');
-  writeFileSync(join(directory, 'runtime-home.mjs'), ts.transpileModule(readFileSync(new URL('../../src/main/runtime-home.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
+  mkdirSync(join(directory, 'platform'), { recursive: true });
+  writeFileSync(
+    join(directory, 'runtime-home.mjs'),
+    compileTypeScriptModule(new URL('../../src/main/runtime-home.ts', import.meta.url))
+  );
+  writeFileSync(
+    join(directory, 'realtime-audio-bridge.mjs'),
+    compileTypeScriptModule(new URL('../../src/main/realtime-audio-bridge.ts', import.meta.url))
+  );
+  for (const name of ['archive', 'fs', 'process']) {
+    writeFileSync(
+      join(directory, 'platform', `${name}.mjs`),
+      compileTypeScriptModule(new URL(`../../src/main/platform/${name}.ts`, import.meta.url))
+    );
+  }
+  writeFileSync(
+    join(directory, 'platform', 'runtime-target.mjs'),
+    compileTypeScriptModule(
+      new URL('../../src/main/platform/runtime-target.ts', import.meta.url),
+      { runtimeTarget: true }
+    )
+  );
   writeFileSync(modulePath, compiledRuntime, { mode: 0o600 });
   try {
     const { CodexRuntime, resolveRuntimeLayout } = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);
@@ -153,7 +193,17 @@ test('Runtime launches its own Codex child with the isolated session source and 
       assert.equal(runtime.state.status, 'ready');
       assert.equal(spawnCalls.length, 1);
       assert.match(spawnCalls[0].command, /runtime\/codex\/0\.163\.0\/bin\/codex-app-server$/);
-      assert.deepEqual(spawnCalls[0].args, ['--listen', 'stdio://', '--session-source', 'app-server', '-c', 'cli_auth_credentials_store="file"', '-c', `sqlite_home=${JSON.stringify(join(workingDirectory, 'codex-home'))}`]);
+      assert.deepEqual(spawnCalls[0].args.slice(0, 6), [
+        '--listen', 'stdio://', '--session-source', 'app-server',
+        '-c', 'cli_auth_credentials_store="file"'
+      ]);
+      assert.ok(spawnCalls[0].args.includes(
+        `sqlite_home=${JSON.stringify(join(workingDirectory, 'codex-home'))}`
+      ));
+      assert.ok(spawnCalls[0].args.some(argument =>
+        /^experimental_realtime_ws_base_url="ws:\/\/127\.0\.0\.1:\d+\/v1\/[A-Za-z0-9_-]+"$/u
+          .test(argument)
+      ));
       assert.equal(spawnCalls[0].options.env.CODEX_HOME, join(workingDirectory, 'codex-home'));
       assert.equal(spawnCalls[0].options.env.CODEX_SQLITE_HOME, join(workingDirectory, 'codex-home'));
       assert.equal(spawnCalls[0].options.cwd, workingDirectory);

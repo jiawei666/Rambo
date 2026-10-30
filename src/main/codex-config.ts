@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ManualApiConfig } from '../shared/contracts';
 import { manualProviderToml } from './model-source';
+import { renameWithRetry } from './platform/fs';
 
 const MANUAL_PROVIDER_ID = 'rambo_manual';
 const MANUAL_SECTION = `[model_providers.${MANUAL_PROVIDER_ID}]`;
@@ -158,7 +159,7 @@ async function writeAtomic(path: string, value: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, value, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, path);
+    await renameWithRetry(temporary, path);
   } finally {
     await rm(temporary, { force: true });
   }

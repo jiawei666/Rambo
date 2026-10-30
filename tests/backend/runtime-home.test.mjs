@@ -15,8 +15,14 @@ async function fixture(run) {
   const compiled = ts.transpileModule(
     await readFile(new URL('../../src/main/runtime-home.ts', import.meta.url), 'utf8'),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }
+  ).outputText.replace("from './platform/fs'", "from './platform/fs.mjs'");
+  const compiledPlatformFs = ts.transpileModule(
+    await readFile(new URL('../../src/main/platform/fs.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }
   ).outputText;
   const modulePath = join(root, 'home.mjs');
+  await mkdir(join(root, 'platform'));
+  await writeFile(join(root, 'platform', 'fs.mjs'), compiledPlatformFs);
   await writeFile(modulePath, compiled);
   const module = await import(`${pathToFileURL(modulePath).href}?${Date.now()}-${Math.random()}`);
   try {
@@ -139,14 +145,14 @@ test('native Codex appearing after an independent Rambo login requires an explic
   });
 });
 
-test('Keychain-only native authentication is reported without pretending to copy auth.json', async () => {
+test('system credential-store authentication is reported without pretending to copy auth.json', async () => {
   await fixture(async (RuntimeHomeManager, native, store) => {
     await writeFile(join(native, 'config.toml'), 'cli_auth_credentials_store = "keyring"');
     const manager = new RuntimeHomeManager(native, store, () => [], { watch: false });
     try {
       const home = await manager.prepare();
       await assert.rejects(readFile(join(home, 'auth.json')), { code: 'ENOENT' });
-      assert.match(manager.snapshot().warning, /Keychain\/auto/);
+      assert.match(manager.snapshot().warning, /系统凭证库\/auto/);
       assert.match(manager.snapshot().warning, /独立登录/);
     } finally {
       manager.dispose();

@@ -51,7 +51,7 @@ test('候选应用内置 Codex App Server，并在空配置下直接启动', asy
     expect(paths.resourcesPath).toBe(join(candidate, 'Contents/Resources'));
     await expect(page.getByRole('heading', { name: '系统设置', exact: true }))
       .toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('tab', { name: '账号', exact: true }))
+    await expect(page.getByRole('tab', { name: '模型配置', exact: true }))
       .toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('[data-sidebar-action="configure"]')).toBeVisible();
     await expect(page.getByLabel('创建 Bot')).toHaveCount(0);
