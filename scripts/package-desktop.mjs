@@ -63,7 +63,9 @@ if (target.platform === 'darwin') {
       electronBuilderCli,
       '--mac',
       '--dir',
-      `--${target.arch}`
+      `--${target.arch}`,
+      '--publish',
+      'never'
     ]
   ]);
   plan.push([
@@ -78,7 +80,9 @@ if (target.platform === 'darwin') {
       electronBuilderCli,
       '--win',
       mode === 'nsis' ? 'nsis' : '--dir',
-      `--${target.arch}`
+      `--${target.arch}`,
+      '--publish',
+      'never'
     ]
   ]);
 }
