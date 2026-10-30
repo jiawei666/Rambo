@@ -67,5 +67,4 @@ jobs:
           name: Rambo-windows-x64-candidate
           path: |
             dist/release
-            dist/win-unpacked
           if-no-files-found: error
