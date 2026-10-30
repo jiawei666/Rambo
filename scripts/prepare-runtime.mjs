@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { execFileSync } from 'node:child_process';
@@ -74,6 +74,26 @@ async function renameWithRetry(source, targetPath) {
   throw lastError;
 }
 
+async function moveExtractedRuntime(source, targetPath) {
+  try {
+    await renameWithRetry(source, targetPath);
+    return;
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+  }
+  try {
+    await cp(source, targetPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true
+    });
+    await rm(source, { recursive: true, force: true });
+  } catch (error) {
+    await rm(targetPath, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 const tarCommand = process.platform === 'win32'
   ? join(process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows', 'System32', 'tar.exe')
   : 'tar';
@@ -132,7 +152,7 @@ try {
   ) throw new Error('归档布局与固定平台目标不匹配');
   await mkdir(resolve(projectRoot, 'runtime/codex'), { recursive: true });
   await rm(destination, { recursive: true, force: true });
-  await renameWithRetry(extracted, destination);
+  await moveExtractedRuntime(extracted, destination);
   await writeFile(join(destination, 'rambo-runtime.json'), JSON.stringify({
     version,
     sha256: target.sha256,
