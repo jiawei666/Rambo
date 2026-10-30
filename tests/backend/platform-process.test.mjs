@@ -137,7 +137,10 @@ test('Windows node_modules cmd shims receive the cross-spawn double escaping', (
   const invocation = processPlatform.commandInvocation(
     'C:\\Project\\node_modules\\.bin\\tool.cmd',
     ['a&b'],
-    { platform: 'win32' }
+    {
+      platform: 'win32',
+      environment: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }
+    }
   );
   assert.equal(invocation.command, 'C:\\Windows\\System32\\cmd.exe');
   assert.match(invocation.args[3], /\^\^&/u);

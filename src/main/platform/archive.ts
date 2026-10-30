@@ -19,12 +19,23 @@ export function systemTarCommand(options: ArchiveCommandOptions = {}): string {
   return (options.exists ?? existsSync)(bundledTar) ? bundledTar : 'tar.exe';
 }
 
-function archiveFailure(action: string, archivePath: string, error: unknown): Error {
+function archiveFailure(
+  action: string,
+  archivePath: string,
+  error: unknown,
+  platform: NodeJS.Platform
+): Error {
   const code = (error as NodeJS.ErrnoException)?.code;
   const detail = error instanceof Error ? error.message : String(error);
   if (code === 'ENOENT') {
     return new Error(
       `系统没有可用的 tar 解压工具，无法${action}：${archivePath}。` +
+      'Windows 10/11 应自带 System32\\tar.exe；请先更新系统或修复系统组件。'
+    );
+  }
+  if (platform === 'win32') {
+    return new Error(
+      `无法${action} ${archivePath}：${detail}。` +
       'Windows 10/11 应自带 System32\\tar.exe；请先更新系统或修复系统组件。'
     );
   }
@@ -43,7 +54,12 @@ export function listTarGzEntries(
       maxBuffer: 16 * 1024 * 1024
     }).trim().split(/\r?\n/u).filter(Boolean);
   } catch (error) {
-    throw archiveFailure('读取 Codex 运行时归档', archivePath, error);
+    throw archiveFailure(
+      '读取 Codex 运行时归档',
+      archivePath,
+      error,
+      options.platform ?? process.platform
+    );
   }
 }
 
@@ -58,6 +74,11 @@ export function extractTarGz(
       windowsHide: true
     });
   } catch (error) {
-    throw archiveFailure('解压 Codex 运行时归档', archivePath, error);
+    throw archiveFailure(
+      '解压 Codex 运行时归档',
+      archivePath,
+      error,
+      options.platform ?? process.platform
+    );
   }
 }
