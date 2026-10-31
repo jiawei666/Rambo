@@ -12,9 +12,11 @@
 - 项目素材相对路径：`assets/branding/app-logo-source.png`。
 - 图片规格：PNG，1254 × 1254 像素。
 - SHA-256：`fc527b8ebc1ae67cce4fb673ef49bc5613b2efb7d70e308d564e1240053ad37e`。
-- macOS 菜单栏状态图标：用户于 2026-10-23 指定小机器人斜眼，并明确脸型使用应用内原本的机器人圆头而非参考图正圆、图标尺寸要适配菜单栏、颜色交给系统统一染色，见 [Q80](decision-followups.md#q80)。本地 SVG 设计源与动画帧位于 `assets/branding/tray-frames/`，输出 18×18 PNG 和 36×36 `@2x` PNG，运行时按 18×18 pt 的 template 图像加载；眼睛使用透明镂空。Dock 应用图标仍使用上述战士 Logo。
+- 托盘/菜单栏 Logo：用户于 2026-10-31 最终确认使用红头带战士单色轮廓，并明确 Windows 也使用该图，均不播放动态效果，见 [Q220](decision-followups.md#q220)。唯一源图保存为 `assets/branding/tray-logo-source.png`，SHA-256 为 `f3323d77b7ad610a4ec75c7ba25e7ca6e49e626ebc741e80aecd33a5de96a2b7`。Windows 使用 `brand.png` / `brand@2x.png` 和 `brand-dark.png` / `brand-dark@2x.png` 两套静态黑/白轮廓，随系统浅色/深色主题切换；macOS 使用 `brand.png` / `brand@2x.png` 作为 template 蒙版，由系统自动着色。Dock 与应用包图标仍使用 `app-logo-source.png`。
 
 该素材是原始文件的字节一致副本，不是重新生成或编辑后的图。Downloads 原件保持原位。具体 macOS 图标尺寸资源和应用包图标接入在实现阶段处理，最终视觉按 P02/全量验收矩阵复核；本轮没有编写应用代码或声称已完成打包。
+
+托盘图是独立品牌素材，不替换上面的应用 Logo。旧机器人 SVG、眨眼/瞟视帧和 `working*` 已按用户要求清理，不再保留在当前项目中；历史决定仅记录在 [Q80](decision-followups.md#q80)。
 
 应用图标与各个 Bot 的头像是两层设置，Bot 预置/上传/生成头像功能继续按 I03 实现。
 

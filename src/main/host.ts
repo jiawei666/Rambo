@@ -11,6 +11,7 @@ import type {
   SecretCapturePrompt, ModelSourceKind
 } from '../shared/contracts';
 import { botExecutionConfigError } from '../shared/execution-config';
+import { voiceModelPreflightError } from '../shared/voice-support';
 import {
   clearBotResourceCache,
   discoverBotResources,
@@ -4291,6 +4292,15 @@ export class Host {
     const bot = this.store.bot(chat.botId);
     if (chat.archived || bot.archived) throw new Error('请先恢复已归档的聊天或 Bot');
     this.assertBotExecutionReady(bot);
+    const voiceSupportError = voiceModelPreflightError(
+      this.modelSourceStatus?.() ?? {
+        kind: 'local',
+        manual: { serviceName: '', baseUrl: '', model: '' },
+        models: [],
+        hasApiKey: false
+      }
+    );
+    if (voiceSupportError) throw new Error(voiceSupportError);
     if (this.voiceStartWaiters.has(chatId) || this.voiceSessions.has(chatId)) {
       throw new Error('当前聊天已有语音会话，请先结束');
     }

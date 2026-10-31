@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, session, shell, Tray, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, protocol, session, shell, Tray, utilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
@@ -2159,7 +2159,16 @@ function showWindow(): void {
     title: acceptanceRunId ? `Rambo · 验收 ${acceptanceRunId}` : 'Rambo', width: 1100, height: 760, minWidth: 760, minHeight: 560,
     backgroundColor: '#ffffff',
     webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
-  }));
+  }, nativeTheme.shouldUseDarkColors));
+  if (desktop === 'win32') {
+    const updateTitleBarOverlay = () => window?.setTitleBarOverlay({
+      color: nativeTheme.shouldUseDarkColors ? '#121212' : '#fcfcfc',
+      symbolColor: nativeTheme.shouldUseDarkColors ? '#f5f5f5' : '#1c1c1c',
+      height: 44
+    });
+    nativeTheme.on('updated', updateTitleBarOverlay);
+    window.on('closed', () => nativeTheme.off('updated', updateTitleBarOverlay));
+  }
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
@@ -2196,6 +2205,13 @@ function installSystemIndicators(): void {
       if (template) image.setTemplateImage(true);
       return image;
     },
+    theme: {
+      isDark: () => nativeTheme.shouldUseDarkColors,
+      onChange: listener => {
+        nativeTheme.on('updated', listener);
+        return () => nativeTheme.off('updated', listener);
+      }
+    },
     createTray: image => {
       const tray = new Tray(image as Electron.NativeImage);
       tray.on('double-click', showWindow);
@@ -2207,10 +2223,7 @@ function installSystemIndicators(): void {
       showWindow();
       window?.webContents.send('rambo:event', { type: 'focusBot', botId } satisfies AppEvent);
     },
-    quit: () => app.quit(),
-    schedule: (callback, delay) => setTimeout(callback, delay),
-    cancel: timer => clearTimeout(timer),
-    random: Math.random
+    quit: () => app.quit()
   });
   systemIndicators = indicators;
   indicators.start();
@@ -2431,9 +2444,8 @@ else {
     loginItem.applyStoredPreference();
     registerIPC();
     installSystemIndicators();
-    Menu.setApplicationMenu(Menu.buildFromTemplate(
-      applicationMenuTemplate(desktop, showWindow)
-    ));
+    const menuTemplate = applicationMenuTemplate(desktop, showWindow);
+    Menu.setApplicationMenu(menuTemplate.length ? Menu.buildFromTemplate(menuTemplate) : null);
     if (!startHidden) showWindow();
     void runtime.start().then(() => {
       void host.syncMcpMetadata().catch(error => {

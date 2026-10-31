@@ -500,8 +500,10 @@ test('真实 Electron 群聊上翻后阶段迁移不强制拉回底部', async (
   });
   await expect(page.locator('.message-user').last())
     .toContainText('@Scroll Alpha 检查上翻后的阶段迁移。');
-  await transcript.evaluate(element => {
+  await transcript.evaluate(async element => {
     element.scrollTop = Math.max(0, Math.round((element.scrollHeight - element.clientHeight) / 3));
+    element.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise(requestAnimationFrame);
   });
   const before = await transcript.evaluate(element => element.scrollTop);
   expect(before).toBeGreaterThan(40);

@@ -114,6 +114,10 @@ import {
   accountSourceLabel,
   deriveAccountSettingsState
 } from '../shared/account-settings';
+import {
+  VOICE_MODEL_UNSUPPORTED_PREFIX,
+  voiceModelPreflightError
+} from '../shared/voice-support';
 
 type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
 type SystemSettingsTab = 'general' | 'account' | 'resources' | 'routines';
@@ -251,7 +255,9 @@ function liveVoiceStatusLabel(voice: LiveVoiceUi): string {
   if (voice.state === 'connecting') return '正在拨号';
   if (voice.state === 'live') return '正在聆听';
   if (voice.state === 'stopping') return '正在结束语音';
-  return voice.error?.startsWith('语音服务停止失败') ? '语音结束失败' : '语音连接异常';
+  if (voice.error?.startsWith('语音服务停止失败')) return '语音结束失败';
+  if (voice.error?.startsWith(VOICE_MODEL_UNSUPPORTED_PREFIX)) return '语音模型不支持';
+  return '语音连接异常';
 }
 
 function voiceErrorPresentation(voice: LiveVoiceUi): VoiceErrorPresentation | null {
@@ -262,6 +268,13 @@ function voiceErrorPresentation(voice: LiveVoiceUi): VoiceErrorPresentation | nu
     return {
       title: '语音结束失败',
       detail: detail || '语音服务没有完成关闭，麦克风已停止使用。'
+    };
+  }
+  if (raw.startsWith(VOICE_MODEL_UNSUPPORTED_PREFIX)) {
+    return {
+      title: '语音模型不支持',
+      detail: raw.slice(VOICE_MODEL_UNSUPPORTED_PREFIX.length).trim()
+        || '当前模型来源不支持 Codex Live 语音，请切换到 ChatGPT 登录后再试。'
     };
   }
   return {
@@ -874,6 +887,14 @@ function App() {
   const startVoice = useCallback(async (chat: Chat) => {
     if (voiceSessionRef.current || voiceRef.current?.state === 'connecting' || voiceRef.current?.state === 'live') return;
     setAppError(null);
+    const voiceSupportError = voiceModelPreflightError(
+      snapshot?.modelSource ?? EMPTY_SNAPSHOT.modelSource
+    );
+    if (voiceSupportError) {
+      updateVoice({ chatId: chat.id, state: 'error', error: voiceSupportError });
+      setAppError(voiceSupportError);
+      return;
+    }
     const media = new VoiceMediaSession(chat.id);
     voiceSessionRef.current = media;
     updateVoice({ chatId: chat.id, state: 'connecting', error: null });
@@ -887,7 +908,7 @@ function App() {
       setAppError(toError(error));
       throw error;
     }
-  }, [updateVoice]);
+  }, [snapshot?.modelSource, updateVoice]);
 
   const stopVoice = useCallback(async (chatId: string, reason?: string) => {
     const active = voiceRef.current;
@@ -1697,6 +1718,9 @@ function App() {
       <div className="app-content">
       <aside className="sidebar">
         <header className="sidebar-topbar">
+          <div className="windows-titlebar-brand" aria-hidden="true">
+            <img src={appAvatarUrl} alt="" />
+          </div>
           <div className="titlebar-safe-area" aria-hidden="true" />
           <div className="sidebar-topbar-actions">
             <button type="button" className="toolbar-button" aria-label={compactSidebar ? '展开侧栏' : '收起侧栏'}
@@ -7235,7 +7259,7 @@ function AccountSettingsPage({
                     })}
                   </div>
                   <p className="field-hint model-source-compat-note">
-                    手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
+                    手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP、Voice 或全部 Codex 能力。
                   </p>
                 </div>
               )}
@@ -7484,7 +7508,7 @@ function AccountSettingsPage({
                 </div>
               </div>
               <p className="field-hint model-source-compat-note">
-                手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP 或全部 Codex 能力。
+                手动 API 仅按 Codex 的 Responses 兼容方式接入；不承诺第三方服务完整支持 Tool Calls、reasoning、MCP、Voice 或全部 Codex 能力。
               </p>
             </div>
           )}

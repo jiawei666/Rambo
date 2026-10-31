@@ -8,6 +8,7 @@ import {
   parseReleaseTargets,
   releaseArtifactName,
   releasePackageCommand,
+  releasePortableArtifactName,
   verifyPackagedRuntime
 } from '../../.agents/skills/rambo-release/scripts/release-utils.mjs';
 
@@ -39,6 +40,14 @@ test('release targets require both macOS and Windows and use platform-neutral me
   assert.equal(
     releaseArtifactName('0.2.0', { platform: 'win32', arch: 'x64' }),
     'Rambo-v0.2.0-Windows-x64.exe'
+  );
+  assert.equal(
+    releasePortableArtifactName('0.2.0', { platform: 'win32', arch: 'x64' }),
+    'Rambo-v0.2.0-Windows-x64-portable.zip'
+  );
+  assert.equal(
+    releasePortableArtifactName('0.2.0', { platform: 'darwin', arch: 'arm64' }),
+    null
   );
   assert.deepEqual(
     releasePackageCommand({ platform: 'darwin', arch: 'arm64' }),

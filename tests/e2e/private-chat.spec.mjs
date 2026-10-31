@@ -3134,6 +3134,32 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
     await expect.poll(() => page.evaluate(() =>
       window.rambo.models().then(models => models.map(model => model.id))
     )).toEqual(['fixture-model', 'fixture-model-alt']);
+    await page.getByRole('button', { name: /返回聊天/ }).click();
+    await page.getByRole('button', { name: new RegExp(botsBeforeSave[0].name) }).first().click();
+    await page.evaluate(() => {
+      window.__voiceMicRequests = 0;
+      const mediaDevices = navigator.mediaDevices;
+      const original = mediaDevices.getUserMedia.bind(mediaDevices);
+      mediaDevices.getUserMedia = (...args) => {
+        window.__voiceMicRequests += 1;
+        return original(...args);
+      };
+    });
+    await page.getByRole('button', { name: '开始语音', exact: true }).click();
+    await expect(page.locator('.current-bot-voice-error-title')).toHaveText('语音模型不支持');
+    await expect(page.locator('.current-bot-voice-error-detail')).toContainText(
+      '切换为 ChatGPT 登录后再试'
+    );
+    await expect(page.locator('.current-bot-pill-voice')).toHaveAttribute(
+      'aria-label',
+      /^语音模型不支持：/
+    );
+    await expectVoiceErrorToFit(page.locator('.current-bot-pill-shell'));
+    expect(await page.evaluate(() => window.__voiceMicRequests)).toBe(0);
+    expect(await page.evaluate(() =>
+      window.rambo.snapshot().then(snapshot => snapshot.pendingWork.voiceSessions)
+    )).toBe(0);
+    await openSystemSettings(page, '模型配置');
     await page.getByRole('button', { name: '测试连接', exact: true }).click();
     await expect(page.getByRole('status').filter({ hasText: '连接可用 · 首响应' }))
       .toBeVisible({ timeout: 30_000 });

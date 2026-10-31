@@ -10,6 +10,11 @@ export function releaseArtifactName(version, target) {
   return `Rambo-v${version}-Windows-${target.arch}.exe`;
 }
 
+export function releasePortableArtifactName(version, target) {
+  if (target.platform !== 'win32') return null;
+  return `Rambo-v${version}-Windows-${target.arch}-portable.zip`;
+}
+
 export function releaseMetadataName(version, target) {
   return `Rambo-v${version}-${target.key}.release.json`;
 }

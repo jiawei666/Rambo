@@ -12,9 +12,9 @@ description: 校验并打包 Rambo 的 macOS 与 Windows 应用，分别内置�
 1. 从仓库根目录读取 `AGENTS.md`、`package.json`、`README.md`、`docs/product-decisions.md` 的 P09/P10、本 Skill 的[发布约定](references/release-contract.md)以及 `config/runtime-targets.json`。
 2. 确认 `origin`、当前分支、远端最新提交、`gh auth status`、已有 tag 和 Release。不得向错误 fork、私有/公开状态或默认分支发布。
 3. 版本优先采用用户明确给出的版本；没有时使用 `package.json`。同名 tag 或 Release 已存在时停止，不覆盖。
-4. 正式 Release 默认必须同时包含 `macOS-arm64` 与 `Windows-x64`。只有用户明确要求时，才增加 `macOS-x64` 或 `Windows-arm64`；每种目标都必须在匹配架构的原生构建机上生成。
+4. 正式 Release 默认必须同时包含 `macOS-arm64`、`Windows-x64` 安装包和 `Windows-x64` 免安装 ZIP。只有用户明确要求时，才增加 `macOS-x64` 或 `Windows-arm64`；每种目标都必须在匹配架构的原生构建机上生成。
 5. 检查工作区全部改动和未跟踪文件。发布提交必须包含本次要发布的代码、文档、Skill 和资源；不得回退用户改动，也不得遗漏被 Git 忽略但运行时需要的生成物。
-6. 所有平台当前均不进行商业代码签名或公证：macOS 使用本地 ad-hoc 重封，Windows NSIS 为未签名安装包。发布说明必须写明 Gatekeeper 与 SmartScreen 首次打开步骤，不能声称无警告安装。
+6. 所有平台当前均不进行商业代码签名或公证：macOS 使用本地 ad-hoc 重封，Windows NSIS 和免安装 ZIP 均未签名。发布说明必须写明 Gatekeeper 与 SmartScreen 首次打开步骤，不能声称无警告安装或无警告首次运行。
 
 ## 双平台构建
 
@@ -49,10 +49,12 @@ npm run release:package -- win32-x64
 ```text
 dist/release/v<version>/Rambo-v<version>-Windows-x64.exe
 dist/release/v<version>/Rambo-v<version>-Windows-x64.exe.sha256
+dist/release/v<version>/Rambo-v<version>-Windows-x64-portable.zip
+dist/release/v<version>/Rambo-v<version>-Windows-x64-portable.zip.sha256
 dist/release/v<version>/Rambo-v<version>-win32-x64.release.json
 ```
 
-Windows x64 产物必须来自 Windows 真机构建；GitHub Actions 的 Windows unpacked/NSIS 产物只能作为候选构建证据，不能替代安装、启动和产品验收。
+免安装 ZIP 直接压缩同一次构建的 `dist/win-unpacked`，不采用启动时自解压的单文件 portable exe。Windows x64 产物必须来自 Windows 真机构建；GitHub Actions 的 Windows unpacked/NSIS/portable 产物只能作为候选构建证据，不能替代安装、启动和产品验收。
 
 ### 合并与校验
 
@@ -62,13 +64,13 @@ Windows x64 产物必须来自 Windows 真机构建；GitHub Actions 的 Windows
 npm run release:verify -- darwin-arm64,win32-x64
 ```
 
-该命令必须同时找到两个平台的安装包、SHA-256 和 release metadata，并逐项核对：
+该命令必须同时找到两个平台的安装包、Windows 免安装 ZIP、全部 SHA-256 和 release metadata，并逐项核对：
 
 - 产物版本与 `package.json` 一致。
 - 两个安装包都只包含固定版本的 Codex App Server。
 - macOS 包的 App Server 目标是 `aarch64-apple-darwin`，Windows 包是 `x86_64-pc-windows-msvc`。
 - 包内入口、平台 manifest、官方归档 SHA-256 与 `config/runtime-targets.json` 一致。
-- 安装包实际 SHA-256 与 sidecar 和 `*.sha256` 一致。
+- 两个安装包和 Windows 免安装 ZIP 的实际 SHA-256 与 sidecar 和 `*.sha256` 一致。
 
 缺少任一平台、任一校验文件或任一运行时元数据时停止发布，不得把单平台产物伪装成正式双平台 Release。
 
@@ -96,7 +98,7 @@ spctl -a -vv /Applications/Rambo.app 2>&1 || true
 ## 提交与发布
 
 1. 运行本次发布需要的测试，至少确认双平台打包脚本、`npm run release:verify`、`npm run test:catalog` 和当前目标测试通过。用户只要求打包时，不得伪称 P08 全量验收通过。
-2. 检查两个平台的包大小、App Server 元数据、`app.asar` 不重复携带前端依赖，以及 Windows NSIS 和 macOS zip 均非空。
+2. 检查两个平台的包大小、App Server 元数据、`app.asar` 不重复携带前端依赖，以及 Windows NSIS、Windows 免安装 ZIP 和 macOS zip 均非空。
 3. 审核 `git diff` 和 `git status`，只暂存本次发布范围。提交信息使用 `Release v<version>`；不要 amend、不重置用户改动。
 4. 推送当前分支并创建 annotated tag：
 
@@ -106,7 +108,7 @@ git tag -a v<version> -m "Rambo v<version>"
 git push origin v<version>
 ```
 
-5. 使用清除代理变量的直连方式创建标准 Release，同时上传 macOS、Windows 及两个校验文件：
+5. 使用清除代理变量的直连方式创建标准 Release，同时上传 macOS、Windows 安装包、Windows 免安装 ZIP 及三个校验文件：
 
 ```sh
 env -u http_proxy -u https_proxy \
@@ -118,11 +120,13 @@ env -u http_proxy -u https_proxy \
   dist/release/v<version>/Rambo-v<version>-macOS-arm64.zip.sha256 \
   dist/release/v<version>/Rambo-v<version>-Windows-x64.exe \
   dist/release/v<version>/Rambo-v<version>-Windows-x64.exe.sha256 \
+  dist/release/v<version>/Rambo-v<version>-Windows-x64-portable.zip \
+  dist/release/v<version>/Rambo-v<version>-Windows-x64-portable.zip.sha256 \
   --title "Rambo v<version>" \
   --notes-file <release-notes-file>
 ```
 
-不要添加 `--prerelease`。Release notes 至少包含目标 commit、两个构建平台与架构、各自内置的 App Server 版本和目标、macOS 未签名/未公证状态与 Gatekeeper 步骤、Windows 未签名 NSIS 与 SmartScreen 步骤、两个 SHA-256、已知验收边界和下载文件说明。
+不要添加 `--prerelease`。Release notes 至少包含目标 commit、两个构建平台与架构、各自内置的 App Server 版本和目标、macOS 未签名/未公证状态与 Gatekeeper 步骤、Windows 未签名 NSIS/免安装 ZIP 与 SmartScreen 步骤、三个分发文件的 SHA-256、已知验收边界和下载文件说明。
 
 6. 发布后回查真实远端与本机结果：
 
@@ -134,7 +138,7 @@ plutil -extract CFBundleShortVersionString raw /Applications/Rambo.app/Contents/
 codesign --verify --deep --strict /Applications/Rambo.app
 ```
 
-确认 tag 指向本次发布 commit、Release 非 draft、四个资产均存在且大小正确、远端可下载，并且本机安装版本匹配。最终回复给出 Release URL、tag、commit、两个安装包名、两个 SHA-256 和本机安装路径。
+确认 tag 指向本次发布 commit、Release 非 draft、六个资产均存在且大小正确、远端可下载，并且本机安装版本匹配。最终回复给出 Release URL、tag、commit、三个分发文件名、三个 SHA-256 和本机安装路径。
 
 ## 失败处理
 

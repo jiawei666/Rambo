@@ -6,7 +6,8 @@ import type { DesktopPlatform } from '../../shared/platform';
 
 export function browserWindowOptions(
   platform: DesktopPlatform,
-  base: BrowserWindowConstructorOptions
+  base: BrowserWindowConstructorOptions,
+  darkMode = false
 ): BrowserWindowConstructorOptions {
   if (platform === 'darwin') {
     return {
@@ -15,11 +16,16 @@ export function browserWindowOptions(
       trafficLightPosition: { x: 16, y: 16 }
     };
   }
-  return { ...base };
-}
-
-export function trayImageIsTemplate(platform: DesktopPlatform): boolean {
-  return platform === 'darwin';
+  return {
+    ...base,
+    autoHideMenuBar: true,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: darkMode ? '#121212' : '#fcfcfc',
+      symbolColor: darkMode ? '#f5f5f5' : '#1c1c1c',
+      height: 44
+    }
+  };
 }
 
 export function applicationMenuTemplate(
@@ -63,33 +69,7 @@ export function applicationMenuTemplate(
       }
     ];
   }
-  return [
-    {
-      label: '文件',
-      submenu: [
-        { label: '显示 Rambo', click: showWindow },
-        { type: 'separator' },
-        { role: 'quit', label: '退出' }
-      ]
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { role: 'undo', label: '撤销' },
-        { role: 'redo', label: '重做' },
-        { type: 'separator' },
-        { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
-        { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' }
-      ]
-    },
-    {
-      label: '窗口',
-      submenu: [
-        { role: 'minimize', label: '最小化' },
-        { role: 'close', label: '关闭' }
-      ]
-    }
-  ];
+  // Windows uses the application-owned title bar. The tray menu remains the
+  // explicit place to show, reopen, or quit Rambo.
+  return [];
 }

@@ -1,5 +1,20 @@
 # 实施进度
 
+## 2026-10-31 · Q218 Windows 免安装 ZIP
+
+- Windows 正式发布增加 `Rambo-v<version>-Windows-x64-portable.zip` 和独立 SHA-256，同时保留 NSIS 安装包。
+- 免安装 ZIP 直接从同一次 Windows 原生构建的 `dist/win-unpacked` 创建，避免 NSIS 与免安装内容来自不同构建；不增加启动时自解压的单文件 portable exe。
+- `release:package`、`release:verify`、Windows CI 和发版约定同步要求便携 ZIP；免安装只省去安装步骤，应用数据仍使用 Windows 正常用户目录。
+- 证据边界：macOS 侧可验证脚本命名、元数据和校验逻辑；实际 ZIP 创建与 Windows PE 运行仍需 Windows 原生 CI/真机执行。
+
+## 2026-10-31 · Q217 Windows 应用适配标题栏
+
+- Windows 改为 `titleBarStyle: 'hidden'`，移除独立原生标题栏和“文件/编辑/窗口”应用菜单；应用内容直接顶到窗口顶部。
+- 右上角保留 44px 高、跟随系统明暗主题的原生窗口控制叠加层，继续提供最小化、最大化/还原、关闭及 Snap 布局；不采用网页自绘窗口按钮。
+- Windows 侧栏顶部左侧显示 24px Rambo Logo，导航按钮统一靠右；侧栏顶部与主区 44px 标题栏空白区作为拖拽区，聊天标题为右侧窗口控制按钮预留安全空间；托盘继续提供显示/重新打开和退出。
+- macOS 的 `hiddenInset`、交通灯位置和标准应用菜单保持不变。
+- 证据边界：当前在 macOS 开发机完成类型、窗口选项与构建验证；Windows 真机视觉、拖拽、Snap、高 DPI 和明暗切换仍待验收。
+
 ## 2026-10-31 · Windows 微信 4.1 内存密钥扫描修复
 
 - Windows 真机（微信 4.1.13.65）连接微信失败，报“没有从微信进程内存中找到数据库密钥”。只读诊断确认：旧扫描器只匹配明文 `x'<64位hex key><32位hex salt>'`，而 4.1 把同一字面量放进 `Config.Cipher` 对象并用固定 32 字节异或掩码混淆，明文候选恒为 0；这不是登录状态或权限问题。
@@ -717,3 +732,11 @@
 - 媒体输入、SILK→WAV 转换和视频抽帧仍走内存及 `stdin`/`stdout`；资源句柄 Map 只保存微信相对路径、语音 ID 和创建时间，不保存媒体字节，并短期失效。解密后的图片/语音/视频只在 `composer-attachments` 中形成受控临时文件，不进入 Rambo SQLite 或长期缓存。
 - 仍有一个重要边界：内置 `view_image` 会把图片字节以内联 data URL 写入 Codex 会话 JSONL。新微信动态 Tool 已不再主动输出 base64，但 Agent 实际调用 `view_image` 后仍可能扩大会话历史。Rambo 当前没有按天清理 Codex 会话 JSONL 的策略；若要彻底移除该边界，需另案采用本地视觉描述/OCR 或不同的图片交付协议。
 - 当前生效边界仍是 macOS 微信 4.2 的本机 V2 图片及真实 SILK 语音落盘；官方主微信在线状态、仅缩略图/完全缺失、断网、旧句柄失效、真实视频、WXGF、其他图片容器、Windows 图片链路及无微信转写时的可靠语音识别不在本轮通过结论内。
+
+## 2026-10-31：Q220 托盘统一为静态单色轮廓（macOS 系统着色、Windows 主题自适应）
+
+- 最终单色轮廓源图归档为 `assets/branding/tray-logo-source.png`（SHA-256 `f3323d77b7ad610a4ec75c7ba25e7ca6e49e626ebc741e80aecd33a5de96a2b7`），裁掉透明边后生成黑色 `brand.png` / `brand@2x.png` 与白色 `brand-dark.png` / `brand-dark@2x.png`。macOS 使用黑色资源作为 template 蒙版并由系统自动着色；Windows 根据 `nativeTheme.shouldUseDarkColors` 选择白/黑静态变体，并在系统主题变化时切换。应用 Dock/安装包 Logo 未替换。
+- `SystemIndicators` 不再按运行状态调用 `Tray.setImage`；只有 Windows 系统主题真正变化时才更换静态变体并刷新菜单图标。菜单中的运行 Bot 使用当前主题对应的 Logo。
+- 安装包只包含当前四个黑/白运行时 PNG。旧机器人 SVG、`00-*` 至 `16-*`、`working*`、旧彩色源图及重复 template 资源已全部删除，不进入项目或安装包。
+- 验证通过：`npm run typecheck`、托盘/桌面外壳定向测试、`npm run test:catalog`（158 条规则、281 个案例）、`npm run test:acceptance`（21/21）和 `npm run build`。独立 Electron `Tray` 进程加载过黑色、白色与 template 资源，未出现空图或托盘创建异常；`screencapture` 受当前屏幕录制权限限制，无法归档实际菜单栏截图。
+- 证据边界：尚未在浅色/暗色 macOS 菜单栏或 Windows 真机托盘完成目测；macOS 系统实际着色结果、Windows 高 DPI、点击托盘菜单和真实运行态仍需平台验收，不能据此宣称 P10/Q220 已全部通过。

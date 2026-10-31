@@ -50,9 +50,10 @@ jobs:
           tests/backend/desktop-shell.test.mjs
           tests/backend/login-item.test.mjs
           tests/backend/system-indicators.test.mjs
-      - name: Build Windows NSIS release candidate
+          tests/backend/release-package.test.mjs
+      - name: Build Windows NSIS and portable release candidate
         run: npm run release:package -- win32-x64
-      - name: Verify Windows artifact and runtime
+      - name: Verify Windows artifacts and runtime
         shell: pwsh
         run: |
           $exe = Join-Path $PWD 'dist/win-unpacked/Rambo.exe'
@@ -61,6 +62,10 @@ jobs:
           $releaseDir = Join-Path $PWD 'dist/release'
           $artifacts = Get-ChildItem -Path $releaseDir -Recurse -File
           if (-not $artifacts) { throw "Missing release artifacts: $releaseDir" }
+          $portable = Get-ChildItem -Path $releaseDir -Recurse -File -Filter '*-Windows-x64-portable.zip'
+          if (-not $portable) { throw "Missing portable archive under: $releaseDir" }
+          $portableChecksum = Get-ChildItem -Path $releaseDir -Recurse -File -Filter '*-Windows-x64-portable.zip.sha256'
+          if (-not $portableChecksum) { throw "Missing portable checksum under: $releaseDir" }
           $artifacts | Format-Table FullName,Length
       - uses: actions/upload-artifact@v4
         with:

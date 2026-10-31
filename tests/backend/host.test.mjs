@@ -22,6 +22,7 @@ const hostSource = readFileSync(new URL('../../src/main/host.ts', import.meta.ur
 const chatContentToolsSource = readFileSync(new URL('../../src/main/chat-content-tools.ts', import.meta.url), 'utf8');
 const contractsSource = readFileSync(new URL('../../src/shared/contracts.ts', import.meta.url), 'utf8');
 const executionConfigSource = readFileSync(new URL('../../src/shared/execution-config.ts', import.meta.url), 'utf8');
+const voiceSupportSource = readFileSync(new URL('../../src/shared/voice-support.ts', import.meta.url), 'utf8');
 const robotAvatarSource = readFileSync(new URL('../../src/shared/robot-avatar.ts', import.meta.url), 'utf8');
 const connectorsSource = readFileSync(new URL('../../src/main/connectors.ts', import.meta.url), 'utf8');
 const mailToolsSource = readFileSync(new URL('../../src/main/mail-tools.ts', import.meta.url), 'utf8');
@@ -48,6 +49,7 @@ const compiledStore = ts.transpileModule(storeSource, { compilerOptions }).outpu
 const compiledScheduler = ts.transpileModule(schedulerSource, { compilerOptions }).outputText;
 const compiledHost = ts.transpileModule(hostSource, { compilerOptions }).outputText
   .replaceAll("from '../shared/execution-config'", "from './execution-config.mjs'")
+  .replaceAll("from '../shared/voice-support'", "from './voice-support.mjs'")
   .replaceAll("from './store'", "from './store.mjs'")
   .replaceAll("from './bot-resources'", "from './bot-resources.mjs'")
   .replaceAll("from './bot-resource-tools'", "from './bot-resource-tools.mjs'")
@@ -67,6 +69,7 @@ const compiledConnectors = ts.transpileModule(connectorsSource, { compilerOption
   .replaceAll("from './store'", "from './store.mjs'");
 const compiledExecutionConfig = ts.transpileModule(executionConfigSource, { compilerOptions }).outputText
   .replaceAll("from './contracts'", "from './contracts.mjs'");
+const compiledVoiceSupport = ts.transpileModule(voiceSupportSource, { compilerOptions }).outputText;
 const compiledMailTools = ts.transpileModule(mailToolsSource, { compilerOptions }).outputText
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
 const compiledMailRuntimeSource = readFileSync(new URL('../../src/main/mail-runtime.ts', import.meta.url), 'utf8');
@@ -371,6 +374,7 @@ async function withHost(run) {
   writeFileSync(join(directory, 'routine-scheduler.mjs'), compiledScheduler, { mode: 0o600 });
   writeFileSync(join(directory, 'contracts.mjs'), ts.transpileModule(contractsSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'execution-config.mjs'), compiledExecutionConfig, { mode: 0o600 });
+  writeFileSync(join(directory, 'voice-support.mjs'), compiledVoiceSupport, { mode: 0o600 });
   writeFileSync(join(directory, 'robot-avatar.mjs'), ts.transpileModule(robotAvatarSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'bot-resources.mjs'), compiledBotResources, { mode: 0o600 });
   writeFileSync(join(directory, 'bot-resource-tools.mjs'), compiledBotResourceTools, { mode: 0o600 });
@@ -5159,6 +5163,47 @@ test('a new Live private thread receives secret management tools and autonomy in
     const realtimeStart = runtime.requests.find(request => request.method === 'thread/realtime/start');
     assert.equal(realtimeStart.params.threadId, store.chat(chat.id).threadId);
     await voiceStart;
+  });
+});
+
+test('Live voice rejects an unsupported manual API before starting the runtime', async () => {
+  await withHost(async ({ store, runtime, events, Host }) => {
+    const { chat } = store.createBot('Unsupported Voice Bot', 'a');
+    const manualHost = new Host(
+      store,
+      runtime,
+      event => events.push(event),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        kind: 'manualApi',
+        manual: {
+          serviceName: 'DeepSeek',
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-flash'
+        },
+        models: [{
+          id: 'deepseek-flash',
+          label: 'deepseek-flash',
+          isDefault: true
+        }],
+        hasApiKey: true
+      })
+    );
+    try {
+      await assert.rejects(
+        manualHost.startVoice(chat.id, 'v=0\r\n'),
+        /^Error: 语音模型不支持：“DeepSeek”未提供 Codex Live 所需的实时语音通道/u
+      );
+      assert.equal(runtime.requests.length, 0);
+      assert.equal(events.some(event => event.type === 'voiceState'), false);
+    } finally {
+      manualHost.dispose();
+    }
   });
 });
 

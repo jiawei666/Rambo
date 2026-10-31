@@ -14,32 +14,32 @@ const shell = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 );
 
-test('macOS window chrome is not applied to Windows', () => {
+test('Windows uses a hidden title bar with native overlay controls', () => {
   const base = { width: 1100, height: 760 };
   const mac = shell.browserWindowOptions('darwin', base);
   assert.equal(mac.titleBarStyle, 'hiddenInset');
   assert.deepEqual(mac.trafficLightPosition, { x: 16, y: 16 });
 
   const windows = shell.browserWindowOptions('win32', base);
-  assert.deepEqual(windows, base);
-  assert.equal('titleBarStyle' in windows, false);
+  assert.equal(windows.titleBarStyle, 'hidden');
+  assert.equal(windows.autoHideMenuBar, true);
+  assert.deepEqual(windows.titleBarOverlay, {
+    color: '#fcfcfc',
+    symbolColor: '#1c1c1c',
+    height: 44
+  });
   assert.equal('trafficLightPosition' in windows, false);
+
+  const darkWindows = shell.browserWindowOptions('win32', base, true);
+  assert.deepEqual(darkWindows.titleBarOverlay, {
+    color: '#121212',
+    symbolColor: '#f5f5f5',
+    height: 44
+  });
 });
 
-test('only macOS uses a template tray image', () => {
-  assert.equal(shell.trayImageIsTemplate('darwin'), true);
-  assert.equal(shell.trayImageIsTemplate('win32'), false);
-});
-
-test('Windows application menu uses Windows roles and labels', () => {
-  const shown = [];
-  const template = shell.applicationMenuTemplate('win32', () => shown.push(true));
-  assert.deepEqual(template.map(item => item.label), ['文件', '编辑', '窗口']);
-  assert.equal(template[0].submenu[2].role, 'quit');
-  assert.equal(template[1].submenu[5].role, 'paste');
-  assert.equal(template[1].submenu[5].label, '粘贴');
-  template[0].submenu[0].click();
-  assert.deepEqual(shown, [true]);
+test('Windows has no application menu because its title bar is application-owned', () => {
+  assert.deepEqual(shell.applicationMenuTemplate('win32', () => {}), []);
 });
 
 test('macOS application menu keeps the standard app menu', () => {

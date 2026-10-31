@@ -9,6 +9,7 @@ import {
   releaseArtifactName,
   releaseMetadataName,
   releasePackageCommand,
+  releasePortableArtifactName,
   verifyPackagedRuntime
 } from './release-utils.mjs';
 
@@ -34,6 +35,9 @@ const artifactName = releaseArtifactName(version, target);
 const artifactPath = join(outputDirectory, artifactName);
 const checksumPath = `${artifactPath}.sha256`;
 const metadataPath = join(outputDirectory, releaseMetadataName(version, target));
+const portableArtifactName = releasePortableArtifactName(version, target);
+const portableArtifactPath = portableArtifactName ? join(outputDirectory, portableArtifactName) : null;
+const portableChecksumPath = portableArtifactPath ? `${portableArtifactPath}.sha256` : null;
 
 if (!skipBuild) {
   console.log(`[rambo-release] 构建 Rambo ${version} (${target.key})`);
@@ -51,6 +55,8 @@ if (!skipBuild) {
 await rm(artifactPath, { force: true });
 await rm(checksumPath, { force: true });
 await rm(metadataPath, { force: true });
+if (portableArtifactPath) await rm(portableArtifactPath, { force: true });
+if (portableChecksumPath) await rm(portableChecksumPath, { force: true });
 await mkdir(outputDirectory, { recursive: true });
 
 let runtime;
@@ -112,12 +118,41 @@ if (target.platform === 'darwin') {
     runtimeConfig
   });
   await copyFile(installerSource, artifactPath);
+  if (!portableArtifactPath) throw new Error(`Windows 发布缺少免安装 ZIP 路径：${target.key}`);
+  console.log('[rambo-release] 创建 Windows 免安装 ZIP');
+  const quotePowerShell = value => `'${value.replaceAll("'", "''")}'`;
+  execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "$ErrorActionPreference = 'Stop'; " +
+      'Add-Type -AssemblyName System.IO.Compression.FileSystem; ' +
+      `[System.IO.Compression.ZipFile]::CreateFromDirectory(` +
+      `${quotePowerShell(unpackedRoot)}, ${quotePowerShell(portableArtifactPath)}, ` +
+      "[System.IO.Compression.CompressionLevel]::Optimal, $true)"
+    ],
+    { cwd: root, stdio: 'inherit' }
+  );
 }
 
 const artifact = await readFile(artifactPath);
 const digest = createHash('sha256').update(artifact).digest('hex');
 const artifactStat = await stat(artifactPath);
 await writeFile(checksumPath, `${digest}  ${basename(artifactPath)}\n`);
+let portableArtifact = null;
+if (portableArtifactPath && portableChecksumPath) {
+  const portableBytes = await readFile(portableArtifactPath);
+  const portableDigest = createHash('sha256').update(portableBytes).digest('hex');
+  const portableStat = await stat(portableArtifactPath);
+  await writeFile(portableChecksumPath, `${portableDigest}  ${basename(portableArtifactPath)}\n`);
+  portableArtifact = {
+    artifact: basename(portableArtifactPath),
+    sha256: portableDigest,
+    bytes: portableStat.size
+  };
+}
 await writeFile(metadataPath, JSON.stringify({
   schema: 'rambo.release-artifact.v1',
   version,
@@ -127,6 +162,9 @@ await writeFile(metadataPath, JSON.stringify({
   artifact: basename(artifactPath),
   sha256: digest,
   bytes: artifactStat.size,
+  portableArtifact: portableArtifact?.artifact ?? null,
+  portableSha256: portableArtifact?.sha256 ?? null,
+  portableBytes: portableArtifact?.bytes ?? null,
   appServer: runtime
 }, null, 2));
 console.log(JSON.stringify({
@@ -137,5 +175,8 @@ console.log(JSON.stringify({
   metadata: metadataPath,
   sha256: digest,
   bytes: artifactStat.size,
+  portableArtifact: portableArtifact?.artifact ?? null,
+  portableSha256: portableArtifact?.sha256 ?? null,
+  portableBytes: portableArtifact?.bytes ?? null,
   appServer: runtime
 }, null, 2));

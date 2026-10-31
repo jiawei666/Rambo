@@ -69,13 +69,42 @@ html[data-platform="win32"] {
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
 }
 
-html[data-platform="win32"] .titlebar-safe-area,
-html[data-platform="win32"] .main-titlebar-spacer {
+html[data-platform="win32"] .titlebar-safe-area {
   display: none;
 }
 
+.windows-titlebar-brand { display: none; }
+
+html[data-platform="win32"] .windows-titlebar-brand {
+  display: flex;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  -webkit-app-region: drag;
+}
+
+.windows-titlebar-brand img {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+html[data-platform="win32"] .sidebar-topbar {
+  -webkit-app-region: drag;
+}
+
+html[data-platform="win32"] .sidebar-topbar-actions {
+  -webkit-app-region: no-drag;
+}
+
 html[data-platform="win32"] .main-pane.chat-surface .chat-header {
-  top: 0;
+  /* Keep the centered header clear of Windows' native title-bar overlay. */
+  padding-right: 154px;
 }
 
 * { box-sizing: border-box; }

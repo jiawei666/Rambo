@@ -70,8 +70,8 @@
 
 - Grok Bot 0.75.0 ASAR 的 `dist/electron-main/menubar-tray/assets/` 含 `brand.png`、`working.png` 及 `bot-<shape>-face.png`。脸图在 1x 下为 `522×18`、2x 下为 `1044×36`，主进程按 `18×18` 切帧；`main-app.cjs` 的 `startMenubarTray` 用 `Tray.setImage` 循环显示这些帧，空闲时随机生成眨眼和向左/右/上瞟视序列，忙碌 Bot 菜单项使用 `working.png`，并为有未读的 Bot 加标题计数。这是原生 macOS 菜单栏状态项，不是 renderer 内的仿菜单。
 - Grok 的 Dock 状态代码可从 `qK`/`dockBadge` 与 `app.setBadgeCount` 确认，用于未读数量；静态包未证明 Dock 图标本身有逐帧脸部动画。Rambo 不伪造 Dock 图标帧动画，也按 Q74 不再显示 Dock 红色运行气泡。
-- Rambo 的菜单栏资源在 `assets/branding/tray-frames/`：采用应用内原本的机器人圆头轮廓，配合用户参考图中的斜眼；源文件为 SVG，输出 18×18 PNG 与 36×36 `@2x` PNG，运行时按 18×18 pt 的 template 图像加载。眼睛必须透明镂空，系统才能按明暗菜单栏统一染色。空闲播放 `rest → 多次眨眼 → 随机左右瞟视 → rest`，运行态播放 `working-0..3` 四帧；菜单项中的运行 Bot 使用 working 图标。该实现参考 Grok 的 `Tray.setImage` 播放机制，按公开静态证据作本地资源等价模拟，不宣称为逐帧复制 Grok 的 Bot 脸。
-- 菜单栏动画需要真实 macOS 运行目测确认；本轮只做了可注入状态机单测和构建检查。菜单栏在深浅色菜单栏下的可读性仍待真机复验；Dock 红色运行气泡已按用户要求移除。
+- Rambo 自 2026-10-31 按 Q220 使用同一套静态单色轮廓：唯一源文件为 `assets/branding/tray-logo-source.png`。Windows 加载黑色 `brand.png`（18×18）/ `brand@2x.png`（36×36）或白色 `brand-dark.png` / `brand-dark@2x.png`，随系统浅色/深色主题静态切换；macOS 把黑色资源作为 template 蒙版，由系统按菜单栏浅色/深色自动着色。托盘不播放动画，空闲眨眼/瞟视、运行态 `working-0..3` 和相应定时器均已停用。菜单仍显示运行 Bot 的标记与当前主题对应的静态品牌图标。
+- `00-*` 至 `16-*`、`working*` 与旧 SVG 已按用户要求从项目删除，Q80 仅保留历史决定记录。新静态图标在浅色/暗色系统栏和 Windows 高 DPI 下的实际辨识度、大小仍需真机目测；Dock 红色运行气泡已按用户要求移除。
 
 日期：2026-10-20。证据级别：已安装包静态分析；另含主 Agent 通过 CUA 实际观察的运行时记录（1040×760、深色主题）。未将截图或 DOM 文件作为本地证据归档。
 

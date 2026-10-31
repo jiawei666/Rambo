@@ -13,6 +13,7 @@
 - 默认正式发布集合：
   - `Rambo-v<version>-macOS-arm64.zip` 与 `.sha256`
   - `Rambo-v<version>-Windows-x64.exe` 与 `.sha256`
+  - `Rambo-v<version>-Windows-x64-portable.zip` 与 `.sha256`
 - 本机 release metadata：
   - `Rambo-v<version>-darwin-arm64.release.json`
   - `Rambo-v<version>-win32-x64.release.json`
@@ -21,6 +22,7 @@
 - 双平台合并校验入口：`npm run release:verify -- darwin-arm64,win32-x64`。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。
 - GitHub Release 资产上传默认使用直连；执行 `gh release create` 或 `gh release upload` 时清除代理变量。
+- Windows 免安装 ZIP 必须从同一次原生构建的 `dist/win-unpacked` 生成，不得另做一套不一致构建；免安装只表示无需安装，应用数据仍使用正常 Windows 用户目录。
 
 ## 平台与运行时
 
@@ -37,14 +39,14 @@
 ## 签名与安装
 
 - macOS 当前不使用 Developer ID、不公证；构建后只做本地 ad-hoc 重封。`codesign --verify` 必须通过，`codesign -dv` 必须为 `Signature=adhoc` 且无 Authority/TeamIdentifier，`spctl` 仍会拒绝。
-- Windows 当前 NSIS 安装包未签名，Release notes 必须提示 SmartScreen 警告，不得声称无警告安装。
+- Windows 当前 NSIS 安装包和免安装 ZIP 均未签名，Release notes 必须提示 SmartScreen 警告，不得声称无警告安装或首次运行。
 - 每次发布在提交和上传前使用 macOS 构建更新活动开发机的 `/Applications/Rambo.app`；覆盖前正常退出正在运行的 Rambo，安装后核对版本、Bundle ID 和签名。
 - 本机更新不得清理或覆盖应用数据目录。本地只保留活动应用，不保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`。
 - Windows 构建机不执行 macOS 的 `/Applications` 安装步骤；Windows 产品验收与安装验收另行记录。
 
 ## 产品边界
 
-仓库当前记录 156 条规则；验收目录含 272 个案例，其中 146 个可执行、126 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
+仓库当前记录 158 条规则；验收目录含 281 个案例，其中 154 个可执行、127 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
 
 发布说明必须明确：
 
