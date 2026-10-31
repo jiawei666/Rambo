@@ -738,6 +738,49 @@ test('Windows scanner timeout is surfaced through the capture flow', async () =>
   });
 });
 
+test('Windows no-candidate failure reports scan coverage without key material', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '4e'.repeat(32);
+    const fixture = createWindowsCaptureFixture(sqlCipher, directory, key);
+    const instance = new wizard.WechatConnectorWizard(
+      join(directory, 'windows-user-data'),
+      {
+        confirmCloseWechat: async () => true,
+        chooseAccountDirectory: async () => fixture.accountDirectory
+      },
+      fixture.documents,
+      {
+        platform: 'win32',
+        windowsAppDataDirectory: fixture.appData,
+        windowsDocumentsDirectory: fixture.documents,
+        windowsScannerPath: fixture.scannerPath,
+        runFile: async () => ({
+          stdout: JSON.stringify({
+            type: 'status',
+            phase: 'complete',
+            candidateCount: 0,
+            regionsScanned: 3770,
+            plaintextCount: 0,
+            maskedCount: 0
+          }),
+          stderr: ''
+        })
+      }
+    );
+
+    await assert.rejects(
+      instance.capture('windows-no-candidate', () => {}),
+      error => {
+        assert.match(error.message, /没有从微信进程内存中找到数据库密钥/u);
+        assert.match(error.message, /已扫描 3770 个内存区域/u);
+        assert.match(error.message, /明文候选 0 个、混淆候选 0 个/u);
+        assert.doesNotMatch(error.message, new RegExp(key, 'u'));
+        return true;
+      }
+    );
+  });
+});
+
 test('Windows account selection accepts a db_storage directory for a multi-account root', async () => {
   await withWizard(async ({ wizard, sqlCipher, directory }) => {
     const key = '6d'.repeat(32);
@@ -849,8 +892,39 @@ test('Windows scanner output parser keeps only bounded valid candidates', async 
     assert.deepEqual(parsed, {
       candidates: [{ key, salt }],
       reportedCount: 2,
-      timedOut: false
+      timedOut: false,
+      regionsScanned: 0,
+      plaintextCount: 0,
+      maskedCount: 0
     });
+  });
+});
+
+test('Windows scanner output parser keeps per-strategy candidate counts', async () => {
+  await withWizard(async ({ windows }) => {
+    const parsed = windows.parseWindowsScannerOutput([
+      JSON.stringify({
+        type: 'status',
+        phase: 'scanning',
+        candidateCount: 0,
+        regionsScanned: 64,
+        plaintextCount: 0,
+        maskedCount: 0
+      }),
+      JSON.stringify({
+        type: 'status',
+        phase: 'complete',
+        candidateCount: 0,
+        regionsScanned: 3770,
+        plaintextCount: 0,
+        maskedCount: 36
+      })
+    ].join('\n'));
+    assert.equal(parsed.regionsScanned, 3770);
+    assert.equal(parsed.plaintextCount, 0);
+    assert.equal(parsed.maskedCount, 36);
+    assert.equal(parsed.candidates.length, 0);
+    assert.equal(parsed.timedOut, false);
   });
 });
 
@@ -862,7 +936,10 @@ test('Windows scanner output parser surfaces an explicit timeout', async () => {
     assert.deepEqual(parsed, {
       candidates: [],
       reportedCount: 0,
-      timedOut: true
+      timedOut: true,
+      regionsScanned: 0,
+      plaintextCount: 0,
+      maskedCount: 0
     });
   });
 });

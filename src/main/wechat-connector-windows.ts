@@ -41,6 +41,9 @@ interface WindowsScannerOutput {
   candidates: WechatKeyCandidate[];
   reportedCount: number;
   timedOut: boolean;
+  regionsScanned: number;
+  plaintextCount: number;
+  maskedCount: number;
 }
 
 function normalizeWindowsPath(value: string): string {
@@ -161,7 +164,12 @@ export function parseWindowsScannerOutput(output: string): WindowsScannerOutput 
   const candidates: WechatKeyCandidate[] = [];
   const seen = new Set<string>();
   let reportedCount = 0;
+  let regionsScanned = 0;
+  let plaintextCount = 0;
+  let maskedCount = 0;
   let timedOut = false;
+  const counter = (value: unknown): number =>
+    typeof value === 'number' && Number.isSafeInteger(value) ? Math.max(0, value) : 0;
   for (const line of output.split(/\r?\n/u)) {
     if (!line.trim()) continue;
     let value: Record<string, unknown>;
@@ -170,16 +178,12 @@ export function parseWindowsScannerOutput(output: string): WindowsScannerOutput 
     } catch {
       continue;
     }
-    if (value.type === 'status' && value.phase === 'timeout') {
-      timedOut = true;
-      if (typeof value.candidateCount === 'number' && Number.isSafeInteger(value.candidateCount)) {
-        reportedCount = Math.max(reportedCount, Math.max(0, value.candidateCount));
-      }
-      continue;
-    }
-    if (value.type === 'status' && typeof value.candidateCount === 'number' &&
-        Number.isSafeInteger(value.candidateCount)) {
-      reportedCount = Math.max(reportedCount, Math.max(0, value.candidateCount));
+    if (value.type === 'status') {
+      if (value.phase === 'timeout') timedOut = true;
+      reportedCount = Math.max(reportedCount, counter(value.candidateCount));
+      regionsScanned = Math.max(regionsScanned, counter(value.regionsScanned));
+      plaintextCount = Math.max(plaintextCount, counter(value.plaintextCount));
+      maskedCount = Math.max(maskedCount, counter(value.maskedCount));
       continue;
     }
     if (value.type !== 'candidate' ||
@@ -200,7 +204,10 @@ export function parseWindowsScannerOutput(output: string): WindowsScannerOutput 
   return {
     candidates,
     reportedCount: Math.max(reportedCount, candidates.length),
-    timedOut
+    timedOut,
+    regionsScanned,
+    plaintextCount,
+    maskedCount
   };
 }
 
@@ -369,7 +376,11 @@ export class WindowsMemoryWechatConnector implements WechatConnectorAdapter {
         if (parsed.timedOut) {
           throw new Error('Windows 微信内存扫描超时；请保持微信运行并重试，或缩小当前扫描负载。');
         }
-        throw new Error('没有从微信进程内存中找到数据库密钥；请确认微信已登录并打开最近聊天后重试。');
+        throw new Error(
+          `没有从微信进程内存中找到数据库密钥（已扫描 ${parsed.regionsScanned} 个内存区域；` +
+          `明文候选 ${parsed.plaintextCount} 个、混淆候选 ${parsed.maskedCount} 个）；` +
+          '请确认微信已登录并打开最近聊天后重试。'
+        );
       }
 
       progress(

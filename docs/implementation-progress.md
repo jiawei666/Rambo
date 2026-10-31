@@ -1,5 +1,13 @@
 # 实施进度
 
+## 2026-10-31 · Windows 微信 4.1 内存密钥扫描修复
+
+- Windows 真机（微信 4.1.13.65）连接微信失败，报“没有从微信进程内存中找到数据库密钥”。只读诊断确认：旧扫描器只匹配明文 `x'<64位hex key><32位hex salt>'`，而 4.1 把同一字面量放进 `Config.Cipher` 对象并用固定 32 字节异或掩码混淆，明文候选恒为 0；这不是登录状态或权限问题。
+- Rust 扫描器新增掩码解码：掩码以字面量自身对齐，不依赖堆对象偏移，因此不受微信版本布局变化影响；保留 4.0 明文扫描，并按“根进程优先、找到即停”扫描全部 `Weixin.exe` 进程。状态行新增 `plaintextCount`、`maskedCount` 和 `regionsScanned`，0 候选时连接器错误信息带扫描区域数与各策略候选数，仍不输出密钥内容。
+- 真机验证：同一账号 26 个加密库；新扫描器 1.9 秒、2443 个内存区域、36 个候选（明文 0／混淆 36），26/26 个数据库首页 HMAC 验证通过；应用内微信连接成功。
+- 验证通过：Windows 扫描器 `cargo test` 6/6；`tsc --noEmit`；微信连接器定向测试 20 个用例中 16 个通过，4 个失败均为 macOS 受管副本/重签用例（失败栈在 `wechat-connector-macos`），Windows 相关用例全部通过。
+- 证据边界：macOS 受管副本重签路径、Windows 多账号目录选择、管理员权限、无候选、HMAC 失败、超时、ARM64 与 NSIS 安装仍未按 T23 验收；本轮只证明 Windows 微信 4.1.13.65 的密钥捕获与应用内连接。
+
 ## 2026-10-31 · Q215 微信媒体临时文件与定时清理
 
 - 微信图片、语音和视频不再由动态 Tool 返回 `data:` URL 或 base64。`WechatMediaContentProcessor` 将内存解密/转码后的媒体写入 `<userData>/composer-attachments/wechat-media-<epoch-ms>-<8hex>.<ext>`，目录 `0700`、文件 `0600`；Tool 只返回 `local_path`、`expires_in_days: 7`、处理后的 MIME/文件名。视频另返回原视频路径和最多 12 张 `frame_paths`。

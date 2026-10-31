@@ -21,3 +21,21 @@ Local changes:
   progress reporting.
 - Kept database matching and SQLCipher HMAC verification in Rambo's TypeScript
   process so candidate keys are validated against the selected account.
+- Scans every `Weixin.exe` process (root process first) instead of only the
+  first match, and reports per-strategy candidate counts.
+
+## Config.Cipher obfuscation
+
+WeChat 4.1 no longer keeps the `x'<64-hex key><32-hex salt>'` literal as
+plaintext on the heap. It lives inside the `com.Tencent.WCDB.Config.Cipher`
+object and is XOR-obfuscated with a fixed 32-byte mask. That mask and the
+object-discovery technique were published under the MIT license by:
+
+- `TANGandXUE/wcdb-key-tool` (`wcdb_key_tool_windows.py`)
+- `9-dream-come-true-9/wechat-local-reader` (`scripts/微信本地记录读取器.py`),
+  which adapts the former.
+
+Rambo reuses only the mask constant and the "masked literal" idea. It does not
+copy their object-offset walk: the scanner decodes any literal whose XOR mask
+aligns with the literal itself, so it does not depend on heap offsets that
+change between WeChat builds.
