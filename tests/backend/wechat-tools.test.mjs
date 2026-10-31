@@ -229,7 +229,7 @@ test('WeChat results preserve valid media handles and remove non-handle paths', 
   assert.equal(JSON.stringify(result).includes('/private/internal'), false);
 });
 
-test('WeChat media gives images and raw SILK to the Agent, and keeps other local media behind a short handle', async () => {
+test('WeChat media requires the temporary path processor and never returns inline base64', async () => {
   const handle = 'ef'.repeat(16);
   const target = connection({ capabilities: {
     'wechat.sessions': 'ready',
@@ -242,11 +242,8 @@ test('WeChat media gives images and raw SILK to the Agent, and keeps other local
     connection_id: target.id,
     resource_handle: handle
   });
-  assert.equal(image.success, true);
-  assert.equal(image.contentItems[0].type, 'inputImage');
-  assert.equal(image.contentItems[1].type, 'inputText');
-  assert.match(image.contentItems[1].text, /inline_image/u);
-  assert.equal(image.contentItems[1].text.includes('/private/'), false);
+  assert.equal(image.success, false);
+  assert.match(image.contentItems[0].text, /临时目录未配置/u);
 
   const audio = await executeWechatTool(hostFor(target, calls, {
     bytes: Buffer.from([0x02, 0x23, 0x21, 0x53]),
@@ -259,9 +256,40 @@ test('WeChat media gives images and raw SILK to the Agent, and keeps other local
     connection_id: target.id,
     resource_handle: handle
   });
-  assert.equal(audio.success, true);
-  assert.equal(audio.contentItems[0].type, 'inputAudio');
-  assert.match(audio.contentItems[0].audioUrl, /^data:audio\/silk;base64,/u);
+  assert.equal(audio.success, false);
+  assert.match(audio.contentItems[0].text, /临时目录未配置/u);
+
+  const transcribed = await executeWechatTool(hostFor(target, calls, {
+    bytes: Buffer.from('RIFF----WAVE-local-wav'),
+    mimeType: 'audio/wav',
+    fileName: 'voice.wav',
+    kind: 'audio',
+    status: 'available',
+    transcription: '周六见'
+  }, async () => ({
+    delivery: 'local_audio',
+    localPath: '/tmp/composer-attachments/wechat-media-1700000000000-11111111.wav',
+    mimeType: 'audio/wav',
+    fileName: 'voice.wav',
+    expiresInDays: 7,
+    contentItems: [{
+      type: 'inputText',
+      text: JSON.stringify({
+        local_path: '/tmp/composer-attachments/wechat-media-1700000000000-11111111.wav',
+        transcription: '周六见'
+      })
+    }]
+  })), 'bot-a', 'wechat_media', {
+    connection_id: target.id,
+    resource_handle: handle
+  });
+  assert.equal(transcribed.success, true);
+  const transcribedInfo = JSON.parse(transcribed.contentItems[0].text);
+  assert.equal(transcribedInfo.media.local_path,
+    '/tmp/composer-attachments/wechat-media-1700000000000-11111111.wav');
+  assert.equal(transcribedInfo.media.expires_in_days, 7);
+  assert.match(transcribedInfo.media.transcription, /周六见/u);
+  assert.doesNotMatch(JSON.stringify(transcribed), /data:(?:image|audio)\//u);
 
   const video = await executeWechatTool(hostFor(target, calls, {
     bytes: Buffer.from('0000ftypisom-video'),
@@ -294,10 +322,8 @@ test('WeChat media gives images and raw SILK to the Agent, and keeps other local
     connection_id: target.id,
     resource_handle: handle
   });
-  assert.equal(silk.success, true);
-  assert.equal(silk.contentItems[0].type, 'inputAudio');
-  assert.match(silk.contentItems[0].audioUrl, /^data:audio\/silk;base64,/u);
-  assert.match(silk.contentItems[1].text, /原始 SILK/u);
+  assert.equal(silk.success, false);
+  assert.match(silk.contentItems[0].text, /临时目录未配置/u);
 });
 
 test('media processor delivery is mapped to the App Server text and image/audio content types', async () => {

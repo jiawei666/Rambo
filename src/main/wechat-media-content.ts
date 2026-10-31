@@ -1,7 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { DOMParser } from '@xmldom/xmldom';
 import { terminateProcessTree } from './platform/process';
+import {
+  isWechatWxgf,
+  wechatWxgfEmbeddedImage,
+  wechatWxgfHevcCandidates
+} from './wechat-image-key';
 
 export type WechatMediaContentItem =
   | { type: 'inputText'; text: string }
@@ -14,16 +22,28 @@ export interface WechatMediaSource {
   fileName: string;
   kind?: string;
   status?: string;
+  transcription?: string | null;
   limitation?: string;
 }
 
 export interface WechatMediaDelivery {
-  delivery: 'inline_image' | 'inline_audio' | 'video_frames' | 'inline_text';
+  delivery: 'local_image' | 'local_audio' | 'local_video' | 'inline_text';
   contentItems: WechatMediaContentItem[];
+  localPath?: string;
+  mimeType?: string;
+  fileName?: string;
+  expiresInDays?: number;
+  transcription?: string;
   frameTimesSeconds?: number[];
   videoDurationSeconds?: number;
   extractedTextCharacters?: number;
   truncated?: boolean;
+}
+
+export interface WechatMediaContentOptions {
+  tempDirectory?: string;
+  now?: () => number;
+  randomId?: () => string;
 }
 
 type ProcessRunner = (
@@ -41,6 +61,32 @@ const MAX_XML_BYTES = 8 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 4_096;
 const MAX_PDF_PAGES = 200;
 const MAX_VIDEO_FRAMES = 12;
+const MAX_WXGF_HEVC_CANDIDATES = 8;
+const TEMP_MEDIA_RETENTION_DAYS = 7;
+
+const MEDIA_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+  'image/bmp': 'bmp',
+  'audio/wav': 'wav',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/ogg': 'ogg',
+  'audio/opus': 'opus',
+  'audio/aac': 'aac',
+  'audio/amr': 'amr',
+  'audio/flac': 'flac',
+  'audio/silk': 'silk',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/x-m4v': 'm4v',
+  'video/x-msvideo': 'avi',
+  'video/webm': 'webm',
+  'video/3gpp': '3gp'
+};
 
 function runProcess(
   binary: string,
@@ -122,6 +168,14 @@ function fileExtension(fileName: string): string {
   const leaf = fileName.split(/[\\/]/u).at(-1) ?? '';
   const dot = leaf.lastIndexOf('.');
   return dot < 0 ? '' : leaf.slice(dot + 1).toLowerCase();
+}
+
+function processedFileName(fileName: string, mimeType: string): string {
+  const extension = MEDIA_EXTENSIONS[mimeType.toLowerCase()];
+  if (!extension) return fileName;
+  const leaf = fileName.split(/[\\/]/u).at(-1) ?? '';
+  const base = leaf.replace(/\.[^.]*$/u, '').trim() || 'wechat-media';
+  return `${base}.${extension}`;
 }
 
 function xmlDocument(value: Buffer | string): Document {
@@ -406,15 +460,31 @@ function mp4DurationSeconds(bytes: Buffer): number | null {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
-function imageItem(bytes: Buffer, mimeType: string): WechatMediaContentItem {
-  return { type: 'inputImage', imageUrl: `data:${mimeType};base64,${bytes.toString('base64')}` };
+function rasterImageMime(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 8 &&
+      bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  return null;
 }
 
 export class WechatMediaContentProcessor {
+  private readonly tempDirectory: string | undefined;
+  private readonly now: () => number;
+  private readonly randomId: () => string;
+
   constructor(
     private readonly paths: { ffmpegPath: string | null; silkDecoderPath: string | null },
-    private readonly run: ProcessRunner = runProcess
-  ) {}
+    private readonly run: ProcessRunner = runProcess,
+    options: WechatMediaContentOptions = {}
+  ) {
+    this.tempDirectory = options.tempDirectory;
+    this.now = options.now ?? Date.now;
+    this.randomId = options.randomId ?? (() => randomUUID().slice(0, 8));
+  }
 
   async process(media: WechatMediaSource): Promise<WechatMediaDelivery> {
     if (!media.bytes.length || media.bytes.length > MAX_MEDIA_INPUT_BYTES) {
@@ -424,6 +494,17 @@ export class WechatMediaContentProcessor {
       throw new Error(media.limitation ?? '微信媒体内容当前不可用');
     }
     const extension = fileExtension(media.fileName);
+    if (media.mimeType === 'image/wxgf' || isWechatWxgf(media.bytes)) {
+      const image = await this.expandWxgf(media.bytes);
+      return this.localMediaDelivery(
+        'local_image',
+        image.bytes,
+        image.mimeType,
+        `image.${MEDIA_EXTENSIONS[image.mimeType] ?? 'jpg'}`,
+        media,
+        '使用 view_image 读取 local_path 后再判断图片内容；不要复制或长期保存该临时文件。'
+      );
+    }
     const imageType = media.mimeType.startsWith('image/')
       ? media.mimeType
       : extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg'
@@ -431,7 +512,14 @@ export class WechatMediaContentProcessor {
           : extension === 'gif' ? 'image/gif'
             : extension === 'webp' ? 'image/webp' : null;
     if (imageType) {
-      return { delivery: 'inline_image', contentItems: [imageItem(media.bytes, imageType)] };
+      return this.localMediaDelivery(
+        'local_image',
+        media.bytes,
+        imageType,
+        media.fileName,
+        media,
+        '使用 view_image 读取 local_path 后再判断图片内容；不要复制或长期保存该临时文件。'
+      );
     }
 
     const audioType = media.mimeType.startsWith('audio/')
@@ -452,10 +540,16 @@ export class WechatMediaContentProcessor {
         }
         mimeType = 'audio/wav';
       }
-      return {
-        delivery: 'inline_audio',
-        contentItems: [{ type: 'inputAudio', audioUrl: `data:${mimeType};base64,${bytes.toString('base64')}` }]
-      };
+      return this.localMediaDelivery(
+        'local_audio',
+        bytes,
+        mimeType,
+        processedFileName(media.fileName, mimeType),
+        media,
+        media.transcription
+          ? '优先使用 transcription 作为微信已有语音转写；local_path 仅供本机后续处理，不要复制或长期保存。'
+          : '当前没有可靠转写。不要仅凭 local_path 猜测语音内容；没有可用本机语音转写器时如实说明无法识别。'
+      );
     }
 
     const isVideo = media.mimeType.startsWith('video/') ||
@@ -478,18 +572,34 @@ export class WechatMediaContentProcessor {
       const frames = jpegFrames(output);
       if (!frames.length) throw new Error('本机视频中没有可读取的画面');
       const frameTimesSeconds = frames.map((_frame, index) => index * intervalSeconds);
+      const framePaths = frames.map((frame, index) => this.stageBytes(
+        frame,
+        'image/jpeg',
+        `video-frame-${index + 1}.jpg`
+      ));
+      const localFileName = processedFileName(media.fileName, media.mimeType);
+      const videoPath = this.stageBytes(media.bytes, media.mimeType, localFileName);
       return {
-        delivery: 'video_frames',
+        delivery: 'local_video',
+        localPath: videoPath,
+        mimeType: media.mimeType,
+        fileName: localFileName,
+        expiresInDays: TEMP_MEDIA_RETENTION_DAYS,
         frameTimesSeconds,
         ...(durationSeconds ? { videoDurationSeconds: durationSeconds } : {}),
         contentItems: [
           {
             type: 'inputText',
-            text: durationSeconds
-              ? `视频时长约 ${durationSeconds.toFixed(1)} 秒；按约 ${intervalSeconds.toFixed(1)} 秒间隔从全片抽取 ${frames.length} 帧，按时间顺序排列。`
-              : `视频时长无法从本机元数据确定；按约 ${intervalSeconds.toFixed(1)} 秒间隔抽取前段画面，共 ${frames.length} 帧，按时间顺序排列。`
-          },
-          ...frames.map(frame => imageItem(frame, 'image/jpeg'))
+            text: JSON.stringify({
+              temporary: true,
+              expires_in_days: TEMP_MEDIA_RETENTION_DAYS,
+              local_path: videoPath,
+              frame_paths: framePaths,
+              frame_times_seconds: frameTimesSeconds,
+              ...(durationSeconds ? { video_duration_seconds: durationSeconds } : {}),
+              instruction: '视频原文件和抽帧图片均为短期临时文件；需要查看某一帧时使用 view_image 读取对应 frame_paths，不要复制或长期保存。'
+            })
+          }
         ]
       };
     }
@@ -510,5 +620,77 @@ export class WechatMediaContentProcessor {
         ].join('\n')
       }]
     };
+  }
+
+  private stageBytes(bytes: Buffer, mimeType: string, fileName: string): string {
+    if (!this.tempDirectory) throw new Error('微信媒体临时目录未配置');
+    mkdirSync(this.tempDirectory, { recursive: true, mode: 0o700 });
+    const extension = MEDIA_EXTENSIONS[mimeType.toLowerCase()] ||
+      fileExtension(fileName).replace(/[^a-z0-9]/gu, '').slice(0, 8) ||
+      'bin';
+    const target = join(
+      this.tempDirectory,
+      `wechat-media-${this.now()}-${this.randomId().slice(0, 8)}.${extension || 'bin'}`
+    );
+    writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
+    return target;
+  }
+
+  private localMediaDelivery(
+    delivery: 'local_image' | 'local_audio',
+    bytes: Buffer,
+    mimeType: string,
+    fileName: string,
+    media: WechatMediaSource,
+    instruction: string
+  ): WechatMediaDelivery {
+    const localFileName = processedFileName(fileName, mimeType);
+    const localPath = this.stageBytes(bytes, mimeType, localFileName);
+    return {
+      delivery,
+      localPath,
+      mimeType,
+      fileName: localFileName,
+      expiresInDays: TEMP_MEDIA_RETENTION_DAYS,
+      ...(media.transcription ? { transcription: media.transcription } : {}),
+      contentItems: [{
+        type: 'inputText',
+        text: JSON.stringify({
+          temporary: true,
+          expires_in_days: TEMP_MEDIA_RETENTION_DAYS,
+          local_path: localPath,
+          mime_type: mimeType,
+          ...(media.status === 'thumbnailOnly' ? { status: 'thumbnailOnly' } : {}),
+          ...(media.transcription ? { transcription: media.transcription } : {}),
+          instruction
+        })
+      }]
+    };
+  }
+
+  private async expandWxgf(bytes: Buffer): Promise<{ bytes: Buffer; mimeType: string }> {
+    const embedded = wechatWxgfEmbeddedImage(bytes);
+    const embeddedMime = embedded ? rasterImageMime(embedded) : null;
+    if (embedded && embeddedMime) {
+      return { bytes: embedded, mimeType: embeddedMime };
+    }
+    if (!this.paths.ffmpegPath) throw new Error('WXGF 图片展开工具未随应用安装');
+    const candidates = wechatWxgfHevcCandidates(bytes).slice(0, MAX_WXGF_HEVC_CANDIDATES);
+    for (const candidate of candidates) {
+      try {
+        const output = await this.run(this.paths.ffmpegPath, [
+          '-hide_banner', '-loglevel', 'error', '-nostdin',
+          '-f', 'hevc', '-i', 'pipe:0',
+          '-map', '0:v:0', '-frames:v', '1', '-an',
+          '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '3', 'pipe:1'
+        ], candidate.bytes, MAX_MEDIA_OUTPUT_BYTES, 20_000);
+        if (rasterImageMime(output) === 'image/jpeg') {
+          return { bytes: output, mimeType: 'image/jpeg' };
+        }
+      } catch {
+        // Try the next independently extracted HEVC stream.
+      }
+    }
+    throw new Error('WXGF 图片展开失败，未取得 Agent 可读取的图片');
   }
 }

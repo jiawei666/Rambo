@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -218,6 +225,38 @@ test('Runtime launches its own Codex child with the isolated session source and 
       assert.equal(processExists(pid), false);
       assert.equal(children.filter(child => processExists(child.pid)).length, 0);
     } finally {
+      await runtime.stop();
+    }
+  });
+});
+
+test('Runtime makes a Node/npm installation discoverable to Codex from a minimal macOS PATH', async () => {
+  await withRuntime(async (CodexRuntime, _resolveRuntimeLayout, directory) => {
+    let call;
+    const resourceRoot = join(directory, 'resource');
+    const workingDirectory = join(directory, 'profile');
+    const home = join(directory, 'home');
+    const npxDirectory = join(home, '.nvm/versions/node/current/bin');
+    mkdirSync(workingDirectory);
+    mkdirSync(npxDirectory, { recursive: true });
+    writeFileSync(join(npxDirectory, 'npx'), '#!/bin/sh\n', { mode: 0o755 });
+    symlinkSync(process.execPath, join(npxDirectory, 'node'));
+    installFixtureRuntime(join(resourceRoot, 'runtime/codex'), '0.163.0');
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    const runtime = new CodexRuntime(resourceRoot, workingDirectory, (command, args, options) => {
+      call = { command, args, options };
+      return spawn(command, args, options);
+    }, { homeDirectory: home });
+    try {
+      await runtime.start();
+      const entries = call.options.env.PATH.split(':');
+      assert.equal(entries[0], join(resourceRoot, 'runtime/codex/0.163.0/codex-path'));
+      assert.equal(entries[1], npxDirectory);
+      assert.ok(entries.includes('/usr/bin'));
+    } finally {
+      process.env.PATH = previousPath;
       await runtime.stop();
     }
   });

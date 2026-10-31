@@ -25,6 +25,7 @@ export type ConnectorCredentialPayload =
       dataDirectory: string;
       wechatVersion: string;
       wechatBuild: string;
+      imageKey?: { aesKey: string; xorKey: number };
     }
   | {
       kind: 'oauth-token';
@@ -346,7 +347,14 @@ function validatePayload(payload: ConnectorCredentialPayload): void {
         payload.dataDirectory.length > 4_096 ||
         typeof payload.wechatVersion !== 'string' || !payload.wechatVersion.trim() ||
         payload.wechatVersion.length > 100 ||
-        typeof payload.wechatBuild !== 'string' || !payload.wechatBuild.trim()) {
+        typeof payload.wechatBuild !== 'string' || !payload.wechatBuild.trim() ||
+        (payload.imageKey !== undefined &&
+          (!payload.imageKey ||
+           typeof payload.imageKey.aesKey !== 'string' ||
+           !/^[a-f0-9]{16}$/iu.test(payload.imageKey.aesKey) ||
+           !Number.isInteger(payload.imageKey.xorKey) ||
+           payload.imageKey.xorKey < 0 ||
+           payload.imageKey.xorKey > 0xff))) {
       throw new ConnectorCredentialsError('微信 SQLCipher 凭证格式无效');
     }
     for (const [path, key] of Object.entries(payload.keys)) {

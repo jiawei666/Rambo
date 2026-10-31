@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 const projectRoot = new URL('../..', import.meta.url).pathname;
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL('../../src/main/wechat-media-content.ts', import.meta.url), 'utf8');
+const imageKeyUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(
+  readFileSync(new URL('../../src/main/wechat-image-key.ts', import.meta.url), 'utf8'),
+  {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+  }
+).outputText).toString('base64')}`;
 const xmldomUrl = pathToFileURL(require.resolve('@xmldom/xmldom')).href;
 const pdfjsUrl = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.mjs')).href;
 const platformProcessUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(
@@ -23,11 +31,30 @@ const compiled = ts.transpileModule(source, {
 }).outputText
   .replace("from '@xmldom/xmldom'", `from '${xmldomUrl}'`)
   .replace("from './platform/process'", `from '${platformProcessUrl}'`)
+  .replace("from './wechat-image-key'", `from '${imageKeyUrl}'`)
   .replace("import('pdfjs-dist/legacy/build/pdf.mjs')", `import('${pdfjsUrl}')`);
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`;
 const { WechatMediaContentProcessor } = await import(moduleUrl);
 const decoderPath = `${projectRoot}/native/wechat-silk-decoder/target/release/rambo-wechat-silk-decoder`;
 const ffmpegPath = require('ffmpeg-static');
+const tempDirectories = [];
+
+after(() => {
+  for (const directory of tempDirectories) rmSync(directory, { recursive: true, force: true });
+});
+
+function createProcessor(paths, run) {
+  const tempDirectory = mkdtempSync(join(tmpdir(), 'rambo-wechat-media-content-'));
+  tempDirectories.push(tempDirectory);
+  return new WechatMediaContentProcessor(paths, run, { tempDirectory });
+}
+
+function localMedia(result) {
+  assert.equal(result.contentItems.length, 1);
+  assert.equal(result.contentItems[0].type, 'inputText');
+  assert.doesNotMatch(result.contentItems[0].text, /data:(?:image|audio)\//u);
+  return JSON.parse(result.contentItems[0].text);
+}
 
 function zip(entries) {
   const localParts = [];
@@ -91,7 +118,7 @@ function onePagePdf(text) {
 }
 
 test('plain text, DOCX, and PDF files are delivered as extracted text', async () => {
-  const processor = new WechatMediaContentProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
+  const processor = createProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
   const plain = await processor.process({
     bytes: Buffer.from('line one\nline two'),
     mimeType: 'text/plain', fileName: 'notes.txt', kind: 'file', status: 'available'
@@ -114,19 +141,97 @@ test('plain text, DOCX, and PDF files are delivered as extracted text', async ()
 });
 
 test('WeChat SILK is decoded in memory to a valid WAV Agent input', async () => {
-  const processor = new WechatMediaContentProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
+  const processor = createProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
   const silk = readFileSync(new URL('../../native/wechat-silk-decoder/tone.silk', import.meta.url));
   const result = await processor.process({
     bytes: silk,
     mimeType: 'audio/silk', fileName: 'voice.silk', kind: 'audio', status: 'available'
   });
-  assert.equal(result.delivery, 'inline_audio');
-  assert.equal(result.contentItems[0].type, 'inputAudio');
-  const encoded = result.contentItems[0].audioUrl;
-  assert.match(encoded, /^data:audio\/wav;base64,/u);
-  const wav = Buffer.from(encoded.slice(encoded.indexOf(',') + 1), 'base64');
+  assert.equal(result.delivery, 'local_audio');
+  assert.equal(result.fileName, 'voice.wav');
+  const metadata = localMedia(result);
+  assert.match(metadata.local_path, /\/wechat-media-\d+-[0-9a-f]{8}\.wav$/u);
+  assert.equal(metadata.expires_in_days, 7);
+  const wav = readFileSync(metadata.local_path);
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
   assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+});
+
+test('audio metadata uses the extension matching the processed MIME type', async () => {
+  const processor = createProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
+  const result = await processor.process({
+    bytes: Buffer.from('M4A'),
+    mimeType: 'audio/mp4',
+    fileName: 'voice.m4a',
+    kind: 'audio',
+    status: 'available'
+  });
+  assert.equal(result.delivery, 'local_audio');
+  assert.equal(result.fileName, 'voice.m4a');
+  const metadata = localMedia(result);
+  assert.match(metadata.local_path, /\/wechat-media-\d+-[0-9a-f]{8}\.m4a$/u);
+  assert.deepEqual(readFileSync(metadata.local_path), Buffer.from('M4A'));
+});
+
+test('WeChat WXGF images are expanded to a JPEG Agent input through FFmpeg', async () => {
+  const nalu = (type, size, marker) => {
+    const value = Buffer.alloc(size, marker);
+    value[0] = type << 1;
+    value[1] = 1;
+    return value;
+  };
+  const wxgf = Buffer.concat([
+    Buffer.from('wxgf'),
+    Buffer.alloc(20, 0),
+    Buffer.from([0, 0, 0, 1]), nalu(32, 110, 0x11),
+    Buffer.from([0, 0, 0, 1]), nalu(33, 40, 0x12),
+    Buffer.from([0, 0, 0, 1]), nalu(19, 120, 0x13)
+  ]);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9]);
+  let received = null;
+  const processor = createProcessor(
+    { ffmpegPath: '/fake/ffmpeg', silkDecoderPath: decoderPath },
+    async (binary, args, input) => {
+      received = { binary, args, input };
+      return jpeg;
+    }
+  );
+  const result = await processor.process({
+    bytes: wxgf,
+    mimeType: 'image/wxgf',
+    fileName: 'sample.dat',
+    kind: 'image',
+    status: 'available'
+  });
+  assert.equal(result.delivery, 'local_image');
+  const metadata = localMedia(result);
+  assert.match(metadata.local_path, /\/wechat-media-\d+-[0-9a-f]{8}\.jpg$/u);
+  assert.deepEqual(readFileSync(metadata.local_path), jpeg);
+  assert.equal(received?.binary, '/fake/ffmpeg');
+  assert.ok(received?.args.includes('hevc'));
+});
+
+test('WeChat WXGF embedded JPEG is returned without invoking FFmpeg', async () => {
+  const embedded = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02]);
+  const wxgf = Buffer.concat([Buffer.from('wxgf'), Buffer.alloc(20, 0), embedded]);
+  let invoked = false;
+  const processor = createProcessor(
+    { ffmpegPath: '/fake/ffmpeg', silkDecoderPath: decoderPath },
+    async () => {
+      invoked = true;
+      return Buffer.alloc(0);
+    }
+  );
+  const result = await processor.process({
+    bytes: wxgf,
+    mimeType: 'image/wxgf',
+    fileName: 'sample.dat',
+    kind: 'image',
+    status: 'available'
+  });
+  const metadata = localMedia(result);
+  assert.deepEqual(readFileSync(metadata.local_path), embedded);
+  assert.equal(invoked, false);
 });
 
 test('videos are streamed through FFmpeg and delivered as ordered keyframe images', async () => {
@@ -135,22 +240,29 @@ test('videos are streamed through FFmpeg and delivered as ordered keyframe image
     '-an', '-c:v', 'mpeg4', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'
   ], { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 });
   assert.equal(generated.status, 0, generated.stderr?.toString());
-  const processor = new WechatMediaContentProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
+  const processor = createProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
   const result = await processor.process({
     bytes: generated.stdout,
     mimeType: 'video/mp4', fileName: 'clip.mp4', kind: 'video', status: 'available'
   });
-  assert.equal(result.delivery, 'video_frames');
+  assert.equal(result.delivery, 'local_video');
   assert.ok(result.frameTimesSeconds?.length);
-  assert.ok(result.contentItems.slice(1).every(item => item.type === 'inputImage'));
+  const metadata = localMedia(result);
+  assert.deepEqual(readFileSync(metadata.local_path), generated.stdout);
+  assert.equal(metadata.frame_paths.length, result.frameTimesSeconds.length);
+  for (const path of metadata.frame_paths) {
+    assert.equal(readFileSync(path).subarray(0, 2).toString('hex'), 'ffd8');
+  }
 });
 
 test('thumbnail-only media is explicitly delivered as an image without claiming to be the original', async () => {
-  const processor = new WechatMediaContentProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
+  const processor = createProcessor({ ffmpegPath, silkDecoderPath: decoderPath });
   const result = await processor.process({
     bytes: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     mimeType: 'image/jpeg', fileName: 'video_thumb.jpg', kind: 'thumbnail', status: 'thumbnailOnly'
   });
-  assert.equal(result.delivery, 'inline_image');
-  assert.equal(result.contentItems[0].type, 'inputImage');
+  assert.equal(result.delivery, 'local_image');
+  const metadata = localMedia(result);
+  assert.equal(metadata.status, 'thumbnailOnly');
+  assert.deepEqual(readFileSync(metadata.local_path), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
 });

@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import ts from 'typescript';
 
 const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext };
 const contentSource = readFileSync(new URL('../../src/main/wechat-content.ts', import.meta.url), 'utf8');
+const imageKeySource = readFileSync(new URL('../../src/main/wechat-image-key.ts', import.meta.url), 'utf8');
 const sqlcipherSource = readFileSync(new URL('../../src/main/wechat-sqlcipher.ts', import.meta.url), 'utf8');
 const workerSource = readFileSync(new URL('../../src/main/wechat-worker.ts', import.meta.url), 'utf8');
 
@@ -18,9 +28,11 @@ const contentCompiled = ts.transpileModule(contentSource, { compilerOptions }).o
   JSON.stringify(import.meta.resolve('@xmldom/xmldom'))
 );
 const contentUrl = `data:text/javascript;base64,${Buffer.from(contentCompiled).toString('base64')}`;
+const imageKeyUrl = dataUrl(imageKeySource);
 const sqlcipherUrl = dataUrl(sqlcipherSource);
 const compiledWorker = ts.transpileModule(workerSource, { compilerOptions }).outputText
   .replace("from './wechat-content'", `from '${contentUrl}'`)
+  .replace("from './wechat-image-key'", `from '${imageKeyUrl}'`)
   .replace("from './wechat-sqlcipher'", `from '${sqlcipherUrl}'`);
 const workerUrl = dataUrl(compiledWorker);
 const {
@@ -64,6 +76,7 @@ const START = '2023-11-14T00:00:00.000Z';
 const END = '2023-11-15T00:00:00.000Z';
 const SESSION = 'wxid_alice';
 const SESSION_HASH = createHash('md5').update(SESSION).digest('hex');
+const BIG_VOICE_SERVER_ID = '7677621684784704714';
 
 function field(number, value) {
   const bytes = Buffer.from(value);
@@ -81,6 +94,11 @@ function packedVideoName(name) {
 
 function packedFileName(name) {
   return field(7, field(2, name));
+}
+
+function packedVoiceTranscription(text) {
+  const voiceInfo = Buffer.concat([Buffer.from([0x08, 0x02]), field(2, text)]);
+  return field(5, voiceInfo);
 }
 
 function appType(subtype) {
@@ -262,11 +280,12 @@ function createAccountFixture() {
     db.prepare('INSERT INTO Name2Id(user_name,is_session) VALUES(?,?)').run('wxid_bob', 0);
     const insert = db.prepare(`INSERT INTO "Msg_${SESSION_HASH}"(server_id,local_type,sort_seq,real_sender_id,create_time,message_content,WCDB_CT_message_content,packed_info_data) VALUES(?,?,?,?,?,?,?,?)`);
     insert.run(300, 3, 170000030000, 2, 1700000300, '<msg><img md5="img-md5"/></msg>', 0, packedImageName('image-1'));
-    insert.run(301, 34, 170000031000, 2, 1700000310, '<msg><voicemsg voicelength="800"/></msg>', 0, Buffer.alloc(0));
+    insert.run(301, 34, 170000031000, 2, 1700000310, '<msg><voicemsg voicelength="800"/></msg>', 0, packedVoiceTranscription('周六见'));
     insert.run(302, 43, 170000032000, 2, 1700000320, '<msg><videomsg md5="video-md5"/></msg>', 0, packedVideoName('video-1'));
     insert.run(303, appType(6), 170000033000, 2, 1700000330, '<msg><appmsg><title>report.pdf</title><type>6</type><appattach><totallen>11</totallen><fileext>pdf</fileext></appattach></appmsg></msg>', 0, packedFileName('report-1.pdf'));
     insert.run(304, 47, 170000034000, 2, 1700000340, `<msg><emoji md5="${stickerMd5}"/></msg>`, 0, Buffer.alloc(0));
     insert.run(305, 34, 170000035000, 2, 1700000350, '<msg><voicemsg voicelength="800"/></msg>', 0, Buffer.alloc(0));
+    insert.run(BIG_VOICE_SERVER_ID, 34, 170000036000, 2, 1700000360, '<msg><voicemsg voicelength="1200"/></msg>', 0, Buffer.alloc(0));
   });
 
   databases.push(dbInput('message/media_0.db'));
@@ -277,6 +296,8 @@ function createAccountFixture() {
       .run(1, 1700000310, 1, 301, Buffer.from([0x02, 0x23, 0x21, 0x53, 0x49, 0x4c, 0x4b]), '0');
     db.prepare('INSERT INTO VoiceInfo(chat_name_id,create_time,local_id,svr_id,voice_data,data_index) VALUES(?,?,?,?,?,?)')
       .run(1, 1700000350, 2, 305, Buffer.from('RIFF----WAVE-local-wav'), '0');
+    db.prepare('INSERT INTO VoiceInfo(chat_name_id,create_time,local_id,svr_id,voice_data,data_index) VALUES(?,?,?,?,?,?)')
+      .run(1, 1700000360, 3, BIG_VOICE_SERVER_ID, Buffer.from([0x02, 0x23, 0x21, 0x42, 0x49, 0x47]), '0');
   });
 
   const imageDirectory = join(root, 'msg', 'attach', SESSION_HASH, '2023-11', 'Img');
@@ -335,9 +356,11 @@ test('worker reads sessions from a committed SQLCipher WAL and merges messages f
     const voice = byServerId.get('301').media[0];
     assert.equal(voice.status, 'available');
     assert.equal(voice.mimeType, 'audio/silk');
+    assert.equal(voice.transcription, '周六见');
     const voiceMedia = await handleWorker(request(fixture.root, 'media', fixture.databases, { resourceHandle: voice.resourceHandle }));
     assert.equal(voiceMedia.ok, true);
     assert.equal(voiceMedia.result.mimeType, 'audio/silk');
+    assert.equal(voiceMedia.result.transcription, '周六见');
     assert.deepEqual([...voiceMedia.result.bytes], [0x02, 0x23, 0x21, 0x53, 0x49, 0x4c, 0x4b]);
     assert.match(voiceMedia.result.limitation, /SILK/u);
 
@@ -349,6 +372,16 @@ test('worker reads sessions from a committed SQLCipher WAL and merges messages f
     assert.equal(wavMedia.result.mimeType, 'audio/wav');
     assert.match(wavMedia.result.fileName, /\.wav$/u);
     assert.equal(wavMedia.result.limitation, undefined);
+
+    const bigVoice = byServerId.get(BIG_VOICE_SERVER_ID).media[0];
+    assert.equal(bigVoice.status, 'available');
+    assert.equal(bigVoice.mimeType, 'audio/silk');
+    const bigVoiceMedia = await handleWorker(request(fixture.root, 'media', fixture.databases, { resourceHandle: bigVoice.resourceHandle }));
+    assert.equal(bigVoiceMedia.ok, true);
+    assert.deepEqual(
+      [...bigVoiceMedia.result.bytes],
+      [0x02, 0x23, 0x21, 0x42, 0x49, 0x47]
+    );
 
     const video = byServerId.get('302').media[0];
     assert.equal(video.status, 'available');
@@ -373,6 +406,131 @@ test('worker reads sessions from a committed SQLCipher WAL and merges messages f
     assert.equal(stickerMedia.ok, true);
     assert.equal(stickerMedia.result.mimeType, 'image/gif');
     assert.deepEqual([...stickerMedia.result.bytes], [...Buffer.from('GIF89a local-sticker')]);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test('worker decrypts V2 image DAT with kvcomm-derived AES and XOR keys', async () => {
+  const fixture = createAccountFixture();
+  const parent = mkdtempSync(join(tmpdir(), 'rambo-wechat-v2-key-'));
+  const accountRoot = join(parent, 'Documents', 'xwechat_files', 'wxid_alice_abcd');
+  const accountId = 'wxid_alice_abcd';
+  try {
+    mkdirSync(dirname(accountRoot), { recursive: true, mode: 0o700 });
+    renameSync(fixture.root, accountRoot);
+
+    const code = 0x1234;
+    const aes = Buffer.from(
+      createHash('md5').update(`${code}wxid_alice`).digest('hex').slice(0, 16),
+      'ascii'
+    );
+    const xor = code & 0xff;
+    const plain = Buffer.concat([
+      Buffer.from('wxgf'),
+      Buffer.alloc(20, 0),
+      Buffer.from([0x00, 0x00, 0x00, 0x01, 0x40, 0x01]),
+      Buffer.alloc(120, 0x11)
+    ]);
+    const raw = Buffer.from('v2-raw-section');
+    const xorTail = Buffer.from('v2-xor-tail');
+    const cipher = createCipheriv('aes-128-ecb', aes, null);
+    const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+    const header = Buffer.alloc(15);
+    Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07]).copy(header);
+    header.writeUInt32LE(plain.length, 6);
+    header.writeUInt32LE(xorTail.length, 10);
+    const dat = Buffer.concat([
+      header,
+      encrypted,
+      raw,
+      Buffer.from(xorTail.map(value => value ^ xor))
+    ]);
+    writeFileSync(
+      join(accountRoot, 'msg', 'attach', SESSION_HASH, '2023-11', 'Img', 'image-1_h.dat'),
+      dat,
+      { mode: 0o600 }
+    );
+    const kvcomm = join(parent, 'Documents', 'app_data', 'net', 'kvcomm');
+    mkdirSync(kvcomm, { recursive: true, mode: 0o700 });
+    writeFileSync(join(kvcomm, `key_${code}_fixture.statistic`), Buffer.alloc(0), { mode: 0o600 });
+
+    const messages = await handleWorker(request(accountRoot, 'messages', fixture.databases, {
+      sessionIds: [SESSION], start: START, end: END, limit: 20
+    }, { accountId }));
+    assert.equal(messages.ok, true);
+    const image = messages.result.items.find(item => item.media.some(media => media.kind === 'image'));
+    assert.ok(image);
+    const ref = image.media.find(media => media.kind === 'image');
+    assert.equal(ref.status, 'available');
+    assert.equal(ref.mimeType, 'image/wxgf');
+
+    const media = await handleWorker(request(accountRoot, 'media', fixture.databases, {
+      resourceHandle: ref.resourceHandle
+    }, { accountId }));
+    assert.equal(media.ok, true);
+    assert.equal(media.result.mimeType, 'image/wxgf');
+    assert.deepEqual([...media.result.bytes], [...plain, ...raw, ...xorTail]);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    cleanup(fixture);
+  }
+});
+
+test('worker reads the verified base database and marks coverage when a WeChat 4.2 WAL cannot be replayed', async () => {
+  const fixture = createAccountFixture();
+  try {
+    writeFileSync(
+      join(fixture.root, 'db_storage/message/media_0.db-wal'),
+      Buffer.alloc(32),
+      { mode: 0o600 }
+    );
+    let rejectedVoiceSnapshot = false;
+    const opener = plain => {
+      const database = openFixtureDatabase(plain);
+      let hasVoiceTable = false;
+      try {
+        hasVoiceTable = Boolean(database.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='VoiceInfo'"
+        ).get());
+      } catch { /* let the worker report the real open failure */ }
+      if (hasVoiceTable && !rejectedVoiceSnapshot) {
+        rejectedVoiceSnapshot = true;
+        database.close();
+        throw Object.assign(new Error('database disk image is malformed'), {
+          code: 'ERR_SQLITE_ERROR'
+        });
+      }
+      return database;
+    };
+
+    const messages = await handleWechatWorkerRequest(
+      request(fixture.root, 'messages', fixture.databases, {
+        sessionIds: [SESSION], start: START, end: END, limit: 20
+      }),
+      opener
+    );
+    assert.equal(messages.ok, true);
+    assert.equal(messages.result.coverage.complete, false);
+    assert.match(
+      messages.result.coverage.notes.join('\n'),
+      /WAL 回放结果不可用.*可能不包含最新提交/u
+    );
+    const voice = messages.result.items
+      .find(item => item.serverId === '301')?.media[0];
+    assert.equal(voice?.status, 'available');
+    assert.equal(voice?.mimeType, 'audio/silk');
+    const media = await handleWorker(request(
+      fixture.root,
+      'media',
+      fixture.databases,
+      { resourceHandle: voice.resourceHandle }
+    ));
+    assert.equal(media.ok, true);
+    assert.deepEqual(
+      [...media.result.bytes],
+      [0x02, 0x23, 0x21, 0x53, 0x49, 0x4c, 0x4b]
+    );
   } finally {
     cleanup(fixture);
   }

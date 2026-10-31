@@ -82,7 +82,7 @@ export type ConnectorCategory =
   | 'developer'
   | 'data'
   | 'other';
-export type ConnectorAuthKind = 'oauth-desktop' | 'credentials' | 'local-key-capture';
+export type ConnectorAuthKind = 'oauth-desktop' | 'credentials' | 'local-key-capture' | 'local-install';
 export type ConnectionStatus = 'ready' | 'needsReconnect' | 'expired' | 'disabled';
 export type ConnectorCapabilityStatus = 'ready' | 'unavailable';
 export interface ConnectorProvider {

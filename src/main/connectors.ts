@@ -63,6 +63,16 @@ const seeds: Record<string, ProviderSeed> = {
     capabilities: ['repos.read', 'issues.read', 'pullRequests.read'],
     brandColor: '#24292f',
     monogram: 'GH'
+  },
+  cloakbrowser: {
+    id: 'cloakbrowser',
+    name: 'CloakBrowser',
+    description: '可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。',
+    category: 'other',
+    authKind: 'local-install',
+    capabilities: ['browser.navigate', 'browser.snapshot', 'browser.interact'],
+    brandColor: '#3f6f68',
+    monogram: 'CB'
   }
 };
 
@@ -70,8 +80,9 @@ export function connectorProviders(): ConnectorProvider[] {
   return Object.values(seeds).map(provider => ({
     ...provider,
     capabilities: [...provider.capabilities],
-    // The first connector release integrates email; Calendar and GitHub are catalog placeholders.
-    available: provider.id === 'gmail' || provider.id === 'qqmail' || provider.id === 'wechat'
+    // Calendar and GitHub remain catalog placeholders until their adapters exist.
+    available: provider.id === 'gmail' || provider.id === 'qqmail' ||
+      provider.id === 'wechat' || provider.id === 'cloakbrowser'
   }));
 }
 
@@ -97,6 +108,19 @@ export function beginConnectorAuth(providerId: string, displayName?: string): Co
     url.searchParams.set('connection', connectionId);
     url.searchParams.set('displayName', label);
     return { connectionId, providerId: provider.id, authKind: provider.authKind, displayName: label, url: url.toString() };
+  }
+  if (provider.authKind === 'local-install') {
+    const url = new URL('rambo-connector://local-install');
+    url.searchParams.set('provider', provider.id);
+    url.searchParams.set('connection', connectionId);
+    url.searchParams.set('displayName', label);
+    return {
+      connectionId,
+      providerId: provider.id,
+      authKind: provider.authKind,
+      displayName: label,
+      url: url.toString()
+    };
   }
   return {
     connectionId,

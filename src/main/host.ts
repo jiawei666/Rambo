@@ -80,6 +80,7 @@ import {
 } from './bot-secret-tools';
 import { isPathInsideOrEqual } from './platform/paths';
 import { openReadOnlyNoFollow } from './platform/fs';
+import type { ManagedMcpProvider } from './cloakbrowser-connector';
 
 type TrackedUnknownOperation = UnknownTurnOperation & {
   awaitingLateResponse: boolean;
@@ -125,6 +126,18 @@ const PLAYWRIGHT_EXTENSION_CONFIG = {
   args: ['-y', '@playwright/mcp@0.0.83', '--extension'],
   enabled: true
 };
+// App Server infers MCP transport from `command` or `url`; `{ enabled: false }`
+// alone is rejected before a thread can start. Keep a valid loopback transport
+// while disabled so CloakBrowser remains absent without breaking every turn.
+export const CLOAKBROWSER_DISABLED_MCP_CONFIG = Object.freeze({
+  url: 'http://127.0.0.1:1/cloakbrowser-disabled',
+  enabled: false
+});
+export function cloakBrowserDisabledMcpConfig(
+  appServerConfigured: boolean
+): Record<string, unknown> {
+  return appServerConfigured ? { enabled: false } : CLOAKBROWSER_DISABLED_MCP_CONFIG;
+}
 const AUTONOMY_INSTRUCTIONS = [
   '默认以强自主性和规划能力工作。先洞察用户真正要完成的目标，再结合当前真正可用的 Tools、任务性质和 Routine 体系自主拆解步骤、选择执行方式并持续推进，不要把所有步骤都交回用户确认。',
   '能可靠推断、低风险且可逆的事情直接做；只有关键信息实际缺失并会造成实质歧义、即将发生不可逆外部副作用且尚未获得授权、需要系统权限或账号授权，或要主动修改全局资源/密钥时，才提出最短的必要问题。',
@@ -1006,7 +1019,8 @@ export class Host {
     wechatReader?: SqlCipherWechatReader,
     wechatMediaProcessor?: WechatMediaContentProcessor,
     private readonly modelSourceStatus?: () => ModelSourceState,
-    private readonly testModelConnection?: () => Promise<ModelConnectionTestResult>
+    private readonly testModelConnection?: () => Promise<ModelConnectionTestResult>,
+    private readonly managedMcp?: ManagedMcpProvider
   ) {
     this.managedSkillLibrary = new ManagedSkillLibrary(store.directory);
     this.directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
@@ -2229,7 +2243,10 @@ export class Host {
         value: [
           '当前 Bot 已获授权的本机微信连接目录。查询时必须传入目录中的 connection_id；微信只读，不监听新消息，不发送消息，也不保证实时。',
           JSON.stringify(wechatConnections, null, 2),
-          '先用 rambo_wechat.wechat_sessions 按名称定位稳定 session_id，再用明确起止时间或 relative_minutes 查询；读取范围和已读进度由你按当前任务自行管理。'
+          '先用 rambo_wechat.wechat_sessions 按名称定位稳定 session_id，再用明确起止时间或 relative_minutes 查询；读取范围和已读进度由你按当前任务自行管理。',
+          'wechat_media 返回的是应用临时目录中的 local_path，不是 base64。不要把临时文件复制到工作区或长期保存；该目录按既有规则定期清理。',
+          '读取图片时调用 view_image({ path: local_path })。读取视频时可按 frame_paths 逐帧调用 view_image，或用本机 ffmpeg 处理 local_path。不要为了把媒体写入文本而重新编码或输出 base64。',
+          '如果消息的 media 或临时媒体元数据已带 transcription，先把它作为微信已有的语音转写并说明来源；没有可靠转写时，不能仅凭音频路径猜测语音内容，应如实说明当前没有可用的本机语音转写能力。'
         ].join('\n')
       };
     }
@@ -2284,6 +2301,9 @@ export class Host {
         : '',
       chatContentToolsEnabled
         ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接可引用当前 Bot 工作区内的相对路径，也可引用本机已有的绝对路径，不必复制进工作区。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S)、当前 Bot 工作区内的文件路径或本机已有的绝对路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
+        : '',
+      this.managedMcp?.hasAccess(bot.id)
+        ? '当前 Bot 还获授权使用 CloakBrowser MCP。它操作独立安装的增强 Chromium 和共享持久 profile，不是当前 Chrome；获授权 Bot 会共享 Cookie、历史、扩展和标签页状态，因此不要把它描述成隔离浏览器。工具调用由 Rambo 串行执行；遇到网站拒绝、验证码或二次验证时如实报告，不要声称能绕过所有反爬。'
         : '',
       secretToolInstructions(secretTools),
       memoryToolsEnabled
@@ -3671,6 +3691,19 @@ export class Host {
           enabled: true,
           env
         };
+      }
+    }
+    if (this.managedMcp) {
+      const disabledConfig = cloakBrowserDisabledMcpConfig(
+        this.cachedMcpServers.some(server =>
+          server.name.toLocaleLowerCase() === 'cloakbrowser'
+        )
+      );
+      mcpServers.cloakbrowser = botId
+        ? await this.managedMcp.threadConfig(botId)
+        : disabledConfig;
+      if (!mcpServers.cloakbrowser) {
+        mcpServers.cloakbrowser = disabledConfig;
       }
     }
     return {

@@ -13,6 +13,7 @@ import { RealtimeAudioBridge } from './realtime-audio-bridge';
 import { extractTarGz, listTarGzEntries } from './platform/archive';
 import { renameWithRetry } from './platform/fs';
 import {
+  findNpx,
   pathDelimiter,
   terminateProcessTree,
   terminateProcessTreeAsync
@@ -350,6 +351,27 @@ function runtimeProxyEnv(proxyUrl: string | null | undefined): Record<string, st
   };
 }
 
+function codexChildPath(
+  pathDirectory: string,
+  platform: NodeJS.Platform,
+  homeDirectory: string | undefined
+): string {
+  const inheritedPath = process.env.PATH ?? process.env.Path ?? (platform === 'win32'
+    ? 'C:\\Windows\\System32;C:\\Windows'
+    : '/usr/bin:/bin');
+  const npx = findNpx({
+    platform,
+    environment: process.env,
+    home: homeDirectory
+  });
+  const entries = [
+    pathDirectory,
+    npx ? dirname(npx) : null,
+    ...inheritedPath.split(pathDelimiter(platform))
+  ].filter((entry): entry is string => Boolean(entry));
+  return [...new Set(entries)].join(pathDelimiter(platform));
+}
+
 export class CodexRuntime extends EventEmitter {
   state: RuntimeState = {
     status: 'stopped',
@@ -625,11 +647,11 @@ export class CodexRuntime extends EventEmitter {
         ...(this.resolverDeps.environment?.() ?? {}),
         CODEX_HOME: codexHome,
         CODEX_SQLITE_HOME: codexHome,
-        PATH: `${layout.pathDirectory}${pathDelimiter(platform)}${
-          process.env.PATH ?? (platform === 'win32'
-            ? 'C:\\Windows\\System32;C:\\Windows'
-            : '/usr/bin:/bin')
-        }`
+        PATH: codexChildPath(
+          layout.pathDirectory,
+          platform,
+          this.resolverDeps.homeDirectory
+        )
       },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

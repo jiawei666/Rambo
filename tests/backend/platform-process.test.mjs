@@ -58,6 +58,50 @@ test('Windows npx discovery covers npm and Node.js install locations', () => {
   }
 });
 
+test('macOS npx discovery covers NVM when a GUI app has only the system PATH', () => {
+  const home = '/Users/Carol';
+  const expected = '/Users/Carol/.nvm/versions/node/current/bin/npx';
+  assert.equal(processPlatform.findNpx({
+    platform: 'darwin',
+    environment: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    home,
+    exists: path => path === expected
+  }), expected);
+});
+
+test('macOS node discovery follows the same Node.js installation as npx', () => {
+  const home = '/Users/Carol';
+  const expected = '/Users/Carol/.nvm/versions/node/current/bin/node';
+  assert.equal(processPlatform.findNode({
+    platform: 'darwin',
+    environment: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    home,
+    exists: path => path === expected
+  }), expected);
+});
+
+test('Windows node discovery covers npm and Node.js install locations', () => {
+  const environment = {
+    PATH: '',
+    PATHEXT: '.CMD;.EXE',
+    USERPROFILE: 'C:\\Users\\Carol',
+    APPDATA: 'C:\\Users\\Carol\\AppData\\Roaming',
+    LOCALAPPDATA: 'C:\\Users\\Carol\\AppData\\Local',
+    ProgramFiles: 'C:\\Program Files'
+  };
+  for (const expected of [
+    'C:\\Program Files\\nodejs\\node.exe',
+    'C:\\Users\\Carol\\AppData\\Local\\Programs\\nodejs\\node.exe',
+    'C:\\Users\\Carol\\AppData\\Local\\Volta\\bin\\node.exe'
+  ]) {
+    assert.equal(processPlatform.findNode({
+      platform: 'win32',
+      environment,
+      exists: path => path === expected
+    }), expected);
+  }
+});
+
 test('Windows child environments preserve PATH and only inject selected secrets', () => {
   const environment = processPlatform.commandEnvironment({
     RAMBO_MANUAL_API_KEY: 'selected-secret'

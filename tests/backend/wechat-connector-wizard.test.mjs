@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createCipheriv, createHash } from 'node:crypto';
 import { test } from 'node:test';
 import {
   cpSync,
@@ -25,6 +26,7 @@ const moduleSources = [
   ['platform/paths', 'platform/paths'],
   ['platform/fs', 'platform/fs'],
   ['wechat-platform-types', 'wechat-platform-types'],
+  ['wechat-image-key', 'wechat-image-key'],
   ['wechat-connector-common', 'wechat-connector-common'],
   ['wechat-connector-macos', 'wechat-connector-macos'],
   ['wechat-connector-windows', 'wechat-connector-windows'],
@@ -68,14 +70,21 @@ async function withWizard(run) {
   }
 }
 
-function createCaptureFixture(sqlCipher, directory, key, keyForDatabase = () => key) {
+function createCaptureFixture(
+  sqlCipher,
+  directory,
+  key,
+  keyForDatabase = () => key,
+  version = '4.1.15',
+  build = '270135'
+) {
   const home = join(directory, 'fixture-home');
   const userData = join(directory, 'fixture-user-data');
   const sourceApp = join(home, 'Applications', 'WeChat.app');
   const info = `<?xml version="1.0"?><plist version="1.0"><dict>
     <key>CFBundleIdentifier</key><string>com.tencent.xinWeChat</string>
-    <key>CFBundleShortVersionString</key><string>4.1.15</string>
-    <key>CFBundleVersion</key><string>270135</string>
+    <key>CFBundleShortVersionString</key><string>${version}</string>
+    <key>CFBundleVersion</key><string>${build}</string>
     <key>CFBundleExecutable</key><string>WeChat</string>
   </dict></plist>`;
   mkdirSync(join(sourceApp, 'Contents', 'MacOS'), { recursive: true });
@@ -154,6 +163,32 @@ function createWindowsCaptureFixture(sqlCipher, directory, key) {
   };
 }
 
+function writeV2ImageFixture(accountDirectory, accountId, code) {
+  const aesKey = createHash('md5')
+    .update(`${code}${accountId}`)
+    .digest('hex')
+    .slice(0, 16);
+  const xorKey = code & 0xff;
+  const plain = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+  const raw = Buffer.from('legacy-raw');
+  const tail = Buffer.from('xor-tail');
+  const cipher = createCipheriv('aes-128-ecb', Buffer.from(aesKey, 'ascii'), null);
+  const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const header = Buffer.alloc(15);
+  Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07]).copy(header);
+  header.writeUInt32LE(plain.length, 6);
+  header.writeUInt32LE(tail.length, 10);
+  const directory = join(accountDirectory, 'msg', 'attach', 'session-hash', '2026-10', 'Img');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'sample_h.dat'), Buffer.concat([
+    header,
+    encrypted,
+    raw,
+    Buffer.from(tail.map(value => value ^ xorKey))
+  ]), { mode: 0o600 });
+  return { aesKey, xorKey };
+}
+
 function captureRuntime({
   sourceApp,
   info,
@@ -168,7 +203,8 @@ function captureRuntime({
   officialSession = false,
   officialAttachable = false,
   captureKind = 'aes-key',
-  officialAttachFailure = false
+  officialAttachFailure = false,
+  imageCodes = []
 }) {
   let entitlementReadCount = 0;
   let spawnedExecutable = '';
@@ -208,6 +244,7 @@ function captureRuntime({
     socket.once('error', fail);
     socket.once('connect', () => {
       send({ type: 'hello', token });
+      send({ type: 'image-codes', values: imageCodes });
       if (officialAttachFailure) {
         send({ type: 'status', phase: 'attaching', keyCount: 0 });
         send({ type: 'status', phase: 'failed', keyCount: 0, error: 'PermissionDeniedError' });
@@ -433,6 +470,52 @@ test('capture completes the isolated clone, signing, key capture, SQLCipher veri
     assert.equal(fake.reopened(), true);
     assert.ok(fake.stoppedClone()?.captureRoot.includes('managed-wechat-capture'));
     assert.equal(existsSync(fake.stoppedClone()?.captureRoot), false);
+  });
+});
+
+test('capture accepts a verified WeChat 4.2 source with a fresh managed clone', async () => {
+  await withWizard(async ({ wizard, sqlCipher, directory }) => {
+    const key = '4a'.repeat(32);
+    const fixture = createCaptureFixture(
+      sqlCipher,
+      directory,
+      key,
+      () => key,
+      '4.2.0',
+      '270348'
+    );
+    const image = writeV2ImageFixture(fixture.accountDirectory, 'wxid_test', 0x1234);
+    const fake = captureRuntime({
+      ...fixture,
+      key,
+      originalRunning: true,
+      imageCodes: [0, 0x1234]
+    });
+    const progress = [];
+    const instance = new wizard.WechatConnectorWizard(
+      fixture.userData,
+      {
+        confirmCloseWechat: async () => true,
+        chooseAccountDirectory: async () => fixture.accountDirectory
+      },
+      fixture.home,
+      fake.runtime,
+      { backend: 'managed-clone', captureSeconds: 300 }
+    );
+
+    const captured = await captureWithAutomaticRoundControls(
+      instance,
+      'wechat-4-2-connection',
+      state => progress.push(state.message)
+    );
+
+    assert.equal(captured.wechatVersion, '4.2.0');
+    assert.equal(captured.wechatBuild, '270348');
+    assert.deepEqual(captured.imageKey, image);
+    assert.equal(fake.copyCalled(), true);
+    assert.equal(fake.resignCalled(), true);
+    assert.ok(progress.some(message => message.includes('4.1.x/4.2.x')));
+    assert.doesNotMatch(JSON.stringify(progress), new RegExp(key, 'u'));
   });
 });
 

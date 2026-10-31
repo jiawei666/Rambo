@@ -38,6 +38,7 @@ export interface WechatMediaRef {
   mimeType: string | null;
   size: number | null;
   resourceHandle: string | null;
+  transcription?: string | null;
 }
 
 export interface WechatMessage {
@@ -118,6 +119,7 @@ export interface WechatReader {
     fileName: string;
     kind?: WechatMediaRef['kind'];
     status?: WechatMediaRef['status'];
+    transcription?: string | null;
     limitation?: string;
   }>;
   invalidate(connectionId: string): void;
@@ -323,6 +325,7 @@ export class SqlCipherWechatReader implements WechatReader {
       dataDirectory: credential.dataDirectory,
       databases: this.databases(credential),
       accountId: credential.accountId,
+      ...(credential.imageKey ? { imageKey: credential.imageKey } : {}),
       query: {
         start: query.start,
         end: query.end,
@@ -347,6 +350,7 @@ export class SqlCipherWechatReader implements WechatReader {
       dataDirectory: credential.dataDirectory,
       databases: this.databases(credential),
       accountId: credential.accountId,
+      ...(credential.imageKey ? { imageKey: credential.imageKey } : {}),
       query: {
         start: query.start,
         end: query.end,
@@ -372,6 +376,7 @@ export class SqlCipherWechatReader implements WechatReader {
     fileName: string;
     kind: WechatMediaRef['kind'];
     status: WechatMediaRef['status'];
+    transcription?: string | null;
     limitation?: string;
   }> {
     const response = await this.send(connection, credential, {
@@ -380,6 +385,7 @@ export class SqlCipherWechatReader implements WechatReader {
       dataDirectory: credential.dataDirectory,
       databases: this.databases(credential),
       accountId: credential.accountId,
+      ...(credential.imageKey ? { imageKey: credential.imageKey } : {}),
       query: { resourceHandle }
     });
     if (!('resourceHandle' in response) || response.resourceHandle !== resourceHandle) {
@@ -395,6 +401,7 @@ export class SqlCipherWechatReader implements WechatReader {
       fileName: response.fileName,
       kind: response.kind,
       status: response.status,
+      ...(response.transcription ? { transcription: response.transcription } : {}),
       ...(response.limitation ? { limitation: response.limitation } : {})
     };
   }

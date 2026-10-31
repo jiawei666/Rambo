@@ -167,6 +167,7 @@
         "T34",
         "T35",
         "T40",
+        "T41",
         "S02"
       ]
     },
@@ -5392,42 +5393,52 @@
       "rule": "T19",
       "title": "连接应用市场目录与品牌图标",
       "matrix": {
-        "steps": "在浅色和暗色主题检查连接应用页；搜索五个保留应用，并分别进入可连接项的操作；检查按钮和图标",
-        "expected": "市场展示 Gmail、QQ 邮箱、微信、日历和 GitHub；Gmail/QQ 邮箱/微信可进入连接流程，日历/GitHub 显示“即将推出”；其他 Provider 不出现。微信进入本机密钥捕获向导而不是 OAuth，且 Logo 使用 Simple Icons WeChat 标记与微信品牌绿，标记居中、不拉伸；日历使用 macOS「日历」App 图标；五项 Logo 均固定为 40×40 直接显示，图标区域透明且没有边框、底框或阴影；连接按钮无加号且明暗主题下文字清晰可读。"
+        "steps": "在浅色和暗色主题检查连接应用页；核对推荐区和所有应用分组；搜索六个保留应用，并分别进入可连接项的操作；检查按钮、介绍文案和透明图标",
+        "expected": "市场展示 Gmail、QQ 邮箱、微信、CloakBrowser、日历和 GitHub；Gmail/QQ 邮箱/微信/CloakBrowser 可进入连接流程，日历/GitHub 显示“即将推出”；其他 Provider 不出现。首页推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser，日历与 GitHub 位于“所有应用”。微信进入本机密钥捕获向导而不是 OAuth，且 Logo 使用 Simple Icons WeChat 标记与微信品牌绿，标记居中、不拉伸；CloakBrowser 使用其官方 GitHub 仓库 `CloakHQ/CloakBrowser` 的 `images/avatar.png` 图形，但移除原始黑色方底并导出透明背景，四角 Alpha 为 0 且 Logo 本体可见；不冒用 Chrome 图标或使用 `CB` 文字占位。CloakBrowser 介绍固定为“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”，并保留不承诺绕过所有反爬、验证码、登录或二次验证的边界。日历使用 macOS「日历」App 图标；六项品牌 Logo 均固定为 40×40 直接显示，图标区域透明且没有边框、底框或阴影；连接按钮无加号且明暗主题下文字清晰可读。"
       },
       "layer": "electron-e2e",
       "scenarios": [
         {
           "id": "T19-01",
           "steps": [
-            "在浅色主题打开连接应用市场，核对 Gmail、QQ 邮箱、微信、日历和 GitHub 五项以及对应分类和搜索结果",
-            "检查日历使用 macOS「日历」App 图标；五项图片均加载且固定 40×40、容器透明无边框/底色；检查日历/GitHub 按钮禁用并标为“即将推出”，目录中无其他 Provider",
-            "检查 Gmail/QQ/微信连接按钮没有加号图标，并在浅色和暗色主题读取按钮前景色、背景色并计算对比度"
+            "在浅色主题打开连接应用市场，核对 Gmail、QQ 邮箱、微信、CloakBrowser、日历和 GitHub 六项以及对应分类和搜索结果",
+            "核对首页“推荐”区包含微信、Gmail、QQ 邮箱和 CloakBrowser 四张卡片，“所有应用”仅保留日历和 GitHub；再检查搜索和分类筛选结果",
+            "检查日历使用 macOS「日历」App 图标；六项品牌 Logo 均加载且固定 40×40、容器透明无边框/底色；CloakBrowser 使用官方图形派生的透明图标，自然尺寸为 500、四角 Alpha 为 0 且中心不透明；检查日历/GitHub 按钮禁用并标为“即将推出”，目录中无其他 Provider",
+            "检查 CloakBrowser 卡片和连接弹窗都显示“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”，并保留不承诺绕过所有反爬、验证码、登录和二次验证的说明",
+            "检查 Gmail/QQ/微信/CloakBrowser 连接按钮没有加号图标，并在浅色和暗色主题读取按钮前景色、背景色并计算对比度"
           ],
           "expected": [
-            "市场只保留已确定的五个应用；Gmail/QQ/微信可进入连接流程，日历/GitHub 不可连接并明确标注即将推出",
+            "市场只保留已确定的六个应用；Gmail/QQ/微信/CloakBrowser 可进入连接流程，日历/GitHub 不可连接并明确标注即将推出",
+            "首页推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser；日历与 GitHub 位于“所有应用”",
             "微信入口进入本机密钥捕获向导而不是 OAuth",
             "日历使用 macOS「日历」App 图标",
-            "五项卡片均显示已加载的 40×40 品牌图标，周围透明无边框、底色或阴影，连接操作不显示加号",
+            "六项卡片均显示已加载的 40×40 品牌 Logo，周围透明无边框、底色或阴影；CloakBrowser 使用无黑底的官方图形派生图标，四角 Alpha 为 0，不冒用 Chrome 图标或使用 CB 文字占位",
+            "CloakBrowser 的介绍准确强调 Agent 自动化执行和减少常见反爬机制干扰，但不承诺绕过所有反爬、验证码、登录或二次验证",
             "连接按钮在两种主题的文字与背景对比度均达到 4.5:1"
           ],
           "evidence": [
             "Electron 测试结果",
+            "推荐区四张卡片与所有应用两张卡片",
             "卡片与按钮 DOM 断言",
             "主题计算样式与对比度",
-            "图标自然尺寸与日历 AppIcon 尺寸",
-            "微信入口路由"
+            "图标自然尺寸、日历 AppIcon 尺寸与 CloakBrowser 四角 Alpha",
+            "CloakBrowser 卡片与弹窗介绍文案",
+            "微信入口路由",
+            "CloakBrowser 安装说明与共享 profile 警告"
           ]
         }
       ],
       "evidence": [
         "Electron 测试结果",
+        "推荐区四张卡片与所有应用两张卡片",
         "卡片与按钮 DOM 断言",
         "主题计算样式与对比度",
-        "图标自然尺寸与日历 AppIcon 尺寸",
-        "微信入口路由"
+        "图标自然尺寸、日历 AppIcon 尺寸与 CloakBrowser 四角 Alpha",
+        "CloakBrowser 卡片与弹窗介绍文案",
+        "微信入口路由",
+        "CloakBrowser 安装说明与共享 profile 警告"
       ],
-      "remaining": "Electron 已验证五项市场目录、分类/搜索、图标加载、主题对比度及微信连接入口文案；仍缺完整微信向导 UI 成功/失败路径与 P02 同版本 Grok 逐项视觉对照。",
+      "remaining": "Electron 已覆盖六项市场目录、推荐/所有应用分组、分类/搜索、品牌 Logo 加载、CloakBrowser 透明图标 Alpha、介绍文案、四个可连接按钮的主题对比度、微信连接入口文案和 CloakBrowser 安装说明；仍缺完整微信向导 UI 成功/失败路径、真实 CloakBrowser 安装流程与 P02 同版本 Grok 逐项视觉对照。",
       "journeyIds": [
         "connections"
       ]
@@ -5717,8 +5728,8 @@
       "rule": "T26",
       "title": "微信媒体只读本机缓存",
       "matrix": {
-        "steps": "分别准备原文件、仅缩略图/封面和完全缺失的消息媒体，断开网络后查询；在调用结束后复用旧资源句柄，并检查应用目录、SQLite、日志和备份",
-        "expected": "原文件与降级资源状态如实返回；缺失时提示在微信打开，不联网补取、不驱动窗口、不建立 Rambo 媒体缓存；临时句柄只在当前调用或回合有效，结束后失效；不暴露密钥或微信内部路径，媒体存在不等于内容已理解。"
+        "steps": "分别准备原文件、仅缩略图/封面和完全缺失的消息媒体，断开网络后查询；检查 `composer-attachments/wechat-media-*`、文件权限、Tool 输出和清理，再在调用结束后复用旧资源句柄",
+        "expected": "原文件与降级资源状态如实返回；缺失时提示在微信打开，不联网补取、不驱动窗口、不建立长期媒体缓存；媒体可落到 `composer-attachments` 的短期受控文件，Tool 只返回 `local_path` 和 7 天有效期，不含媒体 base64；文件按 F07 清理，资源句柄只在当前调用有效；不暴露密钥或微信内部路径，媒体存在不等于内容已理解，`view_image` 的会话 JSONL 边界单独说明。"
       },
       "layer": "native",
       "scenarios": [
@@ -5726,31 +5737,33 @@
           "id": "T26-01",
           "steps": [
             "在本机微信分别准备原文件、仅缩略图/封面和完全缺失的聊天媒体，断网后按范围查询",
-            "让 Agent 读取可用原文件并在调用结束后复用旧资源句柄，检查应用目录、SQLite、日志、备份和网络请求",
-            "把只有缩略图的素材与完整原文件对比，确认状态与内容没有混淆"
+            "让 Agent 读取可用原文件，检查 composer-attachments/wechat-media-* 的路径、MIME、权限和 Tool 输出，并在调用结束后复用旧资源句柄",
+            "把只有缩略图的素材与完整原文件对比，再检查 SQLite、日志、备份、网络请求和 7/30 天清理"
           ],
           "expected": [
             "原文件、降级资源与本地缺失状态如实返回，缺失时提示在微信打开",
-            "不联网、不驱动微信、不建立 Rambo 媒体缓存；旧句柄在调用或回合结束后失效",
-            "密钥与微信内部路径不暴露；消息记录、媒体可用与实际内容理解分别声明"
+            "不联网、不驱动微信、不建立长期媒体缓存；媒体只在受控目录形成短期文件，Tool 不含媒体 base64，文件按 F07 清理",
+            "旧句柄在调用结束后失效；密钥与微信内部路径不暴露；view_image 的会话 JSONL 边界不得隐去"
           ],
           "evidence": [
             "三种媒体状态截图与哈希",
+            "临时文件路径/权限/MIME",
+            "Tool 原始输出",
             "网络请求记录",
             "资源句柄失效结果",
-            "应用目录/SQLite/日志/备份扫描",
-            "Agent 媒体理解记录"
+            "应用目录/SQLite/日志/备份扫描"
           ]
         }
       ],
       "evidence": [
         "三种媒体状态截图与哈希",
+        "临时文件路径/权限/MIME",
+        "Tool 原始输出",
         "网络请求记录",
         "资源句柄失效结果",
-        "应用目录/SQLite/日志/备份扫描",
-        "Agent 媒体理解记录"
+        "应用目录/SQLite/日志/备份扫描"
       ],
-      "remaining": "Worker 的本机媒体解密、短期句柄和内存内容转换已实现；合成测试覆盖图片、SILK、视频帧、PDF/DOCX 与资源过期边界。真实微信缓存覆盖、应用存储扫描及 Agent 多模态理解仍未验收。",
+      "remaining": "真实微信 4.2 PNG 与 SILK→WAV 已通过正式 Connection、Grant、Worker 和生产 Tool 落盘，权限 600 且无媒体 data URL；仅缩略图/完全缺失、断网、旧句柄失效、真实视频/WXGF、完整清理扫描和 view_image 历史边界仍未验收。",
       "journeyIds": [
         "connections"
       ]
@@ -6011,26 +6024,27 @@
       "rule": "T33",
       "title": "微信不建立持久副本",
       "matrix": {
-        "steps": "多次查询聊天消息和搜索前后，检查 Rambo SQLite、应用数据目录、索引、备份与重启；在微信删除内容后再查询",
-        "expected": "每次按需读取微信原始数据库与 WAL 并内存解密，SQLite 只保留连接、绑定、Grant、密钥引用、状态和审计等元数据；不保存正文、媒体、可逆索引或可再查询归档；微信删除后 Rambo 不留侧副本。"
+        "steps": "多次查询聊天消息、搜索和媒体前后，检查 Rambo SQLite、应用数据目录、索引、备份与重启；观察 `composer-attachments/wechat-media-*` 的创建、引用与清理；在微信删除内容后再查询",
+        "expected": "每次按需读取微信原始数据库与 WAL 并内存解密，SQLite 只保留连接、绑定、Grant、密钥引用、状态和审计等元数据；不保存正文、媒体字节、可逆索引或可再查询归档；媒体只允许写为 F07 管理的短期工作文件并在未引用 7 天或已引用 30 天后删除；微信删除后 Rambo 不保留长期侧副本。"
       },
       "layer": "integration",
       "scenarios": [
         {
           "id": "T33-01",
           "steps": [
-            "查询微信消息和搜索前后，扫描 Rambo SQLite、应用数据目录、索引、备份与临时资源",
-            "重启应用并检查是否有可直接再查询的正文或媒体副本",
+            "查询微信消息、搜索和媒体前后，扫描 Rambo SQLite、应用数据目录、索引、备份与 wechat-media-* 临时资源",
+            "重启应用并检查是否有可直接再查询的正文或媒体副本，推进受控时间验证 7/30 天清理",
             "在微信删除消息或媒体后再查询，并检查历史运行审计"
           ],
           "expected": [
-            "每次按需读取微信数据库/WAL 和本机媒体，内存解密，不把正文或媒体写入持久副本",
-            "SQLite 只保留必要元数据；不建立可逆全文索引或归档",
-            "重启后不能从 Rambo 再查询已删除微信内容；审计不成为隐式归档"
+            "每次按需读取微信数据库/WAL 和本机媒体，内存解密，不把正文或媒体写入 Rambo SQLite 长期副本",
+            "媒体临时文件只由 F07 管理并最终删除；不建立可逆全文索引或归档",
+            "重启后不能从 Rambo 再查询已删除微信内容；审计不成为隐式归档，view_image 历史边界单独记录"
           ],
           "evidence": [
             "查询前后文件清单",
             "SQLite 表行",
+            "临时文件生命周期",
             "索引与备份扫描",
             "重启后复用尝试",
             "微信删除后查询"
@@ -6040,11 +6054,12 @@
       "evidence": [
         "查询前后文件清单",
         "SQLite 表行",
+        "临时文件生命周期",
         "索引与备份扫描",
         "重启后复用尝试",
         "微信删除后查询"
       ],
-      "remaining": "查询 worker 已在内存解密 SQLCipher/WAL，不持久化正文或媒体副本，且结果脱敏；合成测试覆盖数据库页/WAL。真实运行后的磁盘、日志、备份扫描和重启清理仍未验收。",
+      "remaining": "查询 worker 已在内存解密 SQLCipher/WAL，SQLite 不保存正文或媒体字节；真实图片/语音临时文件已接入受控目录和 7/30 天清理逻辑。真实磁盘/备份全量扫描、重启不可再查询、微信删除和跨自然日清理仍未验收。",
       "journeyIds": [
         "connections"
       ]
@@ -6053,8 +6068,8 @@
       "rule": "T34",
       "title": "微信聊天首版能力边界",
       "matrix": {
-        "steps": "从连接与 Bot 工具目录查找收藏、公众号正文、联系人、聊天文件管理、导出、群管理和发消息入口，再直接调用未开放能力",
-        "expected": "首版只提供聊天目录、时间与多会话查询、关键词和全类型媒体；独立收藏、公众号正文、联系人库、聊天文件管理、导出、群管理、退群和发送均不可用，也不向 Bot 暴露发送 Tool；聊天内卡片只按消息结构返回，最小发送者展示不扩展为联系人库。发送能力未来增加时另行确认范围、授权和完整验收。"
+        "steps": "从连接与 Bot 工具目录查找收藏、公众号正文、联系人、聊天文件管理、导出、群管理和发消息入口，再直接调用未开放能力；未来发送能力另行确认后，检查实现不存在界面自动化入口，且发送时官方微信保持在线",
+        "expected": "首版只提供聊天目录、时间与多会话查询、关键词和全类型媒体；独立收藏、公众号正文、联系人库、聊天文件管理、导出、群管理、退群和发送均不可用，也不向 Bot 暴露发送 Tool；聊天内卡片只按消息结构返回，最小发送者展示不扩展为联系人库。发送能力未来增加时另行确认范围、授权和完整验收，只允许协议层实现，不得模拟点击、键盘或界面操作，不得另开同账号 PC 会话导致官方微信掉线。"
       },
       "layer": "electron-e2e",
       "scenarios": [
@@ -6062,18 +6077,21 @@
           "id": "T34-01",
           "steps": [
             "检查连接与 Bot 工具目录，查询收藏、公众号正文、联系人、聊天文件、导出、群管理和发消息入口",
-            "对每个未开放能力直接调用，并检查聊天内卡片的结构化回退"
+            "对每个未开放能力直接调用，并检查聊天内卡片的结构化回退",
+            "未来若开放发送，另行确认文字范围后，检查实现仅使用协议层、不启动第二 PC 会话，并在发送后确认官方微信仍在线"
           ],
           "expected": [
             "聊天目录、时间和多会话查询、关键词及全类型媒体可按规则使用",
             "当前阶段独立收藏、公众号正文、联系人、聊天文件、导出、群管理、退群和发送均不可用",
-            "卡片只按消息结构返回，最小发送者信息不能形成联系人目录"
+            "卡片只按消息结构返回，最小发送者信息不能形成联系人目录",
+            "未来发送能力不得使用辅助功能、鼠标、键盘、AppleScript/CGEvent、Computer Use 或其他界面自动化；不得以同账号另开 PC 会话导致官方微信掉线"
           ],
           "evidence": [
             "工具目录快照",
             "未开放能力拒绝响应",
             "卡片返回",
-            "联系人字段检查"
+            "联系人字段检查",
+            "发送能力负向调用结果"
           ]
         }
       ],
@@ -6081,9 +6099,10 @@
         "工具目录快照",
         "未开放能力拒绝响应",
         "卡片返回",
-        "联系人字段检查"
+        "联系人字段检查",
+        "发送能力负向调用结果"
       ],
-      "remaining": "市场微信入口及聊天动态 Tool 已实现，工具仅提供只读查询；朋友圈已从首版范围移除。当前仍缺真实已授权 Bot 的工具目录、拒绝未纳入能力和完整授权向导 Electron 验收。",
+      "remaining": "市场微信入口及聊天动态 Tool 已实现，工具仅提供只读查询；朋友圈已从首版范围移除。当前仍缺真实已授权 Bot 的工具目录、拒绝未纳入能力和完整授权向导 Electron 验收。2026-10-31 商业 PC 传输文字发送曾成功并完成服务端、SQLite 与界面三层确认，但同账号 PC 会话冲突使官方微信要求重新登录；持久文件只有保存态凭证和 SyncKey，缺少当前业务 session key 与实时路由。该结果只证明协议可发送，T34 发送 Tool 仍不可用，需另行确定不冲突的登录态来源、授权和验收方案。",
       "journeyIds": [
         "connections"
       ]
@@ -6266,8 +6285,8 @@
       "rule": "F07",
       "title": "输入框附件区展示拖入、选择和粘贴的附件",
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       },
       "layer": "electron-e2e",
       "scenarios": [
@@ -6277,20 +6296,20 @@
             "分别把单个文本、单个图片和多个混合文件拖入私聊输入框，再通过附件入口选择相同文件，并分别从剪贴板粘贴 PNG 文件与图片 data URL；覆盖有正文、空正文、重复路径、移除、取消、选择器失败、处理中和禁用输入框",
             "检查附件区的缩略图、文件名、绝对路径、顺序、去重和移除；发送后回读用户消息，确认正文在前、附件绝对路径逐行在后，无正文时只发送路径，成功清空附件；制造发送失败检查正文与附件恢复",
             "确认拖入与选择前后原文件字节不变，剪贴板图片只落在应用管理的临时目录；在群聊重复选择与禁用态检查，再重新加载或重启确认没有创建 F01/F02 附件、长期资料或其他附件库记录",
-            "用受控文件时间和验收清理入口覆盖临时图片未引用 7 天、已引用 30 天、当前草稿保护、移除附件、切换聊天释放草稿以及应用重启启动清理；核对非目标文件和原文件不被删除"
+            "用受控文件时间和验收清理入口覆盖 pasted-image-* 与 wechat-media-* 的未引用 7 天、已引用 30 天、当前草稿保护、移除附件、切换聊天释放草稿以及应用重启启动清理；核对非目标文件、符号链接和原文件不被删除"
           ],
           "expected": [
             "拖入、选择和粘贴均进入附件区而不改动正文；图片缩略图可真实加载，普通文件显示名称与绝对路径，重复绝对路径只保留一次并可移除",
             "发送内容是正文与附件绝对路径组成的普通文本，正文在前、路径逐行在后；没有正文也可发送，成功后清空、失败恢复且不自动发送",
             "拖入或选择不上传、不复制或改写原文件；剪贴板图片无原路径时才保存为应用管理临时文件，不创建 F01/F02 附件记录、长期资料或副本；禁用输入框不接收新增附件",
-            "只清理应用 composer-attachments 下由自身生成的 pasted-image 图片：未引用 7 天、已引用 30 天后删除，当前草稿占用跳过，应用启动时检查且之后每 24 小时检查；删除后历史路径保留但图片可能失效"
+            "只清理应用 composer-attachments 下由自身生成的 pasted-image-* 图片及 wechat-media-* 图片/语音/视频：未引用 7 天、已引用 30 天后删除，当前草稿占用跳过，应用启动时检查且之后每 24 小时检查，不跟随符号链接；删除后历史路径保留但对应文件可能失效"
           ],
           "evidence": [
             "附件区截图与可访问名称",
             "图片缩略图实际加载",
             "正文与附件路径顺序",
             "重复路径与移除",
-            "原文件字节与临时图片路径",
+            "原文件字节与临时媒体路径",
             "取消/失败恢复",
             "群聊与禁用态",
             "引用查询结果",
@@ -6304,14 +6323,14 @@
         "图片缩略图实际加载",
         "正文与附件路径顺序",
         "重复路径与移除",
-        "原文件字节与临时图片路径",
+        "原文件字节与临时媒体路径",
         "取消/失败恢复",
         "群聊与禁用态",
         "引用查询结果",
         "7/30 天边界",
         "草稿占用与启动清理日志"
       ],
-      "remaining": "纯逻辑已覆盖路径去重、正文与路径拼接、图片 data URL 解析，以及 7/30 天边界、引用保留、草稿保护、非目标文件和符号链接拒绝；Store 已覆盖私聊与群聊消息引用判断。隔离 Electron 已通过真实拖放事件、替换文件选择器、剪贴板 PNG 字节、发送失败、草稿移除、聊天切换、消息引用和重启启动清理，验证缩略图、发送路径、普通文字粘贴、群聊与禁用态，以及正文与附件恢复。真实 Finder 人工拖放/文件面板、跨真实自然日等待和 F01/F02 附件目录全量差异仍待补充复验。",
+      "remaining": "纯逻辑已覆盖路径去重、正文与路径拼接、图片 data URL 解析，以及 7/30 天边界、引用保留、草稿保护、非目标文件和符号链接拒绝；wechat-media-* 图片、常见语音/视频扩展名已纳入定向清理测试。隔离 Electron 已覆盖拖放、文件选择、剪贴板 PNG、发送失败、草稿移除、聊天切换、消息引用和启动清理。真实 Finder 人工拖放/文件面板、跨真实自然日等待和 F01/F02 附件目录全量差异仍待补充复验。",
       "journeyIds": [
         "files"
       ]
@@ -6819,6 +6838,60 @@
       "journeyIds": [
         "J1",
         "distribution"
+      ]
+    },
+    {
+      "rule": "T41",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
+      },
+      "layer": "electron-e2e",
+      "scenarios": [
+        {
+          "id": "T41-01",
+          "steps": [
+            "在干净 profile 打开连接应用页，点击 CloakBrowser 的“安装并连接”，观察 Node/npm 前置、真实安装阶段、等待时长、浏览器版本和缓存位置，确认界面不伪造百分比",
+            "用本机 HTTP fixture 运行固定版本 cloakbrowser-mcp@1.15.1，执行 browser_navigate 与 browser_snapshot，并核对 cloakbrowser_binary_info、cloakbrowser_bridge_info 和唯一共享 profile/Chromium",
+            "给 A/B 分别 Grant，检查各自独立 bearer token、共享 Cookie/历史/扩展/标签页状态及并发工具调用串行化；撤销 A 后检查旧 token、代理会话和下一轮 thread 配置，确认禁用项仍能被真实 App Server 解析且 B 可用",
+            "新建 C 并复制一个有 Grant 的 Bot，检查 C 无授权、复制 Bot 按 B17 继承；再覆盖取消安装、下载或校验失败、App 退出、断开连接和重新连接",
+            "检查 Playwright 仍操作当前 Chrome、未授权 Bot 看不到 CloakBrowser、断开默认保留 profile/cache，并验证验证码、登录、二次验证和反爬拒绝边界"
+          ],
+          "expected": [
+            "CloakBrowser 是独立连接应用，不替代或复用 Playwright；固定版本由用户主动安装，二进制有独立许可且不进入 Rambo Release",
+            "全机只有一个 CloakBrowser Connection、一个共享持久 profile 和一个上游 Chromium；多个获 Grant 的 Bot 共用登录态，所有工具调用通过本地 HTTP MCP 代理串行执行",
+            "每个 Bot 使用独立随机 bearer token；代理每次请求和工具调用重新校验 Grant、Connection 状态和 token，撤销 A 后旧 token 立即拒绝且下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项必须带合法 transport，不能只有 `{ enabled: false }` 且没有任何基础配置，否则真实 App Server 会在 thread/start 前报 invalid transport；已有同名 stdio 配置时不能另注入 URL。B 不受影响；新 C 无 Grant，复制 Bot 继承 Grant",
+            "取消、下载/校验失败、服务异常和 App 退出都不留下半成品 Connection、profile 锁或浏览器进程；断开默认停止服务并保留共享 profile、缓存和登录数据，清除数据必须另行明确确认",
+            "不自动破解验证码、登录或二次验证，不承诺绕过所有反爬；网站拒绝时如实返回"
+          ],
+          "evidence": [
+            "Electron 安装阶段与等待时长",
+            "固定版本与浏览器/桥接信息",
+            "唯一 profile/Chromium 进程树",
+            "A/B token 与 Grant 请求日志",
+            "并发调用串行证据",
+            "撤销后 thread/start 或 resume 配置",
+            "真实 App Server 对禁用配置的解析结果",
+            "复制 Bot Grant 回读",
+            "取消/失败/退出清理与 profile/cache 保留"
+          ]
+        }
+      ],
+      "evidence": [
+        "Electron 安装阶段与等待时长",
+        "固定版本与浏览器/桥接信息",
+        "唯一 profile/Chromium 进程树",
+        "A/B token 与 Grant 请求日志",
+        "并发调用串行证据",
+        "撤销后 thread/start 或 resume 配置",
+        "真实 App Server 对禁用配置的解析结果",
+        "复制 Bot Grant 回读",
+        "取消/失败/退出清理与 profile/cache 保留"
+      ],
+      "remaining": "后端测试已覆盖固定版本启动、环境变量脱敏、私有目录权限、唯一共享 profile、串行队列、独立 token、HTTP 代理撤销、安装失败/取消清理，以及 Host 配置注入和撤销回归；另用真实 `codex-app-server 0.165.0` 复现 `{ enabled: false }` 的 invalid transport，并验证无基础配置与已有 stdio 配置两条修正路径均可创建 thread。尚未完成真实 cloakbrowser-mcp@1.15.1 安装、Chromium 下载、共享登录态、真实并发请求、复制 Bot 的 thread 配置、App 退出/重连和安装版 Electron 验收。",
+      "journeyIds": [
+        "connections"
       ]
     }
   ],
@@ -11413,8 +11486,8 @@
         "drop-highlight"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -11461,8 +11534,8 @@
         "group-disabled-state"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -11509,8 +11582,8 @@
         "sent-user-message"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -11552,8 +11625,8 @@
         "original-file-bytes"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -11595,8 +11668,8 @@
         "unrelated-file-preserved"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -11644,8 +11717,8 @@
         "unrelated-file-preserved"
       ],
       "matrix": {
-        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖临时图片未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
-        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片，启动时和执行后每 24 小时检查，删除后历史路径保留但图片可能失效。"
+        "steps": "分别拖入、选择多个图片与普通文件，并从剪贴板粘贴 PNG；覆盖有正文、空正文、重复路径、移除、取消、失败、禁用状态、私聊和群聊，再发送并回读用户消息及临时图片文件；用受控时间覆盖 `pasted-image-*` 与 `wechat-media-*` 的未引用 7 天、已引用 30 天、草稿占用、聊天切换和启动清理",
+        "expected": "拖入、选择和粘贴均进入附件区，不把路径插入正文；图片显示真实缩略图，普通文件显示名称与绝对路径，重复路径去重且可移除；发送内容为正文在前、附件绝对路径逐行在后，无正文时可只发路径，成功后清空、失败恢复；拖入或选择不上传、不复制原文件，剪贴板图片仅在无原路径时保存为应用管理临时文件，不创建 F01/F02 附件记录；仅清理应用 `composer-attachments` 下未占用且超过 7 天或已被消息引用且超过 30 天的 `pasted-image-*` 图片及 `wechat-media-*` 图片/语音/视频，启动时和执行后每 24 小时检查，不跟随符号链接，删除后历史路径保留但对应临时文件可能失效。"
       }
     },
     {
@@ -15719,7 +15792,7 @@
       "id": "T19-MARKET-01",
       "title": "连接应用市场目录与品牌图标",
       "status": "implemented",
-      "testName": "连接应用市场显示五个应用、品牌图标并适配明暗主题",
+      "testName": "连接应用市场显示六个应用、品牌图标并适配明暗主题",
       "target": "tests/e2e/private-chat.spec.mjs",
       "gate": "feature",
       "layer": "electron-e2e",
@@ -15729,12 +15802,13 @@
       "journeyIds": [
         "connections"
       ],
-      "notes": "真实 Electron 检查五个目录项、品牌 Logo、40×40 图标尺寸、日历 App 图标、即将推出状态、连接按钮图标和明暗主题对比度；并核对 QQ 连接弹窗。",
+      "notes": "真实 Electron 检查六个目录项、推荐/所有应用分组、品牌 Logo、40×40 图标尺寸、CloakBrowser 透明图标 Alpha、Agent 自动化介绍、日历 App 图标、即将推出状态、连接按钮图标和明暗主题对比度；并核对 CloakBrowser 安装说明与 QQ 连接弹窗。",
       "invalidates": [
         "src/main/connectors.ts",
         "src/renderer/App.tsx",
         "src/renderer/styles.css",
-        "assets/connectors/calendar.png"
+        "assets/connectors/calendar.png",
+        "assets/connectors/cloakbrowser.png"
       ],
       "evidence": [
         "playwright-result",
@@ -15742,22 +15816,27 @@
         "computed-logo-style",
         "computed-contrast",
         "image-naturalWidth",
-        "calendar-asset-dimensions"
+        "calendar-asset-dimensions",
+        "recommended-section-membership",
+        "transparent-corner-alpha"
       ],
       "steps": [
-        "打开连接应用市场并检查 Gmail、QQ 邮箱、微信、日历、GitHub 与搜索结果",
-        "核对五个目录项的 Logo 加载并固定为 40×40，日历使用 macOS「日历」App 图标，图标区域透明且无边框、圆角底或阴影",
-        "核对日历/GitHub 禁用状态及连接按钮无加号",
-        "切换浅色和暗色主题，计算连接按钮的文字背景对比度"
+        "打开连接应用市场并检查 Gmail、QQ 邮箱、微信、CloakBrowser、日历、GitHub 与搜索结果",
+        "核对首页推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser，所有应用仅包含日历和 GitHub",
+        "核对六项品牌 Logo 加载并固定为 40×40，日历使用 macOS「日历」App 图标，CloakBrowser 使用无黑底的官方图形派生图标且自然尺寸为 500",
+        "读取 CloakBrowser 图标四角与中心 Alpha，并检查卡片与连接弹窗的 Agent 自动化介绍和不承诺绕过所有反爬的边界",
+        "核对日历/GitHub 禁用状态及四个可连接按钮无加号；打开 CloakBrowser 安装说明并确认共享 profile 警告",
+        "切换浅色和暗色主题，计算四个可连接按钮的文字背景对比度"
       ],
       "expected": [
-        "仅展示五个保留应用并加载品牌 Logo，只有 Gmail 和 QQ 邮箱在该用例中进入连接操作",
-        "日历显示 macOS「日历」App 图标；卡片和连接弹窗中的 Logo 均为已加载的固定 40×40 图片，周围透明，无边框、圆角底色或阴影",
-        "连接按钮无加号；两种主题下对比度不低于 4.5:1"
+        "仅展示六个保留应用并加载品牌 Logo；Gmail、QQ 邮箱、微信和 CloakBrowser 可进入连接操作",
+        "推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser；日历与 GitHub 位于所有应用；六项品牌 Logo 均为已加载的固定 40×40 图片，周围透明，无边框、圆角底色或阴影；CloakBrowser 四角 Alpha 为 0、中心不透明，不使用黑色方底、CB 文字占位或 Chrome 图标",
+        "CloakBrowser 卡片和弹窗均显示“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”，并明确不承诺绕过所有反爬、验证码、登录或二次验证",
+        "四个可连接按钮无加号；两种主题下对比度不低于 4.5:1；CloakBrowser 说明明确共享登录态和只授权可信 Bot"
       ],
       "matrix": {
-        "steps": "在浅色和暗色主题检查连接应用页；搜索五个保留应用，并分别进入可连接项的操作；检查按钮和图标",
-        "expected": "市场展示 Gmail、QQ 邮箱、微信、日历和 GitHub；Gmail/QQ 邮箱/微信可进入连接流程，日历/GitHub 显示“即将推出”；其他 Provider 不出现。微信进入本机密钥捕获向导而不是 OAuth，且 Logo 使用 Simple Icons WeChat 标记与微信品牌绿，标记居中、不拉伸；日历使用 macOS「日历」App 图标；五项 Logo 均固定为 40×40 直接显示，图标区域透明且没有边框、底框或阴影；连接按钮无加号且明暗主题下文字清晰可读。"
+        "steps": "在浅色和暗色主题检查连接应用页；核对推荐区和所有应用分组；搜索六个保留应用，并分别进入可连接项的操作；检查按钮、介绍文案和透明图标",
+        "expected": "市场展示 Gmail、QQ 邮箱、微信、CloakBrowser、日历和 GitHub；Gmail/QQ 邮箱/微信/CloakBrowser 可进入连接流程，日历/GitHub 显示“即将推出”；其他 Provider 不出现。首页推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser，日历与 GitHub 位于“所有应用”。微信进入本机密钥捕获向导而不是 OAuth，且 Logo 使用 Simple Icons WeChat 标记与微信品牌绿，标记居中、不拉伸；CloakBrowser 使用其官方 GitHub 仓库 `CloakHQ/CloakBrowser` 的 `images/avatar.png` 图形，但移除原始黑色方底并导出透明背景，四角 Alpha 为 0 且 Logo 本体可见；不冒用 Chrome 图标或使用 `CB` 文字占位。CloakBrowser 介绍固定为“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”，并保留不承诺绕过所有反爬、验证码、登录或二次验证的边界。日历使用 macOS「日历」App 图标；六项品牌 Logo 均固定为 40×40 直接显示，图标区域透明且没有边框、底框或阴影；连接按钮无加号且明暗主题下文字清晰可读。"
       }
     },
     {
@@ -15855,13 +15934,13 @@
       ],
       "steps": [
         "在本机微信分别准备原文件、仅缩略图/封面和完全缺失的聊天媒体，断网后按范围查询",
-        "让 Agent 读取可用原文件并在调用结束后复用旧资源句柄，检查应用目录、SQLite、日志、备份和网络请求",
-        "把只有缩略图的素材与完整原文件对比，确认状态与内容没有混淆"
+        "让 Agent 读取可用原文件，检查 composer-attachments/wechat-media-* 的路径、MIME、权限和 Tool 输出，并在调用结束后复用旧资源句柄",
+        "把只有缩略图的素材与完整原文件对比，再检查 SQLite、日志、备份、网络请求和 7/30 天清理"
       ],
       "expected": [
         "原文件、降级资源与本地缺失状态如实返回，缺失时提示在微信打开",
-        "不联网、不驱动微信、不建立 Rambo 媒体缓存；旧句柄在调用或回合结束后失效",
-        "密钥与微信内部路径不暴露；消息记录、媒体可用与实际内容理解分别声明"
+        "不联网、不驱动微信、不建立长期媒体缓存；媒体只在受控目录形成短期文件，Tool 不含媒体 base64，文件按 F07 清理",
+        "旧句柄在调用结束后失效；密钥与微信内部路径不暴露；view_image 的会话 JSONL 边界不得隐去"
       ],
       "invalidates": [
         "src/main",
@@ -15875,11 +15954,11 @@
         "agent"
       ],
       "limitations": [
-        "Worker 的本机媒体解密、短期句柄和内存内容转换已实现；合成测试覆盖图片、SILK、视频帧、PDF/DOCX 与资源过期边界。真实微信缓存覆盖、应用存储扫描及 Agent 多模态理解仍未验收。"
+        "真实微信 4.2 PNG 与 SILK→WAV 已通过正式 Connection、Grant、Worker 和生产 Tool 落盘，权限 600 且无媒体 data URL；仅缩略图/完全缺失、断网、旧句柄失效、真实视频/WXGF、完整清理扫描和 view_image 历史边界仍未验收。"
       ],
       "matrix": {
-        "steps": "分别准备原文件、仅缩略图/封面和完全缺失的消息媒体，断开网络后查询；在调用结束后复用旧资源句柄，并检查应用目录、SQLite、日志和备份",
-        "expected": "原文件与降级资源状态如实返回；缺失时提示在微信打开，不联网补取、不驱动窗口、不建立 Rambo 媒体缓存；临时句柄只在当前调用或回合有效，结束后失效；不暴露密钥或微信内部路径，媒体存在不等于内容已理解。"
+        "steps": "分别准备原文件、仅缩略图/封面和完全缺失的消息媒体，断开网络后查询；检查 `composer-attachments/wechat-media-*`、文件权限、Tool 输出和清理，再在调用结束后复用旧资源句柄",
+        "expected": "原文件与降级资源状态如实返回；缺失时提示在微信打开，不联网补取、不驱动窗口、不建立长期媒体缓存；媒体可落到 `composer-attachments` 的短期受控文件，Tool 只返回 `local_path` 和 7 天有效期，不含媒体 base64；文件按 F07 清理，资源句柄只在当前调用有效；不暴露密钥或微信内部路径，媒体存在不等于内容已理解，`view_image` 的会话 JSONL 边界单独说明。"
       }
     },
     {
@@ -16155,14 +16234,14 @@
         "connections"
       ],
       "steps": [
-        "查询微信消息和搜索前后，扫描 Rambo SQLite、应用数据目录、索引、备份与临时资源",
-        "重启应用并检查是否有可直接再查询的正文或媒体副本",
+        "查询微信消息、搜索和媒体前后，扫描 Rambo SQLite、应用数据目录、索引、备份与 wechat-media-* 临时资源",
+        "重启应用并检查是否有可直接再查询的正文或媒体副本，推进受控时间验证 7/30 天清理",
         "在微信删除消息或媒体后再查询，并检查历史运行审计"
       ],
       "expected": [
-        "每次按需读取微信数据库/WAL 和本机媒体，内存解密，不把正文或媒体写入持久副本",
-        "SQLite 只保留必要元数据；不建立可逆全文索引或归档",
-        "重启后不能从 Rambo 再查询已删除微信内容；审计不成为隐式归档"
+        "每次按需读取微信数据库/WAL 和本机媒体，内存解密，不把正文或媒体写入 Rambo SQLite 长期副本",
+        "媒体临时文件只由 F07 管理并最终删除；不建立可逆全文索引或归档",
+        "重启后不能从 Rambo 再查询已删除微信内容；审计不成为隐式归档，view_image 历史边界单独记录"
       ],
       "invalidates": [
         "src/main",
@@ -16176,11 +16255,11 @@
         "evidence"
       ],
       "limitations": [
-        "查询 worker 已在内存解密 SQLCipher/WAL，不持久化正文或媒体副本，且结果脱敏；合成测试覆盖数据库页/WAL。真实运行后的磁盘、日志、备份扫描和重启清理仍未验收。"
+        "查询 worker 已在内存解密 SQLCipher/WAL，SQLite 不保存正文或媒体字节；真实图片/语音临时文件已接入受控目录和 7/30 天清理逻辑。真实磁盘/备份全量扫描、重启不可再查询、微信删除和跨自然日清理仍未验收。"
       ],
       "matrix": {
-        "steps": "多次查询聊天消息和搜索前后，检查 Rambo SQLite、应用数据目录、索引、备份与重启；在微信删除内容后再查询",
-        "expected": "每次按需读取微信原始数据库与 WAL 并内存解密，SQLite 只保留连接、绑定、Grant、密钥引用、状态和审计等元数据；不保存正文、媒体、可逆索引或可再查询归档；微信删除后 Rambo 不留侧副本。"
+        "steps": "多次查询聊天消息、搜索和媒体前后，检查 Rambo SQLite、应用数据目录、索引、备份与重启；观察 `composer-attachments/wechat-media-*` 的创建、引用与清理；在微信删除内容后再查询",
+        "expected": "每次按需读取微信原始数据库与 WAL 并内存解密，SQLite 只保留连接、绑定、Grant、密钥引用、状态和审计等元数据；不保存正文、媒体字节、可逆索引或可再查询归档；媒体只允许写为 F07 管理的短期工作文件并在未引用 7 天或已引用 30 天后删除；微信删除后 Rambo 不保留长期侧副本。"
       }
     },
     {
@@ -16221,8 +16300,8 @@
         "市场微信入口及聊天动态 Tool 已实现，工具仅提供只读查询；市场 UI 有 Electron 覆盖。仍缺真实已授权 Bot 的工具目录、拒绝未纳入能力和完整授权向导 Electron 验收。"
       ],
       "matrix": {
-        "steps": "从连接与 Bot 工具目录查找收藏、公众号正文、联系人、聊天文件管理、导出、群管理和发消息入口，再直接调用未开放能力",
-        "expected": "首版只提供聊天目录、时间与多会话查询、关键词和全类型媒体；独立收藏、公众号正文、联系人库、聊天文件管理、导出、群管理、退群和发送均不可用，也不向 Bot 暴露发送 Tool；聊天内卡片只按消息结构返回，最小发送者展示不扩展为联系人库。发送能力未来增加时另行确认范围、授权和完整验收。"
+        "steps": "从连接与 Bot 工具目录查找收藏、公众号正文、联系人、聊天文件管理、导出、群管理和发消息入口，再直接调用未开放能力；未来发送能力另行确认后，检查实现不存在界面自动化入口，且发送时官方微信保持在线",
+        "expected": "首版只提供聊天目录、时间与多会话查询、关键词和全类型媒体；独立收藏、公众号正文、联系人库、聊天文件管理、导出、群管理、退群和发送均不可用，也不向 Bot 暴露发送 Tool；聊天内卡片只按消息结构返回，最小发送者展示不扩展为联系人库。发送能力未来增加时另行确认范围、授权和完整验收，只允许协议层实现，不得模拟点击、键盘或界面操作，不得另开同账号 PC 会话导致官方微信掉线。"
       }
     },
     {
@@ -16344,6 +16423,216 @@
       "matrix": {
         "steps": "在 A 私聊分别由用户明确提供 QQ 授权码、Gmail 应用专用密码、OAuth token/API Key 和连接密钥，要求 A 保存受支持凭证；再让 A 主动建议一次凭证变更并分别拒绝/同意；检查凭证 SQLite、密钥文件权限、日志、快照、导出、聊天和系统提醒，重启后验证连接",
         "expected": "用户明确要求时直接写入受支持凭证，Bot 主动建议须先同意；凭证正文使用应用本地 AES-256-GCM 加密写入独立 SQLite，密钥与数据库权限为 `0600`，产品 Store 仅有不透明引用，正文不进入模型持久化上下文、消息、提醒、日志、快照、搜索、导出或验收证据。成功结果只回显连接/资源和脱敏状态，失败不降明文保存；凭证保存不自动授予其他 Bot 的 Connection，系统密码、验证码、Face ID 和 Codex 登录密码不由 Bot 代填。"
+      }
+    },
+    {
+      "id": "T41-RUNTIME-01",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "status": "implemented",
+      "testName": "CloakBrowser starts one shared runtime, sanitizes its environment, and serializes tool calls",
+      "target": "tests/backend/cloakbrowser-connector.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T41"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "notes": "隔离子进程替身验证固定版本、必要环境白名单、私有目录、真实阶段顺序、唯一运行实例、独立 token、串行工具队列和排队后撤销拒绝；不下载真实 Chromium。",
+      "invalidates": [
+        "src/main/cloakbrowser-runtime.ts",
+        "src/main/platform/process.ts",
+        "src/main/platform/fs.ts"
+      ],
+      "evidence": [
+        "junit",
+        "spawn-arguments",
+        "environment-assertions",
+        "progress-phases",
+        "serial-call-log",
+        "profile-permissions"
+      ],
+      "steps": [
+        "同时请求启动两次，检查只执行一次 cloakbrowser-mcp@1.15.1 且共用同一共享 profile 目录",
+        "读取子进程参数和环境，确认只透传代理、证书和 Playwright 下载变量，不携带其他宿主秘密",
+        "按顺序核对安装阶段、二进制与桥接信息，并发调用两个浏览器工具并检查最大活动调用数",
+        "排队一个调用后撤销授权，确认执行前重新鉴权且工具没有真正发出"
+      ],
+      "expected": [
+        "固定版本只启动一个上游进程，profile、cache、output 和 npm cache 目录权限受保护",
+        "子进程环境不包含无关 API Key 等宿主秘密，界面阶段来自真实启动过程",
+        "A/B token 不同且可独立撤销；浏览器工具严格串行，排队调用在授权撤销后拒绝"
+      ],
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
+      }
+    },
+    {
+      "id": "T41-PROXY-01",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "status": "implemented",
+      "testName": "CloakBrowser HTTP proxy re-checks Bot grants, revokes old tokens, and keeps another Bot usable",
+      "target": "tests/backend/cloakbrowser-connector.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T41"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "notes": "使用真实 MCP SDK 客户端连接 Rambo 本地 HTTP 代理，验证 A/B 独立会话、工具调用串行、A 撤销后的旧 token/旧会话失效和 B 继续可用；不启动真实 Chromium。",
+      "invalidates": [
+        "src/main/cloakbrowser-proxy.ts",
+        "src/main/cloakbrowser-runtime.ts"
+      ],
+      "evidence": [
+        "junit",
+        "mcp-client-session",
+        "http-auth-rejections",
+        "serial-call-log"
+      ],
+      "steps": [
+        "用 A/B 两个 bearer token 分别建立 MCP 会话并列出工具",
+        "并发调用两个浏览器工具，检查上游最大活动调用数",
+        "撤销 A 的 Grant 和 token，调用旧会话并用旧 token 新建会话",
+        "继续调用 B 的会话，确认另一个 Bot 不受影响"
+      ],
+      "expected": [
+        "A/B 会话按 token 和 Bot 隔离，工具目录一致，所有调用仍经同一串行队列",
+        "A 撤销后旧会话立即失效，旧 token 新建连接返回未授权",
+        "B 的 token 与代理会话继续可用，撤销只影响 A"
+      ],
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
+      }
+    },
+    {
+      "id": "T41-CONNECTOR-01",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "status": "implemented",
+      "testName": "CloakBrowser connector persists one shared connection and scopes thread access per Bot",
+      "target": "tests/backend/cloakbrowser-connector.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T41"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "notes": "Connector 夹具验证全机只保存一个 Connection，A/B 分别获得 URL 与独立 bearer header，撤销 A 后 B 仍可用；停止服务后共享 profile 与 cache 目录保留。",
+      "invalidates": [
+        "src/main/cloakbrowser-connector.ts",
+        "src/main/cloakbrowser-runtime.ts",
+        "src/main/cloakbrowser-proxy.ts"
+      ],
+      "evidence": [
+        "junit",
+        "connection-count",
+        "thread-config",
+        "token-isolation",
+        "profile-cache-retention"
+      ],
+      "steps": [
+        "安装一次共享 Connection，再尝试安装第二个并检查拒绝",
+        "分别给 A/B Grant，读取 threadConfig 并比较 URL 与 bearer token",
+        "撤销 A 并检查 A 配置为空、旧 token 失效，B 仍可取得配置",
+        "停止 Connector 后检查共享 profile 与 cache 目录仍然存在"
+      ],
+      "expected": [
+        "全机只保存一个 CloakBrowser Connection 和一个上游运行实例",
+        "未授权 Bot 得到 null，A/B 使用同一代理地址但独立随机 token",
+        "撤销 A 不停止或删除 B 的访问，断开服务不删除共享 profile/cache"
+      ],
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
+      }
+    },
+    {
+      "id": "T41-FAILURE-01",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "status": "implemented",
+      "testName": "CloakBrowser failed or cancelled installation leaves no connection or runtime behind",
+      "target": "tests/backend/cloakbrowser-connector.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T41"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "notes": "注入下载校验失败和中途取消，确认安装不会保存半成品 Connection 且运行时被停止；不证明真实进程树在 macOS/Windows 上全部退出。",
+      "invalidates": [
+        "src/main/cloakbrowser-connector.ts",
+        "src/main/cloakbrowser-runtime.ts"
+      ],
+      "evidence": [
+        "junit",
+        "failure-result",
+        "cancel-result",
+        "connection-absence",
+        "runtime-stop-log"
+      ],
+      "steps": [
+        "让运行时在下载校验阶段抛出失败，检查 Connection 与停止调用",
+        "启动安装后通过 AbortSignal 取消，检查取消错误和清理结果",
+        "回读 Store，确认两次都没有半成品 CloakBrowser Connection"
+      ],
+      "expected": [
+        "下载或校验失败明确返回错误，不保存 Connection",
+        "取消后不保存 Connection，并停止本次启动的运行时",
+        "失败与取消路径都不会把异常吞成成功"
+      ],
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
+      }
+    },
+    {
+      "id": "T41-HOST-01",
+      "title": "CloakBrowser 共享 profile 连接应用",
+      "status": "implemented",
+      "testName": "CloakBrowser managed MCP follows grants, copied-Bot inheritance, and next-turn revocation",
+      "target": "tests/backend/host.test.mjs",
+      "gate": "feature",
+      "layer": "integration",
+      "rules": [
+        "T41"
+      ],
+      "journeyIds": [
+        "connections"
+      ],
+      "notes": "Host 注入受管 MCP Provider，验证无连接/无 Grant 的显式禁用配置、A 的 URL 与 bearer header、B 无访问、复制 Bot 继承 Grant，以及撤销后下一轮配置变化。",
+      "invalidates": [
+        "src/main/host.ts",
+        "src/main/store.ts"
+      ],
+      "evidence": [
+        "junit",
+        "thread-start-config",
+        "thread-resume-config",
+        "grant-readback"
+      ],
+      "steps": [
+        "在尚无 CloakBrowser Connection 时启动 Bot 回合，检查 mcp_servers.cloakbrowser 明确为 enabled=false",
+        "创建共享 Connection 并只给 A Grant，分别启动 A/B 回合",
+        "复制 A 并启动副本回合，再撤销 A 的 Grant 后启动 A 的下一回合",
+        "比较 thread/start、thread/resume 中的 URL、bearer header 与禁用配置"
+      ],
+      "expected": [
+        "无连接或无 Grant 时配置始终包含明确的 enabled=false，配置指纹与有权限时不同",
+        "A 和复制 Bot 获得代理 URL 与 bearer header，B 仍为禁用",
+        "撤销 A 后不新建 Bot 或清空会话，下一轮通过配置变化移除 CloakBrowser"
+      ],
+      "matrix": {
+        "steps": "从连接应用页安装固定版本 CloakBrowser 套件，观察真实阶段、等待时长、浏览器版本和缓存位置；用本地 HTTP fixture 执行 `browser_navigate` 与 `browser_snapshot`，核对 `cloakbrowser_binary_info`/`cloakbrowser_bridge_info`；给 A/B 分别 Grant，检查共享登录态和并发调用被串行化；撤销 A 的 Grant 后检查 A 的旧 token 与下一轮配置失效、B 继续可用；新建 C 与复制 Bot 检查 Grant 继承；再覆盖取消安装、下载失败、校验失败、App 退出、断开连接和重新连接",
+        "expected": "CloakBrowser 作为独立连接应用存在，Playwright 仍连接当前 Chrome；用户主动安装固定版本，界面显示真实阶段/等待时长/版本，不伪造百分比，二进制不进入 Rambo Release。全机只有一个共享 profile、一个上游 Chromium 和串行调用队列，A/B 共享 Cookie/历史/扩展/标签页状态；每个 Bot 使用独立随机 token，代理每次请求和工具调用重新校验 Grant、Connection 状态和 token。撤销 A 后旧 token 立即拒绝，下一轮配置不再启用 CloakBrowser；未安装、未授权和撤销后的禁用项仍必须带 App Server 可解析的合法 transport，不能使用只有 `{ enabled: false }` 且没有任何基础配置的非法结构；已有同名 stdio 配置时只写 `enabled: false`，避免注入 URL 造成 transport 冲突。B 不受影响；新 C 无 Grant，复制 Bot 按 B17 继承。取消/失败/退出无半成品 Connection、profile 锁或遗留进程。断开默认保留 profile 与缓存，清除需明确确认；不自动破解验证码、登录、二次验证，不承诺绕过所有反爬。"
       }
     },
     {

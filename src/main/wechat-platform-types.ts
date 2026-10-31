@@ -1,6 +1,6 @@
 import type { spawn } from 'node:child_process';
 
-export const WECHAT_CAPTURE_VERSION = 'rambo-wechat-platform-v3';
+export const WECHAT_CAPTURE_VERSION = 'rambo-wechat-platform-v4';
 
 export type WechatWizardPhase =
   | 'checking'
@@ -45,6 +45,7 @@ export interface WechatCapturedAccount {
   wechatVersion: string;
   wechatBuild: string;
   keys: Record<string, { encKey: string; salt: string | null }>;
+  imageKey?: { aesKey: string; xorKey: number };
 }
 
 export interface WechatWizardPrompts {

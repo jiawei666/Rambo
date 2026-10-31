@@ -14,6 +14,7 @@ let runInProgress = false;
 app.setName('Rambo 微信实时诊断');
 
 function html() {
+  const freshClone = process.env.RAMBO_WECHAT_DIAGNOSTIC_FRESH_CLONE === '1';
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>微信实时诊断</title><style>
@@ -24,7 +25,7 @@ main{max-width:900px;margin:0 auto;padding:28px}h1{font-size:22px;margin:0 0 8px
 </style></head><body><main>
 <h1>微信实时解密诊断</h1>
 <p>独立运行，不创建 Rambo Connection 或 Bot Grant。这里的“监听”指观察微信读取本机数据库时的密钥，不是新消息实时推送。只显示阶段、计数和数据库诊断，不展示密钥、聊天正文、联系人名称或媒体文件名。</p>
-<div class="notice"><div id="status">诊断器就绪</div><div>会复用已保存的 Rambo 受管微信副本。点击“开始监听”后，你可以随时操作微信；监听不会自动停止。完成后点击“结束监听并验证”。本窗口会保持打开，支持反复开始和结束。</div></div>
+<div class="notice"><div id="status">诊断器就绪</div><div>${freshClone ? '会创建并重签一个新的临时微信副本，主微信不会被修改。' : '会复用已保存的 Rambo 受管微信副本。'}点击“开始监听”后，你可以随时操作微信；监听不会自动停止。完成后点击“结束监听并验证”。本窗口会保持打开，支持反复开始和结束。</div></div>
 <div id="log" role="log" aria-live="polite"></div>
 <div class="actions"><button id="start">开始监听</button><button id="stop" disabled>结束监听并验证</button><button id="close">关闭诊断</button></div>
 </main><script>
@@ -85,21 +86,31 @@ function compileModule(file, replacements = []) {
 
 async function loadDiagnosticModules() {
   const sqlCipherUrl = compileModule(join(projectRoot, 'src/main/wechat-sqlcipher.ts'));
+  const platformPathsUrl = compileModule(join(projectRoot, 'src/main/platform/paths.ts'));
+  const platformFsUrl = compileModule(join(projectRoot, 'src/main/platform/fs.ts'));
+  const platformTypesUrl = compileModule(join(projectRoot, 'src/main/wechat-platform-types.ts'));
+  const imageKeyUrl = compileModule(join(projectRoot, 'src/main/wechat-image-key.ts'));
   const xmldomUrl = pathToFileURL(require.resolve('@xmldom/xmldom')).href;
   const commonUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-common.ts'), [
-    ['./wechat-sqlcipher', sqlCipherUrl]
+    ['./wechat-sqlcipher', sqlCipherUrl],
+    ['./platform/paths', platformPathsUrl],
+    ['./platform/fs', platformFsUrl]
   ]);
   const macUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-macos.ts'), [
     ['./wechat-sqlcipher', sqlCipherUrl],
     ['./wechat-connector-common', commonUrl],
+    ['./wechat-platform-types', platformTypesUrl],
+    ['./wechat-image-key', imageKeyUrl],
     ['@xmldom/xmldom', xmldomUrl]
   ]);
   const windowsUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-windows.ts'), [
     ['./wechat-connector-common', commonUrl]
   ]);
   const wizardUrl = compileModule(join(projectRoot, 'src/main/wechat-connector-wizard.ts'), [
+    ['./wechat-connector-common', commonUrl],
     ['./wechat-connector-macos', macUrl],
-    ['./wechat-connector-windows', windowsUrl]
+    ['./wechat-connector-windows', windowsUrl],
+    ['./wechat-platform-types', platformTypesUrl]
   ]);
   const adapterUrl = compileModule(join(projectRoot, 'src/main/wechat-adapter.ts'));
   const transportUrl = compileModule(join(projectRoot, 'src/main/wechat-worker-transport.ts'));
@@ -190,13 +201,21 @@ async function runDiagnostic() {
 
   wizard = new wizardModule.WechatConnectorWizard(
     ramboUserDataDirectory, prompts, app.getPath('home'), {},
-    { captureSeconds: 300, manualStopOnly: true, reuseManagedClone: true }
+    {
+      captureSeconds: 300,
+      manualStopOnly: true,
+      reuseManagedClone: process.env.RAMBO_WECHAT_DIAGNOSTIC_FRESH_CLONE !== '1'
+    }
   );
 
   let captured = null;
   let reader = null;
   try {
-    postToUi({ status: '正在复用 Rambo 受管微信副本。', text: '开始检查微信版本、副本签名与本机 Frida 环境。' });
+    const freshClone = process.env.RAMBO_WECHAT_DIAGNOSTIC_FRESH_CLONE === '1';
+    postToUi({
+      status: freshClone ? '正在创建新的临时微信副本。' : '正在复用 Rambo 受管微信副本。',
+      text: '开始检查微信版本、副本签名与本机 Frida 环境。'
+    });
     captured = await wizard.capture(connectionId, state => {
       const isHookReady = state.message.includes('密钥捕获钩子已就绪');
       if (isHookReady) setStopReady(true);
@@ -226,7 +245,8 @@ async function runDiagnostic() {
       keys: captured.keys,
       dataDirectory: captured.dataDirectory,
       wechatVersion: captured.wechatVersion,
-      wechatBuild: captured.wechatBuild
+      wechatBuild: captured.wechatBuild,
+      ...(captured.imageKey ? { imageKey: captured.imageKey } : {})
     };
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 86_400_000);

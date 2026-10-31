@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { closeSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 const storeSource = readFileSync(new URL('../../src/main/store.ts', import.meta.url), 'utf8');
@@ -25,6 +35,10 @@ const wechatAdapterSource = readFileSync(new URL('../../src/main/wechat-adapter.
 const wechatToolsSource = readFileSync(new URL('../../src/main/wechat-tools.ts', import.meta.url), 'utf8');
 const scheduleSource = readFileSync(new URL('../../src/main/routine-schedule.ts', import.meta.url), 'utf8');
 const schedulerSource = readFileSync(new URL('../../src/main/routine-scheduler.ts', import.meta.url), 'utf8');
+const packagedAppServer = [
+  '../../runtime/codex/0.165.0/bin/codex-app-server',
+  '../../runtime/codex/0.165.0/bin/codex-app-server.exe'
+].map(path => fileURLToPath(new URL(path, import.meta.url))).find(existsSync) ?? null;
 const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext };
 const compiledSchedule = ts.transpileModule(scheduleSource, { compilerOptions }).outputText;
 const compiledStore = ts.transpileModule(storeSource, { compilerOptions }).outputText
@@ -173,6 +187,108 @@ class FakeRuntime extends EventEmitter {
   }
 }
 
+async function assertPackagedAppServerAcceptsMcpConfig(mcpServers, baseConfigToml = null) {
+  assert.ok(packagedAppServer, 'packaged App Server is unavailable');
+  const home = mkdtempSync(join(tmpdir(), 'rambo-app-server-mcp-config-'));
+  mkdirSync(join(home, '.codex'), { recursive: true });
+  if (baseConfigToml) {
+    writeFileSync(join(home, '.codex', 'config.toml'), baseConfigToml, { mode: 0o600 });
+  }
+  const child = spawn(packagedAppServer, ['--listen', 'stdio://'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: home,
+      CODEX_HOME: join(home, '.codex')
+    },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  let buffer = '';
+  let stderr = '';
+  let nextId = 1;
+  const pending = new Map();
+  const rejectPending = error => {
+    for (const [id, request] of pending) {
+      pending.delete(id);
+      request.reject(error);
+    }
+  };
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`App Server timed out waiting for ${method}\n${stderr}`));
+    }, 5_000);
+    pending.set(id, {
+      resolve: value => { clearTimeout(timer); resolve(value); },
+      reject: error => { clearTimeout(timer); reject(error); }
+    });
+    child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+  });
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const requestState = message.id === undefined ? null : pending.get(message.id);
+      if (!requestState) continue;
+      pending.delete(message.id);
+      if (message.error) {
+        requestState.reject(new Error(JSON.stringify(message.error)));
+      } else {
+        requestState.resolve(message.result);
+      }
+    }
+  });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.on('error', rejectPending);
+  child.on('close', (code, signal) => {
+    rejectPending(new Error(`App Server exited ${code ?? signal}\n${stderr}`));
+  });
+  try {
+    await request('initialize', {
+      clientInfo: { name: 'rambo', title: 'Rambo', version: '0.1.0' },
+      capabilities: { experimentalApi: true }
+    });
+    child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
+    const result = await request('thread/start', {
+      cwd: process.cwd(),
+      sandbox: 'read-only',
+      approvalPolicy: 'never',
+      serviceName: 'Rambo',
+      ephemeral: true,
+      selectedCapabilityRoots: [],
+      historyMode: 'paginated',
+      config: {
+        mcp_servers: mcpServers,
+        features: { apps: false, plugins: false },
+        skills: {
+          bundled: { enabled: false },
+          include_instructions: false,
+          config: []
+        }
+      }
+    });
+    assert.equal(typeof result?.thread?.id, 'string');
+    return result.thread.id;
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise(resolve => {
+      if (child.exitCode !== null) resolve();
+      else child.once('close', resolve);
+    });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return;
@@ -273,10 +389,15 @@ async function withHost(run) {
   writeFileSync(join(directory, 'store.mjs'), compiledStore, { mode: 0o600 });
   writeFileSync(join(directory, 'host.mjs'), compiledHost, { mode: 0o600 });
   try {
-    const [{ Store }, { Host }] = await Promise.all([
+    const [{ Store }, hostModule] = await Promise.all([
       import(`${pathToFileURL(join(directory, 'store.mjs')).href}?${Date.now()}`),
       import(`${pathToFileURL(join(directory, 'host.mjs')).href}?${Date.now()}`)
     ]);
+    const {
+      Host,
+      CLOAKBROWSER_DISABLED_MCP_CONFIG,
+      cloakBrowserDisabledMcpConfig
+    } = hostModule;
     const store = new Store(directory);
     store.syncBotResources([], []);
     store.setSetting('defaultBotModel', 'test-model');
@@ -285,8 +406,11 @@ async function withHost(run) {
     const runtime = new FakeRuntime();
     const events = [];
     const toolHosts = [];
-    const createHost = (mailRuntime, credentials) => {
-      const created = new Host(store, runtime, event => events.push(event), mailRuntime, credentials);
+    const createHost = (mailRuntime, credentials, managedMcp) => {
+      const created = new Host(
+        store, runtime, event => events.push(event), mailRuntime, credentials,
+        undefined, undefined, undefined, undefined, undefined, undefined, managedMcp
+      );
       toolHosts.push(created);
       return created;
     };
@@ -299,6 +423,8 @@ async function withHost(run) {
         events,
         Store,
         Host,
+        CLOAKBROWSER_DISABLED_MCP_CONFIG,
+        cloakBrowserDisabledMcpConfig,
         replaceStore: next => { storeToClose = next; },
         createHost
       });
@@ -1230,6 +1356,7 @@ test('a completed image-generation item attaches its saved image to the same ass
     const otherTurnImage = hostWithThread.openMessageAsset(otherTurn.id, imagePath);
     assert.equal(otherTurnImage.path, realpathSync(imagePath));
     closeSync(otherTurnImage.descriptor);
+    hostWithThread.dispose();
   });
 });
 
@@ -1369,6 +1496,153 @@ test('a mail grant change keeps the Bot private thread and re-checks access at c
   });
 });
 
+test('CloakBrowser managed MCP follows grants, copied-Bot inheritance, and next-turn revocation', async () => {
+  await withHost(async ({ store, runtime, createHost, CLOAKBROWSER_DISABLED_MCP_CONFIG }) => {
+    const source = store.createBot('CloakBrowser source', 'a');
+    const peer = store.createBot('CloakBrowser peer', 'b');
+    const connectionId = '6c3d1e44-6b0e-4f7e-9f57-42c5ec0be8aa';
+    const copiedBotId = 'd5f1e8af-2a6a-4f8a-b4de-6d2d8c7f4b41';
+    const token = 'a'.repeat(64);
+    const managedMcp = {
+      hasAccess(botId) {
+        return store.connectorGrants().some(grant =>
+          grant.botId === botId && grant.connectionId === connectionId
+        );
+      },
+      async threadConfig(botId) {
+        if (!this.hasAccess(botId)) return null;
+        return {
+          url: 'http://127.0.0.1:45555/mcp',
+          http_headers: { Authorization: `Bearer ${token}` },
+          enabled: true
+        };
+      },
+      revokeBot() {}
+    };
+    const host = createHost(undefined, undefined, managedMcp);
+
+    const sendAndFinish = async (chat, turnId) => {
+      const before = runtime.requests.filter(request => request.method === 'turn/start').length;
+      const pending = host.send(chat.id, `CloakBrowser ${turnId}`);
+      await waitFor(() =>
+        runtime.requests.filter(request => request.method === 'turn/start').length === before + 1
+      );
+      const turn = runtime.requests.filter(request => request.method === 'turn/start').at(-1);
+      const threadId = store.chat(chat.id).threadId;
+      turn.resolve({ turn: { id: turnId } });
+      await pending;
+      runtime.emit('notification', 'turn/completed', {
+        threadId,
+        turn: { id: turnId, status: 'completed' }
+      });
+    };
+
+    await sendAndFinish(source.chat, 'source-before-connection');
+    const firstThreadStart = runtime.requests.find(request => request.method === 'thread/start');
+    assert.deepEqual(
+      firstThreadStart.params.config.mcp_servers.cloakbrowser,
+      CLOAKBROWSER_DISABLED_MCP_CONFIG
+    );
+
+    const connection = store.createConnectorConnection({
+      id: connectionId,
+      providerId: 'cloakbrowser',
+      displayName: 'Shared CloakBrowser',
+      accountLabel: 'Shared profile · Chromium 145.0.0.0',
+      authKind: 'local-install',
+      credentialRef: `local:${connectionId}`
+    });
+    store.setConnectorGrant(source.bot.id, connection.id, true);
+
+    await sendAndFinish(source.chat, 'source-after-grant');
+    const sourceResume = runtime.requests.filter(request => request.method === 'thread/resume').at(-1);
+    assert.equal(sourceResume.params.threadId, store.chat(source.chat.id).threadId);
+    assert.deepEqual(sourceResume.params.config.mcp_servers.cloakbrowser, {
+      url: 'http://127.0.0.1:45555/mcp',
+      http_headers: { Authorization: `Bearer ${token}` },
+      enabled: true
+    });
+
+    await sendAndFinish(peer.chat, 'peer-without-grant');
+    const peerThreadStart = runtime.requests.filter(request => request.method === 'thread/start')[1];
+    assert.deepEqual(
+      peerThreadStart.params.config.mcp_servers.cloakbrowser,
+      CLOAKBROWSER_DISABLED_MCP_CONFIG
+    );
+
+    const copied = store.copyBot(source.bot.id, copiedBotId, []);
+    await sendAndFinish(copied.chat, 'copied-with-inherited-grant');
+    const copiedThreadStart = runtime.requests.filter(request => request.method === 'thread/start')[2];
+    assert.deepEqual(copiedThreadStart.params.config.mcp_servers.cloakbrowser, {
+      url: 'http://127.0.0.1:45555/mcp',
+      http_headers: { Authorization: `Bearer ${token}` },
+      enabled: true
+    });
+    assert.deepEqual(
+      store.connectorGrants()
+        .filter(grant => grant.botId === copied.bot.id)
+        .map(grant => grant.connectionId),
+      [connection.id]
+    );
+
+    store.setConnectorGrant(source.bot.id, connection.id, false);
+    await sendAndFinish(source.chat, 'source-after-revoke');
+    const revokedResume = runtime.requests.filter(request => request.method === 'thread/resume').at(-1);
+    assert.equal(revokedResume.params.threadId, store.chat(source.chat.id).threadId);
+    assert.deepEqual(
+      revokedResume.params.config.mcp_servers.cloakbrowser,
+      CLOAKBROWSER_DISABLED_MCP_CONFIG
+    );
+    assert.deepEqual(
+      store.connectorGrants()
+        .filter(grant => grant.botId === copied.bot.id)
+        .map(grant => grant.connectionId),
+      [connection.id]
+    );
+  });
+});
+
+test('CloakBrowser disabled config preserves an inherited App Server transport', async () => {
+  await withHost(async ({ store, runtime, createHost, cloakBrowserDisabledMcpConfig }) => {
+    runtime.globalMcpServers = {
+      cloakbrowser: { command: 'fixture-cloakbrowser' }
+    };
+    const host = createHost(undefined, undefined, {
+      hasAccess: () => false,
+      async threadConfig() { return null; },
+      revokeBot() {}
+    });
+    const { chat } = store.createBot('Inherited CloakBrowser transport', 'a');
+    const pending = host.send(chat.id, 'disabled inherited CloakBrowser');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const threadStart = runtime.requests.find(request => request.method === 'thread/start');
+    assert.deepEqual(
+      threadStart.params.config.mcp_servers.cloakbrowser,
+      cloakBrowserDisabledMcpConfig(true)
+    );
+    runtime.requests.find(request => request.method === 'turn/start')
+      .resolve({ turn: { id: 'inherited-cloakbrowser-turn' } });
+    await pending;
+  });
+});
+
+test('packaged App Server accepts Host disabled CloakBrowser MCP configurations', async t => {
+  if (!packagedAppServer) {
+    t.skip('packaged App Server is unavailable on this platform');
+    return;
+  }
+  await withHost(async ({ CLOAKBROWSER_DISABLED_MCP_CONFIG, cloakBrowserDisabledMcpConfig }) => {
+    const threadId = await assertPackagedAppServerAcceptsMcpConfig({
+      cloakbrowser: CLOAKBROWSER_DISABLED_MCP_CONFIG
+    });
+    assert.match(threadId, /^[0-9a-f-]{36}$/u);
+    const inheritedThreadId = await assertPackagedAppServerAcceptsMcpConfig({
+      cloakbrowser: cloakBrowserDisabledMcpConfig(true)
+    }, '[mcp_servers.cloakbrowser]\ncommand = "fixture-cloakbrowser"\n');
+    assert.match(inheritedThreadId, /^[0-9a-f-]{36}$/u);
+  });
+});
+
 test('a Bot reuses one private thread across turns and Host restart while group sessions use another thread', async () => {
   await withHost(async ({ store, runtime, Store, Host, replaceStore }) => {
     const privateBot = store.createBot('Private continuity', 'a');
@@ -1413,6 +1687,8 @@ test('a Bot reuses one private thread across turns and Host restart while group 
     assert.equal(memberTurn.params.threadId, groupThreadId);
     memberTurn.resolve({ turn: { id: 'group-turn-1' } });
     await memberSending;
+    first.dispose();
+    second.dispose();
   });
 });
 
@@ -1489,6 +1765,7 @@ test('each turn carries fresh local time context and Routine creation uses the H
     const [routine] = store.routines();
     assert.equal(routine.definition.timezone, 'America/Los_Angeles');
     assert.equal(routine.definition.runAt, '2026-10-25T03:06:00.000Z');
+    localHost.dispose();
   });
 });
 

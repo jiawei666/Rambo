@@ -1,6 +1,6 @@
 {
   "name": "rambo",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",
@@ -113,6 +113,7 @@
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@xmldom/xmldom": "^0.8.15",
     "hark": "^1.2.3",
     "imapflow": "^2.9.1",

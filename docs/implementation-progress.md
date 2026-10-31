@@ -1,5 +1,26 @@
 # 实施进度
 
+## 2026-10-31 · Q215 微信媒体临时文件与定时清理
+
+- 微信图片、语音和视频不再由动态 Tool 返回 `data:` URL 或 base64。`WechatMediaContentProcessor` 将内存解密/转码后的媒体写入 `<userData>/composer-attachments/wechat-media-<epoch-ms>-<8hex>.<ext>`，目录 `0700`、文件 `0600`；Tool 只返回 `local_path`、`expires_in_days: 7`、处理后的 MIME/文件名。视频另返回原视频路径和最多 12 张 `frame_paths`。
+- `cleanupComposerAttachments` 将 `wechat-media-*` 纳入既有清理规则：未引用 7 天、已引用 30 天删除，当前草稿占用跳过，启动时和每 24 小时检查，不跟随符号链接；图片、常见语音/视频扩展名均纳入目标集合，其他文件不删除。
+- Agent 提示改为读取 `local_path`：图片调用 `view_image({ path: local_path })`，视频按 `frame_paths` 逐帧读取；语音优先使用微信已有 `transcription`，没有可靠转写时明确说明无法识别，不能凭路径猜测内容。没有临时目录时图片/语音直接失败，不退回 inline base64。
+- 真实 `macOS WeChat 4.2.0` 正式 Connection、Bot Grant、构建后的 Worker 和生产 `wechat_media` Tool 路径通过：图片 1360×677 PNG（568,979 字节），语音 3.62 秒、24 kHz、16-bit 单声道 WAV（173,804 字节）；两项均落在 `composer-attachments/wechat-media-*`，权限 `600`，Tool 输出不存在 `data:image`/`data:audio`/`data:video`。重复测试文件已按精确路径清理。
+- 验证通过：`npm run build`；`npm run typecheck`；微信媒体、微信 Tool、附件清理和 Host 定向测试 **140/140**。当前开发实例已重启并加载新构建。
+- 证据边界：内置 `view_image` 仍会把图片字节以内联 data URL 写入 Codex 会话 JSONL，因此不能宣称完整会话历史已不含媒体；语音没有内置本地转写器，只有微信 `transcription` 可作为可靠文本。仅缩略图/完全缺失、断网、旧资源句柄失效、视频真实样本、WXGF、其他图片容器和 Windows 链路仍待独立验收。
+
+## 2026-10-31 · CloakBrowser 官方 Logo 与连接应用推荐区
+
+- 修复真实消息发送时的 `failed to load configuration: invalid transport in mcp_servers.cloakbrowser`：App Server 通过 `command` 或 `url` 判断 MCP transport，单独的 `{ enabled: false }` 会在 `thread/start` 前被拒绝。Host 现在为未安装、未授权和撤销后的 CloakBrowser 注入合法禁用配置：本机没有同名 Codex 配置时使用带回环 URL 的禁用占位；已有同名配置时只注入 `enabled: false`，保留其原 transport，避免 stdio 与 URL 合并冲突。
+- 新增真实 `codex-app-server 0.165.0` 解析回归，同时覆盖“没有基础配置”和“已有同名 stdio 配置”两条路径；此前错误形状已在同版本二进制上稳定复现用户看到的 `invalid transport` 文本，而不是只依赖 FakeRuntime 断言。
+- 验证通过：`npm run typecheck`；`npm run test:catalog:sync`；`npm run test:plan`；`npm run test:catalog`（157 条规则 / 277 个案例）；`npm run test:acceptance` **21/21**；`npm run build`；Host 后端 **123/123**；CloakBrowser 后端 **6/6**；连接应用 Electron **1/1**；`git diff --check`。
+- CloakBrowser 卡片和连接弹窗使用其官方 GitHub 仓库 `CloakHQ/CloakBrowser` 的 `images/avatar.png` 图形，并已移除原始黑色方底；本地资源为透明背景 500×500 RGBA PNG，SHA-256 为 `1753262f7f96653fce12bbc04e0405095925683d7b44490f72b38c9383976135`。四角 Alpha 为 0，界面继续按 40×40 直接显示，不使用 `CB` 文字占位、Chrome 图标或 GitHub 平台 Logo。
+- 连接应用首页“推荐”区调整为微信、Gmail、QQ 邮箱和 CloakBrowser 四项；日历与 GitHub 保留在“所有应用”。搜索和分类筛选仍按真实 Provider 结果显示。
+- CloakBrowser 介绍改为“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”，连接弹窗继续明确不承诺绕过所有反爬、验证码、登录或二次验证。
+- 真实 Electron 用例同时断言推荐区四张卡片、所有应用两张卡片、CloakBrowser 自然尺寸 500、四角透明与中心不透明、卡片和弹窗介绍文案、六项品牌 Logo 的透明无框容器，以及四个可连接按钮在明暗主题下的对比度。
+- 验证通过：`npm run typecheck`；`npm run test:catalog`；`npm run test:acceptance` **21/21**；`npm run build`；连接市场 Electron **1/1**；CloakBrowser、Host、Runtime 与平台进程定向后端 **150/150**；`git diff --check`。验收目录为 **157 条规则 / 157 个完整场景 / 277 个局部案例 / 151 implemented / 126 gaps**。
+- 证据边界：本轮只完成连接市场分组、官方 Logo 和定向 Electron 验收；真实 CloakBrowser 安装、共享登录态、完整微信向导 UI、安装版应用与 P02 逐项视觉对照仍未执行。
+
 ## 2026-10-30 · Q208 双平台发版 Skill 与独立 App Server 校验
 
 - `rambo-release` Skill 从 macOS 单平台发布改为默认双平台：macOS ARM64 与 Windows x64 分别在匹配原生构建机执行 `npm run release:package -- <target>`，各自生成安装包、SHA-256 和 release metadata；两个平台合并后必须通过 `npm run release:verify -- darwin-arm64,win32-x64` 才能进入 tag/Release。
@@ -671,3 +692,20 @@
 - 资源启用状态与连接应用逐 Bot Grant 状态不再改变整行背景、边框或阴影；普通悬停反馈仍保留，状态只由主题化 switch 的轨道颜色和滑块位置表达。
 - 开关开启时使用主题主文字色形成高对比轨道，关闭时使用低对比中性轨道；真实 checked、禁用、键盘焦点和明暗主题适配保持有效。
 - 验证边界：资源设置 Electron 用例检查徽标不存在、开关启停时轨道颜色变化，以及资源行背景、边框和阴影不随状态变化；浅色与暗色隔离 Electron 截图已人工复核。完整安装版的明暗主题、长列表滚动和窄窗口视觉仍须在发布验收中复核。
+
+## 2026-10-31：Q214 微信 4.2 图片独立密钥
+
+- macOS 受管微信捕获钩子在数据库 AES key 之外，从微信进程内枚举 `kvcomm/key_<UIN>_*`；主进程用规范化 wxid 派生图片候选，并只在真实已缓存 V2 DAT 上验证通过后保存。
+- 微信连接凭证新增可选 `imageKey`，继续由本地 AES-256-GCM 凭证库加密；旧的只含 SQLCipher key 的凭证仍可读取。连接捕获版本升至 `rambo-wechat-platform-v4`。
+- Worker 对 V2 图片 DAT 使用独立 16 字符 AES key 与 1 字节 XOR key；消息结果可提前识别真实图片 MIME，媒体读取在内存返回解密字节，不建立 Rambo 媒体副本。
+- 真实临时微信 4.2 样本枚举到 8 个 V2 DAT，从 `key_1791714642_*` 与 `wxid_qvhsb7mvm2u311` 派生后解出 3,384 字节 JPEG；未输出 key、路径或媒体内容。
+- 合成及定向测试已覆盖图片 key 派生、V2 解密、缓存扫描校验、连接捕获、凭证传递和 Worker 媒体读取。现有正式微信 Connection 的加密凭证已写入真实验证通过的图片 key，固定绑定更新为微信 `4.2.0`（build `270348`）和捕获版本 `rambo-wechat-platform-v4`；在 Bot Grant 与账号、目录、版本绑定检查通过后，生产只读微信 Tool 连续读取同一张本机 `image/jpeg`（1,019,210 字节），其中第二次是在重新加载加密凭证后完成。
+- 微信 4.2 的 `VoiceInfo.svr_id` 使用 64 位整数；Worker 现以 BigInt 读取并用文本形式匹配稳定 server ID，避免单条超出 JavaScript 安全整数后整张语音表被吞掉。媒体库 WAL 回放结果无法生成有效 SQLite 快照时，Worker 会读取已通过 HMAC 验证的基础数据库，并在覆盖信息中明确标记“可能不包含最新提交”，不会把降级读取说成完整结果。
+- 真实正式 Connection 已通过生产 `rambo_wechat` Tool 读取一条本机语音：媒体库中检测到 2,038 条语音记录，最近候选命中 1 条消息和 1 个 `audio/silk` 媒体，SILK 经内置解码器转为 `audio/wav`，大小 294,764 字节。该复验使用构建后的 `out/main/wechat-worker.js`，不是源码直载。
+- 真实 Bot 回合已证明动态 Tool 正常装载。旧版本曾把图片和语音作为 `input_image` / `input_audio` 交付，并导致 Codex 会话 JSONL 持久化 data URL；Q215 已改为写入受控临时文件并返回 `local_path`，不再由微信动态 Tool 返回媒体 base64。
+- 微信连接提示现要求图片调用 `view_image({ path: local_path })`、视频按 `frame_paths` 读取，不能把临时文件复制到工作区或长期保存；语音优先使用消息自带的 `media.transcription`，没有可靠转写时必须如实说明当前没有可用的本机语音转写能力。
+- 对真实语音样本的脱敏临时验证显示音频并非静音，但 macOS Speech `zh-CN` 在线/离线均返回 `No speech detected`，`zh-HK` / `yue-CN` 结果明显错误且置信度极低。若要覆盖微信没有提供转写的语音，需要另行确认并引入可靠的本机 Whisper/SenseVoice 等引擎；当前没有新增第三方转写依赖。
+- 验证记录：`npm run typecheck`、`npm run build` 通过；微信媒体、微信 Tool、附件清理和 Host 定向测试 **140/140** 通过；当前开发实例已在构建后重启。真实图片和真实 SILK 语音均通过生产 Tool 路径落盘到 `composer-attachments`，权限 `600`，动态 Tool 输出不含媒体 data URL。
+- 媒体输入、SILK→WAV 转换和视频抽帧仍走内存及 `stdin`/`stdout`；资源句柄 Map 只保存微信相对路径、语音 ID 和创建时间，不保存媒体字节，并短期失效。解密后的图片/语音/视频只在 `composer-attachments` 中形成受控临时文件，不进入 Rambo SQLite 或长期缓存。
+- 仍有一个重要边界：内置 `view_image` 会把图片字节以内联 data URL 写入 Codex 会话 JSONL。新微信动态 Tool 已不再主动输出 base64，但 Agent 实际调用 `view_image` 后仍可能扩大会话历史。Rambo 当前没有按天清理 Codex 会话 JSONL 的策略；若要彻底移除该边界，需另案采用本地视觉描述/OCR 或不同的图片交付协议。
+- 当前生效边界仍是 macOS 微信 4.2 的本机 V2 图片及真实 SILK 语音落盘；官方主微信在线状态、仅缩略图/完全缺失、断网、旧句柄失效、真实视频、WXGF、其他图片容器、Windows 图片链路及无微信转写时的可靠语音识别不在本轮通过结论内。

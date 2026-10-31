@@ -168,12 +168,17 @@ function executableCandidates(
   ];
 }
 
-export function findNpx(options: {
+export interface FindExecutableOptions {
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
   home?: string;
   exists?: (path: string) => boolean;
-} = {}): string | null {
+}
+
+function findExecutable(
+  executableName: 'npx' | 'node',
+  options: FindExecutableOptions = {}
+): string | null {
   const platform = options.platform ?? process.platform;
   const environment = options.environment ?? process.env;
   const api = pathApi(platform);
@@ -185,7 +190,7 @@ export function findNpx(options: {
     if (!cleanDirectory) continue;
     for (const candidate of executableCandidates(
       cleanDirectory,
-      'npx',
+      executableName,
       platform,
       environment.PATHEXT
     )) {
@@ -216,7 +221,12 @@ export function findNpx(options: {
         '/usr/bin'
       ];
   for (const directory of directories.filter((value): value is string => Boolean(value))) {
-    for (const candidate of executableCandidates(directory, 'npx', platform, environment.PATHEXT)) {
+    for (const candidate of executableCandidates(
+      directory,
+      executableName,
+      platform,
+      environment.PATHEXT
+    )) {
       candidates.add(candidate);
     }
   }
@@ -229,13 +239,13 @@ export function findNpx(options: {
         for (const version of readdirSync(nodeVersions).sort().reverse()) {
           for (const candidate of executableCandidates(
             api.join(nodeVersions, version, 'bin'),
-            'npx',
+            executableName,
             platform,
             environment.PATHEXT
           )) candidates.add(candidate);
           for (const candidate of executableCandidates(
             api.join(nodeVersions, version, 'installation/bin'),
-            'npx',
+            executableName,
             platform,
             environment.PATHEXT
           )) candidates.add(candidate);
@@ -250,6 +260,14 @@ export function findNpx(options: {
     if (exists(candidate)) return candidate;
   }
   return null;
+}
+
+export function findNpx(options: FindExecutableOptions = {}): string | null {
+  return findExecutable('npx', options);
+}
+
+export function findNode(options: FindExecutableOptions = {}): string | null {
+  return findExecutable('node', options);
 }
 
 const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/gu;

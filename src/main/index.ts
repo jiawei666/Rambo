@@ -38,6 +38,7 @@ import { ElectronWechatWorkerTransport } from './wechat-worker-transport';
 import { WechatConnectorWizard, WECHAT_CAPTURE_VERSION } from './wechat-connector-wizard';
 import { WechatMediaContentProcessor } from './wechat-media-content';
 import { PlaywrightExtensionVerifier } from './playwright-extension-verifier';
+import { CloakBrowserConnector } from './cloakbrowser-connector';
 import { resourceIdsSetting } from './bot-resources';
 import { DirectMcpRegistry } from './direct-mcp';
 import { removeManagedBotDirectory } from './bot-data';
@@ -142,7 +143,9 @@ let connectorCredentials: ConnectorCredentials;
 let wechatReader: SqlCipherWechatReader | null = null;
 let wechatConnectorWizard: WechatConnectorWizard | null = null;
 let playwrightExtensionVerifier: PlaywrightExtensionVerifier | null = null;
+let cloakbrowserConnector: CloakBrowserConnector | null = null;
 const wechatAuthControllers = new Map<string, AbortController>();
+const cloakbrowserAuthControllers = new Map<string, AbortController>();
 let mailRuntime: MailRuntime;
 let directMcpRegistry: DirectMcpRegistry;
 let loginItem: LoginItemController;
@@ -681,7 +684,7 @@ const connectorChallenge = (value: unknown): import('../shared/contracts').Conne
   const source = object(value);
   const providerId = text(source.providerId, 80);
   const authKind = text(source.authKind, 40);
-  if (!['oauth-desktop', 'credentials', 'local-key-capture'].includes(authKind)) {
+  if (!['oauth-desktop', 'credentials', 'local-key-capture', 'local-install'].includes(authKind)) {
     throw new Error('无效的授权类型');
   }
   return {
@@ -1096,6 +1099,73 @@ function registerIPC(): void {
     },
     openConnectorAuth: async challengeValue => {
       const challenge = connectorChallenge(challengeValue);
+      if (challenge.providerId === 'cloakbrowser') {
+        if (!cloakbrowserConnector) {
+          throw new Error('CloakBrowser 连接器尚未启动，请重启 Rambo 后重试。');
+        }
+        if (challenge.authKind !== 'local-install' ||
+            !challenge.connectionId.startsWith('pending:cloakbrowser:')) {
+          throw new Error('CloakBrowser 授权挑战已失效，请重新开始连接。');
+        }
+        const connectionId = challenge.connectionId.slice('pending:cloakbrowser:'.length);
+        if (!/^[a-f0-9-]{36}$/iu.test(connectionId)) {
+          throw new Error('CloakBrowser 授权挑战已失效，请重新开始连接。');
+        }
+        if (cloakbrowserAuthControllers.has(challenge.connectionId)) {
+          throw new Error('CloakBrowser 正在安装，请等待当前安装完成。');
+        }
+        const flowController = new AbortController();
+        cloakbrowserAuthControllers.set(challenge.connectionId, flowController);
+        let installedConnectionId: string | null = null;
+        try {
+          const installed = await cloakbrowserConnector.install(
+            connectionId,
+            challenge.displayName,
+            progress => emit({
+              type: 'connectorAuthProgress',
+              connectionId: challenge.connectionId,
+              phase: progress.phase,
+              message: progress.message
+            }),
+            flowController.signal
+          );
+          installedConnectionId = installed.connection.id;
+          if (flowController.signal.aborted) {
+            throw new Error('CloakBrowser 安装已取消。');
+          }
+          host.changed();
+          emit({
+            type: 'connectorAuthProgress',
+            connectionId: challenge.connectionId,
+            phase: 'complete',
+            message: installed.info.browserVersion
+              ? `CloakBrowser ${installed.info.browserVersion} 已安装，共享 profile 连接已保存。`
+              : 'CloakBrowser 已安装，共享 profile 连接已保存。'
+          });
+          return installed.connection;
+        } catch (error) {
+          if (installedConnectionId) {
+            try {
+              if (store.connectorConnections().some(connection =>
+                connection.id === installedConnectionId
+              )) {
+                store.deleteConnectorConnection(installedConnectionId);
+              }
+            } catch {
+              // The connector may already have removed an interrupted record.
+            }
+            await cloakbrowserConnector.removeConnection();
+            host.changed();
+          }
+          const message = error instanceof Error ? error.message : '未知错误';
+          if (flowController.signal.aborted || /取消/u.test(message)) {
+            throw new Error('CloakBrowser 安装已取消。');
+          }
+          throw new Error(`CloakBrowser 安装失败，未保存连接：${message}`);
+        } finally {
+          cloakbrowserAuthControllers.delete(challenge.connectionId);
+        }
+      }
       if (challenge.providerId === 'wechat') {
         if (!wechatConnectorWizard || !wechatReader) throw new Error('微信本机连接向导尚未启动，请重启 Rambo 后重试。');
         const connectionId = challenge.connectionId.slice('pending:wechat:'.length);
@@ -1127,7 +1197,8 @@ function registerIPC(): void {
           keys: captured.keys,
           dataDirectory: captured.dataDirectory,
           wechatVersion: captured.wechatVersion,
-          wechatBuild: captured.wechatBuild
+          wechatBuild: captured.wechatBuild,
+          ...(captured.imageKey ? { imageKey: captured.imageKey } : {})
         };
         const credentialRef = connectorCredentials.save(connectionId, payload);
         emit({
@@ -1232,8 +1303,15 @@ function registerIPC(): void {
       const requested = wechatConnectorWizard?.requestCaptureContinue(challenge.connectionId) ?? false;
       return requested;
     },
-    cancelConnectorAuth: challengeValue => {
+    cancelConnectorAuth: async challengeValue => {
       const challenge = connectorChallenge(challengeValue);
+      if (challenge.providerId === 'cloakbrowser') {
+        const controller = cloakbrowserAuthControllers.get(challenge.connectionId);
+        if (!controller) return;
+        controller.abort();
+        await cloakbrowserConnector?.stop();
+        return;
+      }
       if (challenge.providerId === 'wechat') {
         wechatAuthControllers.get(challenge.connectionId)?.abort();
         wechatConnectorWizard?.cancel(challenge.connectionId);
@@ -1260,6 +1338,9 @@ function registerIPC(): void {
       if (!displayName) throw new Error('连接名称不能为空');
       if (provider.id === 'wechat') {
         throw new Error('微信不能通过邮箱凭据连接，请使用本机密钥捕获向导');
+      }
+      if (provider.id === 'cloakbrowser') {
+        throw new Error('CloakBrowser 必须通过连接应用安装，不能使用邮箱凭据');
       }
       if (provider.id === 'qqmail' || provider.id === 'gmail') {
         const connectionId = challengeConnectionId.slice(`pending:${provider.id}:`.length);
@@ -1297,16 +1378,22 @@ function registerIPC(): void {
       }
       throw new Error(`${provider.name} 尚未接入`);
     },
-    setConnectionStatus: (connectionId, statusValue) => {
+    setConnectionStatus: async (connectionId, statusValue) => {
       const status = text(statusValue, 40);
       if (!['ready', 'needsReconnect', 'expired', 'disabled'].includes(status)) throw new Error('无效的连接状态');
       const connection = store.setConnectorConnectionStatus(id(connectionId), status as any);
+      if (connection.providerId === 'cloakbrowser' && status !== 'ready') {
+        await cloakbrowserConnector?.stop();
+      }
       host.changed();
       return connection;
     },
-    removeConnection: connectionId => {
+    removeConnection: async connectionId => {
       const existing = store.connectorConnection(id(connectionId));
       const reference = store.connectorCredentialRef(existing.id);
+      if (existing.providerId === 'cloakbrowser') {
+        await cloakbrowserConnector?.removeConnection();
+      }
       host.invalidateConnection(existing.id);
       store.deleteConnectorConnection(existing.id);
       connectorCredentials.delete(reference);
@@ -1316,6 +1403,9 @@ function registerIPC(): void {
     setConnectorGrant: (botId, connectionId, granted) => {
       if (typeof granted !== 'boolean') throw new Error('无效的授权参数');
       const grants = store.setConnectorGrant(id(botId), id(connectionId), granted);
+      if (!granted && store.connectorConnection(connectionId).providerId === 'cloakbrowser') {
+        cloakbrowserConnector?.revokeBot(botId);
+      }
       host.changed();
       return grants;
     },
@@ -2172,6 +2262,7 @@ else {
         }
       }
     ));
+    cloakbrowserConnector = new CloakBrowserConnector(store, app.getPath('userData'));
     const acceptanceResourceRoot = acceptanceRunId
       ? process.env.RAMBO_ACCEPTANCE_PACKAGED_RUNTIME_ROOT?.trim()
       : '';
@@ -2236,12 +2327,17 @@ else {
     }, {
       manualStopOnly: true
     });
-    const wechatMediaProcessor = new WechatMediaContentProcessor(wechatMediaToolPaths());
+    const wechatMediaProcessor = new WechatMediaContentProcessor(
+      wechatMediaToolPaths(),
+      undefined,
+      { tempDirectory: join(app.getPath('userData'), 'composer-attachments') }
+    );
     host = new Host(
       store, runtime, emit, mailRuntime, connectorCredentials,
       undefined, undefined, wechatReader, wechatMediaProcessor,
       () => modelSourceState(),
-      () => testModelConnection()
+      () => testModelConnection(),
+      cloakbrowserConnector
     );
     runtime.on('homeSync', (state: CodexHomeSyncState) => {
       emit({ type: 'codexHomeSync', state });
@@ -2368,6 +2464,9 @@ else {
         if (/^[a-f0-9-]{36}$/iu.test(connectionId)) wechatReader?.invalidate(connectionId);
       }
       await wechatConnectorWizard?.cancelAll();
+      for (const controller of cloakbrowserAuthControllers.values()) controller.abort();
+      cloakbrowserAuthControllers.clear();
+      await cloakbrowserConnector?.stop();
       playwrightExtensionVerifier?.cancel();
       while (wechatAuthControllers.size) await new Promise(resolve => setTimeout(resolve, 25));
       systemIndicators?.dispose();

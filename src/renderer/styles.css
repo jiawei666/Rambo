@@ -2025,7 +2025,12 @@ input[type="checkbox"]:disabled {
 .connector-dialog-header p { margin: 3px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 16px; }
 .connector-dialog-header .icon-button { flex: 0 0 auto; margin: -2px -3px 0 0; }
 .connector-auth-note { display: flex; align-items: flex-start; gap: 10px; margin-top: 17px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 13px; background: var(--bg-secondary); }
+.connector-auth-note-warning {
+  border-color: color-mix(in srgb, var(--text-system) 34%, var(--border-subtle));
+  background: color-mix(in srgb, var(--text-system) 7%, var(--bg-secondary));
+}
 .connector-auth-note-icon { display: grid; flex: 0 0 30px; width: 30px; height: 30px; place-items: center; border-radius: 9px; background: var(--bg-elevated); color: var(--text-secondary); }
+.connector-auth-note-warning .connector-auth-note-icon { color: var(--text-system); }
 .connector-auth-note strong { font-size: 11px; font-weight: 600; line-height: 16px; }
 .connector-auth-note p { margin: 3px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 16px; }
 .connector-oauth-guide { margin-top: 13px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 10px; line-height: 16px; }

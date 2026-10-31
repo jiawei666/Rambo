@@ -37,6 +37,7 @@ import type {
   WechatWizardPrompts,
   WechatWizardProgress
 } from './wechat-platform-types';
+import { findVerifiedWechatImageKey } from './wechat-image-key';
 
 const RUNTIME_PREPARE_TIMEOUT_MS = 10 * 60_000;
 const WECHAT_BUNDLE_ID = 'com.tencent.xinWeChat';
@@ -136,6 +137,7 @@ interface ActiveWechatCapture {
   keyCount: number;
   roundNumber: number;
   candidates: Set<string>;
+  imageCodes: Set<number>;
   round: Deferred<WechatDatabaseMapping>;
   resume: Deferred<void> | null;
   ready: Deferred<void>;
@@ -174,6 +176,34 @@ function findExport(name) {
   try { if (typeof Module.getGlobalExportByName === 'function') return Module.getGlobalExportByName(name); } catch (e) {}
   return null;
 }
+function collectImageCodes() {
+  const codes = {};
+  try {
+    const manager = ObjC.classes.NSFileManager.defaultManager();
+    const home = manager.homeDirectoryForCurrentUser().path().toString();
+    const directories = [
+      home + '/Documents/app_data/net/kvcomm',
+      home + '/Documents/app_data/ilink/kvcomm',
+      home + '/Documents/app_data/roam/ilink/kvcomm',
+      home + '/Documents/xwechat/net/kvcomm',
+      home + '/Library/Application Support/com.tencent.xinWeChat/xwechat/net/kvcomm',
+      home + '/Library/Application Support/com.tencent.xinWeChat/net/kvcomm'
+    ];
+    for (const directory of directories) {
+      let entries = null;
+      try { entries = manager.contentsOfDirectoryAtPath_error_(directory, NULL); } catch (e) {}
+      if (entries === null) continue;
+      for (let index = 0; index < entries.count(); index++) {
+        const name = entries.objectAtIndex_(index).toString();
+        const match = /^key_(\d+)_/.exec(name);
+        if (!match) continue;
+        const code = Number(match[1]);
+        if (Number.isSafeInteger(code) && code >= 0 && code <= 0xffffffff) codes[String(code)] = 1;
+      }
+    }
+  } catch (e) {}
+  return Object.keys(codes).map(Number);
+}
 ['CCCrypt', 'CCCryptorCreate', 'CCCryptorCreateWithMode'].forEach(function (name) {
   const fn = findExport(name);
   if (!fn) return;
@@ -193,6 +223,7 @@ function findExport(name) {
     }
   });
 });
+send({ imageCodes: collectImageCodes() });
 send({ ready: true });`;
 
 const FRIDA_DRIVER = String.raw`import frida
@@ -203,6 +234,7 @@ import threading
 
 hook_path, pid_text, port_text, token = sys.argv[1:5]
 keys = set()
+image_codes = set()
 session = None
 connection = socket.create_connection(('127.0.0.1', int(port_text)), timeout=30)
 connection.settimeout(0.25)
@@ -227,6 +259,12 @@ def on_message(message, data):
     payload = message.get('payload') or {}
     if payload.get('ready'):
         script_ready.set()
+        return
+    codes = payload.get('imageCodes')
+    if isinstance(codes, list):
+        for code in codes:
+            if isinstance(code, int) and 0 <= code <= 0xffffffff:
+                image_codes.add(code)
         return
     key = payload.get('wxkey')
     with round_lock:
@@ -278,6 +316,7 @@ try:
         if action == 'finish':
             with round_lock:
                 round_active[0] = False
+            send({'type': 'image-codes', 'values': sorted(image_codes)})
             report('round-complete', round=round_number)
             while True:
                 command = wait_for_command()
@@ -415,8 +454,8 @@ export class MacWechatConnector {
     let originalWasRunning = false;
     let failedStep = '检查微信版本和签名';
     try {
-      progress(onProgress, 'checking', '正在检查微信 4.1.x 版本和腾讯官方签名。');
-      if (!sourceApp) throw new Error('没有找到已安装的微信 Mac 客户端，请先安装微信 4.1.x。');
+      progress(onProgress, 'checking', '正在检查微信 4.1.x/4.2.x 版本和腾讯官方签名。');
+      if (!sourceApp) throw new Error('没有找到已安装的微信 Mac 客户端，请先安装微信 4.1.x 或 4.2.x。');
       const sourceInfo = await this.readAndVerifySource(sourceApp);
       ensureActive(signal);
 
@@ -553,6 +592,7 @@ export class MacWechatConnector {
         keyCount: 0,
         roundNumber: 1,
         candidates: new Set<string>(),
+        imageCodes: new Set<number>(),
         round: deferred<WechatDatabaseMapping>(),
         resume: null,
         ready: deferred<void>(),
@@ -605,6 +645,16 @@ export class MacWechatConnector {
               '已捕获 ' + session.keyCount + ' 个候选密钥；内容只在本机内存中处理。',
               session.captureReady && !session.stopRequested
             );
+          }
+          return;
+        }
+        if (message.type === 'image-codes') {
+          if (Array.isArray(message.values)) {
+            for (const value of message.values) {
+              if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff) {
+                session.imageCodes.add(value);
+              }
+            }
           }
           return;
         }
@@ -835,6 +885,18 @@ export class MacWechatConnector {
           mapping = await session.round.promise;
         }
         ensureActive(signal);
+        const imageKey = findVerifiedWechatImageKey(
+          account.dataDirectory,
+          account.accountId,
+          session.imageCodes
+        );
+        progress(
+          onProgress,
+          'verifying',
+          imageKey
+            ? '图片媒体密钥已在本机 V2 缓存上验证通过；正在结束捕获。'
+            : '未找到可验证的本机 V2 图片缓存；图片媒体将保持不可用，其他只读能力继续。'
+        );
         if (!session.send({ type: 'complete' })) throw new Error('无法结束微信密钥捕获进程。');
         await session.driverDone.promise;
         await captureCommand;
@@ -851,7 +913,8 @@ export class MacWechatConnector {
           dataDirectory: account.dataDirectory,
           wechatVersion: sourceInfo.version,
           wechatBuild: sourceInfo.build,
-          keys: mapping.keys
+          keys: mapping.keys,
+          ...(imageKey ? { imageKey } : {})
         };
       } finally {
         clearInterval(heartbeat);
@@ -906,7 +969,7 @@ export class MacWechatConnector {
     const build = parsePlistString(plist, 'CFBundleVersion');
     const executable = parsePlistString(plist, 'CFBundleExecutable');
     if (bundleId !== WECHAT_BUNDLE_ID) throw new Error('所选应用不是微信官方客户端。');
-    if (!/^4\.1\.\d+(?:\.\d+)?$/u.test(version)) throw new Error('仅支持微信 4.1.x。');
+    if (!/^4\.[12]\.\d+(?:\.\d+)?$/u.test(version)) throw new Error('仅支持微信 4.1.x 或 4.2.x。');
     const signature = await this.execute('/usr/bin/codesign', ['-d', '--verbose=4', sourceApp]);
     const details = `${signature.stdout}\n${signature.stderr}`;
     if (!/Authority=Developer ID Application: Tencent\b/u.test(details) ||

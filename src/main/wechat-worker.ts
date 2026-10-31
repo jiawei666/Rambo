@@ -14,6 +14,11 @@ import {
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decodeWechatMessageContent, parseWechatMessageContent } from './wechat-content';
+import {
+  decryptWechatV2ImageDat,
+  deriveWechatImageKeyCandidates,
+  type WechatImageKey
+} from './wechat-image-key';
 import { decryptWechatDatabase } from './wechat-sqlcipher';
 
 /**
@@ -40,6 +45,8 @@ export interface WechatWorkerBaseRequest {
   databases: WechatWorkerDatabaseInput[];
   /** Used only for the local image key derivation needed by V2 .dat files. */
   accountId?: string;
+  /** Independently captured and verified image key; database keys cannot decrypt media. */
+  imageKey?: WechatImageKey;
 }
 
 export interface WechatWorkerSessionQuery {
@@ -107,6 +114,7 @@ export interface WechatWorkerMediaRef {
   mimeType: string | null;
   size: number | null;
   resourceHandle: string | null;
+  transcription?: string | null;
   diagnostics?: string[];
 }
 
@@ -139,6 +147,7 @@ export interface WechatWorkerMediaResult {
   fileName: string | null;
   size: number | null;
   bytes?: Uint8Array;
+  transcription?: string | null;
   limitation?: string;
   diagnostics: string[];
 }
@@ -168,6 +177,8 @@ type SqlDatabase = InstanceType<typeof DatabaseSync>;
 interface OpenDatabase {
   path: string;
   db: SqlDatabase;
+  /** True when the base database was readable but its WAL snapshot was rejected. */
+  walFallback?: boolean;
 }
 
 interface CursorState {
@@ -184,6 +195,7 @@ interface MediaHandleState {
   accountId: string;
   voiceServerId: string | null;
   voiceSessionId: string | null;
+  transcription: string | null;
   createdAt: number;
 }
 
@@ -417,14 +429,52 @@ function openDatabases(
       const encrypted = readFileSync(path);
       const walPath = walPathFor(path);
       const wal = walPath ? readFileSync(walPath) : Buffer.alloc(0);
-      const plain = decryptWechatDatabase(keyBytes(input.key), encrypted, wal);
-      opened.push({ path: input.path, db: openDatabase(plain) });
+      try {
+        const plain = decryptWechatDatabase(keyBytes(input.key), encrypted, wal);
+        const database = openDatabase(plain);
+        try {
+          database.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
+        } catch (error) {
+          database.close();
+          throw error;
+        }
+        opened.push({ path: input.path, db: database });
+      } catch (error) {
+        if (!wal.length || !allowsWalFallback(error)) throw error;
+        // WeChat 4.2 may leave a WAL whose committed frame set cannot produce
+        // a valid SQLite snapshot. Keep the already-verified base database
+        // readable, but let coverage disclose that the latest commit is absent.
+        const plainBase = decryptWechatDatabase(
+          keyBytes(input.key),
+          encrypted,
+          Buffer.alloc(0)
+        );
+        opened.push({
+          path: input.path,
+          db: openDatabase(plainBase),
+          walFallback: true
+        });
+      }
     } catch (error) {
       if (error instanceof WechatWorkerProtocolError && error.code === 'PATH_ESCAPE') throw error;
       skipped.push({ path: input.path, reason: databaseFailureReason(error) });
     }
   }
   return { opened, skipped };
+}
+
+function allowsWalFallback(error: unknown): boolean {
+  const details = error && typeof error === 'object'
+    ? error as { code?: unknown; message?: unknown }
+    : {};
+  const code = String(details.code ?? '').toUpperCase();
+  const message = String(details.message ?? error ?? '').toLowerCase();
+  return code.startsWith('ERR_SQLITE') ||
+    code.startsWith('SQLITE_') ||
+    message.includes('sqlite') ||
+    message.includes('database') ||
+    message.includes('malformed') ||
+    message.includes('not a database');
 }
 
 function databaseFailureReason(error: unknown): string {
@@ -510,14 +560,21 @@ function makeCoverage(
   skipped: Array<{ path: string; reason: string }>,
   notes: string[] = []
 ): WechatWorkerCoverage {
+  const walFallbackCount = opened.filter(item => item.walFallback).length;
+  const coverageNotes = [...notes];
+  if (walFallbackCount > 0) {
+    coverageNotes.push(
+      `有 ${walFallbackCount} 个数据库的 WAL 回放结果不可用，已读取基础数据库；查询可能不包含最新提交`
+    );
+  }
   return {
     start,
     end,
     localOnly: true,
-    complete: skipped.length === 0,
+    complete: skipped.length === 0 && walFallbackCount === 0,
     databasePaths: opened.map(item => item.path),
     skippedDatabases: skipped,
-    notes: [...notes]
+    notes: coverageNotes
   };
 }
 
@@ -675,6 +732,7 @@ function monthFor(iso: string): string {
 }
 
 function mimeForBytes(bytes: Uint8Array): string | null {
+  if (bytes.length >= 4 && Buffer.from(bytes.subarray(0, 4)).toString('ascii') === 'wxgf') return 'image/wxgf';
   if (bytes.length >= 8 && Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
   if (bytes.length >= 6 && Buffer.from(bytes.subarray(0, 6)).toString('ascii').startsWith('GIF8')) return 'image/gif';
@@ -729,27 +787,43 @@ function voiceKey(sessionId: string, serverId: string): string {
   return `${sessionId}\u0000${serverId}`;
 }
 
-function imageKeyCandidates(root: string, accountId: string): Array<{ aes: Buffer; xor: number }> {
-  const documents = resolve(root, '../../');
-  const directories = [
+function imageKeyCandidates(
+  root: string,
+  accountId: string,
+  imageKey?: WechatImageKey
+): Array<{ aes: Buffer; xor: number }> {
+  if (imageKey) return [{ aes: Buffer.from(imageKey.aesKey, 'ascii'), xor: imageKey.xorKey }];
+  const documents = resolve(root, '../..');
+  const containerData = resolve(documents, '..');
+  const directories = [...new Set([
     join(documents, 'app_data/net/kvcomm'),
     join(documents, 'xwechat/net/kvcomm'),
     join(documents, 'app_data/ilink/kvcomm'),
-    join(documents, 'app_data/roam/ilink/kvcomm')
-  ];
+    join(documents, 'app_data/roam/ilink/kvcomm'),
+    join(containerData, 'Library/Application Support/com.tencent.xinWeChat/xwechat/net/kvcomm'),
+    join(containerData, 'Library/Application Support/com.tencent.xinWeChat/net/kvcomm')
+  ])];
   const codes = new Set<number>();
   for (const directory of directories) {
     try {
       for (const entry of readdirSync(directory)) {
         const match = /^key_(\d+)_/u.exec(entry);
-        if (match) codes.add(Number(match[1]));
+        if (!match) continue;
+        const code = Number(match[1]);
+        if (Number.isSafeInteger(code) && code >= 0 && code <= 0xffffffff) codes.add(code);
       }
     } catch { /* optional directory */ }
   }
-  return [...codes].filter(Number.isSafeInteger).map(code => ({
-    aes: Buffer.from(createHash('md5').update(`${code}${accountId}`).digest('hex').slice(0, 32), 'ascii'),
-    xor: code & 0xff
-  }));
+  const seen = new Set<string>();
+  const candidates: Array<{ aes: Buffer; xor: number }> = [];
+  for (const key of deriveWechatImageKeyCandidates(codes, accountId)) {
+    const aes = Buffer.from(key.aesKey, 'ascii');
+    const identity = `${key.aesKey}:${key.xorKey}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    candidates.push({ aes, xor: key.xorKey });
+  }
+  return candidates;
 }
 
 function decryptEcbHead(head: Buffer, key: Buffer): Buffer | null {
@@ -762,7 +836,12 @@ function decryptEcbHead(head: Buffer, key: Buffer): Buffer | null {
   }
 }
 
-function decryptImageDat(bytes: Buffer, root: string, accountId: string): { bytes: Buffer; mimeType: string } | null {
+function decryptImageDat(
+  bytes: Buffer,
+  root: string,
+  accountId: string,
+  imageKey?: WechatImageKey
+): { bytes: Buffer; mimeType: string } | null {
   const directMime = mimeForBytes(bytes);
   if (directMime?.startsWith('image/')) return { bytes, mimeType: directMime };
   const oldHeaders = [Buffer.from([0xff, 0xd8, 0xff]), Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.from('GIF8')];
@@ -783,10 +862,17 @@ function decryptImageDat(bytes: Buffer, root: string, accountId: string): { byte
   const body = bytes.subarray(15);
   const paddedSize = (Math.floor(aesSize / 16) + 1) * 16;
   if (paddedSize > body.length || xorSize > body.length - paddedSize) return null;
-  const keys = version === 0x31
-    ? [{ aes: Buffer.from('cfcd208495d565ef', 'ascii'), xor: 0 }]
-    : imageKeyCandidates(root, accountId);
-  for (const key of keys) {
+  if (version === 0x32) {
+    for (const key of imageKeyCandidates(root, accountId, imageKey)) {
+      const decoded = decryptWechatV2ImageDat(bytes, {
+        aesKey: key.aes.toString('ascii'),
+        xorKey: key.xor
+      });
+      if (decoded) return decoded;
+    }
+    return null;
+  }
+  for (const key of [{ aes: Buffer.from('cfcd208495d565ef', 'ascii'), xor: 0 }]) {
     const decryptedHead = decryptEcbHead(body.subarray(0, paddedSize), key.aes);
     if (!decryptedHead) continue;
     const padding = decryptedHead.at(-1) ?? 0;
@@ -809,6 +895,7 @@ interface LocatedMedia {
   mimeType: string | null;
   size: number | null;
   fileName: string | null;
+  transcription?: string | null;
   voiceServerId?: string;
   voiceSessionId?: string;
   limitation?: string;
@@ -879,11 +966,13 @@ function voiceRows(
     const query = hasNames
       ? `SELECT IFNULL(v.svr_id,0) AS server_id, IFNULL(n.user_name,'') AS session_id, v.voice_data
          FROM VoiceInfo v LEFT JOIN Name2Id n ON n.rowid=v.chat_name_id
-         WHERE (?1 IS NULL OR n.user_name=?1) AND (?2 IS NULL OR v.svr_id=?2) AND length(v.voice_data)>0`
+         WHERE (?1 IS NULL OR n.user_name=?1) AND (?2 IS NULL OR CAST(v.svr_id AS TEXT)=?2) AND length(v.voice_data)>0`
       : `SELECT IFNULL(v.svr_id,0) AS server_id, '' AS session_id, v.voice_data
          FROM VoiceInfo v
-         WHERE (?1 IS NULL OR v.svr_id=?2) AND length(v.voice_data)>0`;
-    const rows = db.prepare(query).all(sessionId, serverId) as SqlRow[];
+         WHERE (?1 IS NULL OR CAST(v.svr_id AS TEXT)=?2) AND length(v.voice_data)>0`;
+    const statement = db.prepare(query);
+    statement.setReadBigInts(true);
+    const rows = statement.all(sessionId, serverId) as SqlRow[];
     return rows.map(row => ({
       serverId: stringValue(row.server_id) ?? '',
       sessionId: stringValue(row.session_id) ?? '',
@@ -962,6 +1051,7 @@ function locateMessageMedia(
       mimeType: 'audio/silk',
       size: voice.size,
       fileName: `voice-${voice.serverId}.silk`,
+      transcription: stringValue(descriptor.transcription),
       voiceServerId: voice.serverId,
       voiceSessionId: voice.sessionId
     };
@@ -1044,6 +1134,7 @@ function registerMedia(root: string, accountId: string, located: LocatedMedia): 
     accountId,
     voiceServerId: located.voiceServerId ?? null,
     voiceSessionId: located.voiceSessionId ?? null,
+    transcription: located.transcription ?? null,
     createdAt: Date.now()
   });
   return handle;
@@ -1052,6 +1143,7 @@ function registerMedia(root: string, accountId: string, located: LocatedMedia): 
 function mediaRef(
   root: string,
   accountId: string,
+  imageKey: WechatImageKey | undefined,
   mediaId: string,
   descriptor: Record<string, unknown>,
   sessionId: string,
@@ -1063,7 +1155,7 @@ function mediaRef(
   let mimeType = located.mimeType;
   if (located.path && (located.kind === 'image' || located.kind === 'thumbnail' || located.kind === 'sticker')) {
     try {
-      const decoded = decryptImageDat(readFileSync(located.path), root, accountId);
+      const decoded = decryptImageDat(readFileSync(located.path), root, accountId, imageKey);
       mimeType = decoded?.mimeType ?? mimeType;
     } catch { /* status remains explicit */ }
   }
@@ -1074,6 +1166,7 @@ function mediaRef(
     mimeType,
     size: located.size,
     resourceHandle: registerMedia(root, accountId, located),
+    ...(located.transcription ? { transcription: located.transcription } : {}),
     ...(located.limitation ? { diagnostics: [located.limitation] } : {})
   };
 }
@@ -1081,6 +1174,7 @@ function mediaRef(
 function messageFromRow(
   root: string,
   accountId: string,
+  imageKey: WechatImageKey | undefined,
   names: Map<string, string>,
   row: RawMessage,
   voiceAvailability: Map<string, LocatedVoice>
@@ -1094,6 +1188,7 @@ function messageFromRow(
   const media = parsed.mediaDescriptors.map((descriptor, index) => mediaRef(
     root,
     accountId,
+    imageKey,
     `${messageId}:${index}`,
     descriptor as unknown as Record<string, unknown>,
     row.sessionId,
@@ -1127,11 +1222,12 @@ function messageFromRow(
 function buildMessage(
   root: string,
   accountId: string,
+  imageKey: WechatImageKey | undefined,
   names: Map<string, string>,
   row: RawMessage,
   voiceAvailability: Map<string, LocatedVoice>
 ): WechatWorkerMessage {
-  return messageFromRow(root, accountId, names, row, voiceAvailability);
+  return messageFromRow(root, accountId, imageKey, names, row, voiceAvailability);
 }
 
 function sessionDatabases(inputs: WechatWorkerDatabaseInput[]): (path: string) => boolean {
@@ -1221,7 +1317,14 @@ function queryMessages(
   const context = contactsAndSession(root, inputs, openDatabase);
   const rows = readMessageRows(messageResult.opened, sessionIds, range.startSeconds, range.endSeconds, messageResult.skipped);
   const voiceAvailability = collectVoiceAvailability(mediaResult.opened);
-  const items = rows.map(row => buildMessage(root, request.accountId ?? basename(root), context.names, row, voiceAvailability));
+  const items = rows.map(row => buildMessage(
+    root,
+    request.accountId ?? basename(root),
+    request.imageKey,
+    context.names,
+    row,
+    voiceAvailability
+  ));
   closeDatabases(messageResult.opened);
   closeDatabases(mediaResult.opened);
   closeDatabases(context.opened);
@@ -1275,7 +1378,14 @@ function querySearch(
   const allowedTypes = request.query.messageTypes?.length ? new Set(request.query.messageTypes) : null;
   const voiceAvailability = collectVoiceAvailability(mediaResult.opened);
   const items = rows
-    .map(row => buildMessage(root, request.accountId ?? basename(root), context.names, row, voiceAvailability))
+    .map(row => buildMessage(
+      root,
+      request.accountId ?? basename(root),
+      request.imageKey,
+      context.names,
+      row,
+      voiceAvailability
+    ))
     .filter(message => (!allowedTypes || allowedTypes.has(message.type)) && searchableMessage(message).toLocaleLowerCase().includes(lowered));
   closeDatabases(messageResult.opened);
   closeDatabases(mediaResult.opened);
@@ -1391,6 +1501,7 @@ function readMedia(
           fileName,
           size: row.bytes.length,
           bytes: new Uint8Array(row.bytes),
+          ...(state.transcription ? { transcription: state.transcription } : {}),
           ...(mimeType === 'audio/silk'
             ? { limitation: '本机保存的是原始 SILK；当前动态 Tool 会以 audio/silk 交给 Agent，未伪装成 WAV。' }
             : {}),
@@ -1443,7 +1554,7 @@ function readMedia(
   let output = bytes;
   let mimeType = mimeForFileName(fileName) ?? mimeForBytes(bytes);
   if (state.kind === 'image' || state.kind === 'thumbnail' || state.kind === 'sticker') {
-    const decoded = decryptImageDat(bytes, root, state.accountId);
+    const decoded = decryptImageDat(bytes, root, state.accountId, request.imageKey);
     if (decoded) {
       output = decoded.bytes;
       mimeType = decoded.mimeType;
@@ -1470,12 +1581,25 @@ function validateBaseRequest(value: unknown): WechatWorkerBaseRequest {
   const root = validateDataDirectory(record.dataDirectory);
   const databases = databaseInputList(record as unknown as WechatWorkerBaseRequest);
   validateDatabaseBoundaries(root, databases);
+  const imageKey = record.imageKey === undefined ? undefined : asRecord(record.imageKey);
+  if (record.imageKey !== undefined &&
+      (!imageKey ||
+       typeof imageKey.aesKey !== 'string' ||
+       !/^[a-f0-9]{16}$/iu.test(imageKey.aesKey) ||
+       !Number.isInteger(imageKey.xorKey) ||
+       Number(imageKey.xorKey) < 0 ||
+       Number(imageKey.xorKey) > 0xff)) {
+    protocolError('INVALID_IMAGE_KEY', '微信图片密钥格式无效');
+  }
   return {
     id: record.id,
     operation: record.operation as WechatWorkerOperation,
     dataDirectory: root,
     databases,
-    accountId: typeof record.accountId === 'string' && record.accountId ? record.accountId : undefined
+    accountId: typeof record.accountId === 'string' && record.accountId ? record.accountId : undefined,
+    ...(imageKey
+      ? { imageKey: { aesKey: imageKey.aesKey as string, xorKey: Number(imageKey.xorKey) } }
+      : {})
   };
 }
 

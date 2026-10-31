@@ -546,27 +546,79 @@ test('密钥安全输入框只把正文交给宿主并清除界面状态', async
   )).toBe(true);
 });
 
-test('连接应用市场显示五个应用、品牌图标并适配明暗主题', async ({ electron }) => {
+test('连接应用市场显示六个应用、品牌图标并适配明暗主题', async ({ electron }) => {
   const page = electron.page;
   await openConnectors(page);
   await expect(page.getByRole('heading', { name: '连接应用', exact: true })).toBeVisible();
-  await expect(page.getByRole('article')).toHaveCount(5);
+  await expect(page.getByRole('article')).toHaveCount(6);
   await expect(page.getByRole('button', { name: '全部', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('article').filter({ hasText: 'Gmail' })).toBeVisible();
   await expect(page.getByRole('article').filter({ hasText: 'QQ 邮箱' })).toBeVisible();
-  for (const name of ['Gmail', 'QQ 邮箱', '微信', '日历', 'GitHub']) {
+  for (const name of ['Gmail', 'QQ 邮箱', '微信', 'CloakBrowser', '日历', 'GitHub']) {
     const card = page.getByRole('article').filter({ hasText: name });
     await expectUnframedConnectorLogo(card.locator('.connector-icon-has-logo'));
     if (name === '日历') {
       expect(await card.locator('img.connector-provider-logo').evaluate(image => image.naturalWidth)).toBe(256);
     }
+    if (name === 'CloakBrowser') {
+      const icon = card.locator('img.connector-provider-logo');
+      expect(await icon.evaluate(image => image.naturalWidth)).toBe(500);
+      const alpha = await icon.evaluate(async image => {
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('无法读取 CloakBrowser 图标 Alpha');
+        context.drawImage(image, 0, 0);
+        const cornerPoints = [
+          [0, 0],
+          [canvas.width - 1, 0],
+          [0, canvas.height - 1],
+          [canvas.width - 1, canvas.height - 1]
+        ];
+        return {
+          corners: cornerPoints.map(([x, y]) => context.getImageData(x, y, 1, 1).data[3]),
+          center: context.getImageData(
+            Math.floor(canvas.width / 2),
+            Math.floor(canvas.height / 2),
+            1,
+            1
+          ).data[3]
+        };
+      });
+      expect(alpha.corners).toEqual([0, 0, 0, 0]);
+      expect(alpha.center).toBeGreaterThan(0);
+    }
   }
-  const gmailConnectButton = page.getByRole('article').filter({ hasText: 'Gmail' })
-    .getByRole('button', { name: '连接', exact: true });
-  await expect(gmailConnectButton.locator('svg')).toHaveCount(0);
+  const recommendedSection = page.locator('section[aria-label="推荐"]');
+  const recommendedNames = ['微信', 'Gmail', 'QQ 邮箱', 'CloakBrowser'];
+  await expect(recommendedSection.getByRole('article')).toHaveCount(recommendedNames.length);
+  for (const name of recommendedNames) {
+    await expect(recommendedSection.getByRole('article').filter({ hasText: name })).toBeVisible();
+  }
+  const allAppsSection = page.locator('section[aria-label="所有应用"]');
+  await expect(allAppsSection.getByRole('article')).toHaveCount(2);
+  for (const name of ['日历', 'GitHub']) {
+    await expect(allAppsSection.getByRole('article').filter({ hasText: name })).toBeVisible();
+  }
+  const cloakBrowserCard = page.getByRole('article').filter({ hasText: 'CloakBrowser' });
+  await expect(cloakBrowserCard).toBeVisible();
+  await expect(cloakBrowserCard).toContainText(
+    '可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。'
+  );
+  await expect(cloakBrowserCard.locator('.connector-icon-has-logo img')).toBeVisible();
+  const connectButtons = [
+    page.getByRole('article').filter({ hasText: 'Gmail' }).getByRole('button', { name: '连接', exact: true }),
+    page.getByRole('article').filter({ hasText: 'QQ 邮箱' }).getByRole('button', { name: '连接', exact: true }),
+    page.getByRole('article').filter({ hasText: '微信' }).getByRole('button', { name: '连接', exact: true }),
+    cloakBrowserCard.getByRole('button', { name: '安装并连接', exact: true })
+  ];
+  for (const button of connectButtons) await expect(button.locator('svg')).toHaveCount(0);
   for (const colorScheme of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme });
-    const contrast = await gmailConnectButton.evaluate(button => {
+    for (const button of connectButtons) {
+      const contrast = await button.evaluate(button => {
       const channels = (value) => value.match(/[\d.]+/g).slice(0, 3).map(Number);
       const luminance = value => channels(value).map(channel => {
         const normalized = channel / 255;
@@ -581,9 +633,10 @@ test('连接应用市场显示五个应用、品牌图标并适配明暗主题',
         background: style.backgroundColor,
         prefersDark: matchMedia('(prefers-color-scheme: dark)').matches
       };
-    });
-    expect(contrast.ratio,
-      `${colorScheme} theme connect button contrast ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+      });
+      expect(contrast.ratio,
+        `${colorScheme} theme ${await button.textContent()} contrast ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+    }
   }
   await page.emulateMedia({ colorScheme: 'light' });
   for (const name of ['日历', 'GitHub']) {
@@ -599,6 +652,20 @@ test('连接应用市场显示五个应用、品牌图标并适配明暗主题',
   await expect(page.getByRole('article').filter({ hasText: 'Gmail' })).toHaveCount(0);
   await page.getByRole('button', { name: '清除搜索' }).click();
   await expect(page.getByRole('article').filter({ hasText: 'Gmail' })).toBeVisible();
+
+  await cloakBrowserCard.getByRole('button', { name: '安装并连接', exact: true }).click();
+  const cloakBrowserDialog = page.getByRole('dialog', { name: 'CloakBrowser' });
+  await expect(cloakBrowserDialog).toBeVisible();
+  await expect(cloakBrowserDialog.getByText(
+    '可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。',
+    { exact: true }
+  )).toBeVisible();
+  await expect(cloakBrowserDialog.getByText('独立增强浏览器', { exact: true })).toBeVisible();
+  await expect(cloakBrowserDialog.getByText('共享登录态', { exact: true })).toBeVisible();
+  await expect(cloakBrowserDialog.getByText(/只授权可信 Bot/)).toBeVisible();
+  await expect(cloakBrowserDialog.getByRole('button', { name: '安装并连接', exact: true })).toBeVisible();
+  await cloakBrowserDialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(cloakBrowserDialog).toHaveCount(0);
 
   const qqCard = page.getByRole('article').filter({ hasText: 'QQ 邮箱' });
   await qqCard.getByRole('button', { name: '连接', exact: true }).click();

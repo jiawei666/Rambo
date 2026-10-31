@@ -292,7 +292,8 @@ test('WeChat SQLCipher credentials round-trip an absolute account directory and 
       },
       dataDirectory: '/Users/example/Library/Containers/com.tencent.xinWeChat/Data/Profile',
       wechatVersion: '4.1.15',
-      wechatBuild: '270135'
+      wechatBuild: '270135',
+      imageKey: { aesKey: '0123456789abcdef', xorKey: 82 }
     });
     assert.deepEqual(store.load(reference), {
       kind: 'wechat-sqlcipher',
@@ -309,7 +310,8 @@ test('WeChat SQLCipher credentials round-trip an absolute account directory and 
       },
       dataDirectory: '/Users/example/Library/Containers/com.tencent.xinWeChat/Data/Profile',
       wechatVersion: '4.1.15',
-      wechatBuild: '270135'
+      wechatBuild: '270135',
+      imageKey: { aesKey: '0123456789abcdef', xorKey: 82 }
     });
     const validKeys = { 'session/session.db': { encKey: 'ab'.repeat(32), salt: 'cd'.repeat(16) } };
     for (const payload of [
@@ -318,7 +320,9 @@ test('WeChat SQLCipher credentials round-trip an absolute account directory and 
       { accountId: 'wxid', keys: { 'session/session.db': { encKey: 'abcd', salt: null } }, dataDirectory: '/tmp/wechat', wechatVersion: '4.1.15', wechatBuild: '270135' },
       { accountId: 'wxid', keys: validKeys, dataDirectory: 'relative/profile', wechatVersion: '4.1.15', wechatBuild: '270135' },
       { accountId: 'wxid', keys: validKeys, dataDirectory: '/tmp/wechat', wechatVersion: '', wechatBuild: '270135' },
-      { accountId: 'wxid', keys: validKeys, dataDirectory: '/tmp/wechat', wechatVersion: '4.1.15', wechatBuild: '' }
+      { accountId: 'wxid', keys: validKeys, dataDirectory: '/tmp/wechat', wechatVersion: '4.1.15', wechatBuild: '' },
+      { accountId: 'wxid', keys: validKeys, dataDirectory: '/tmp/wechat', wechatVersion: '4.1.15', wechatBuild: '270135', imageKey: { aesKey: 'short', xorKey: 82 } },
+      { accountId: 'wxid', keys: validKeys, dataDirectory: '/tmp/wechat', wechatVersion: '4.1.15', wechatBuild: '270135', imageKey: { aesKey: '0123456789abcdef', xorKey: 256 } }
     ]) {
       assert.throws(() => store.save(connectionId, {
         kind: 'wechat-sqlcipher', ...payload

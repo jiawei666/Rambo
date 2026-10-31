@@ -139,6 +139,7 @@ test('WeChat media requests pass all credential database keys, including media d
           fileName: 'voice.wav',
           size: 4,
           bytes: new Uint8Array([82, 73, 70, 70]),
+          transcription: '周六见',
           diagnostics: []
         }
       };
@@ -153,6 +154,7 @@ test('WeChat media requests pass all credential database keys, including media d
   const credential = {
     kind: 'wechat-sqlcipher', accountId: 'wxid_example', dataDirectory: '/tmp/wechat-profile',
     wechatVersion: '4.1.15', wechatBuild: '270135',
+    imageKey: { aesKey: '0123456789abcdef', xorKey: 82 },
     keys: {
       'message/message_0.db': { encKey: 'ab'.repeat(32), salt: null },
       'message/media_0.db': { encKey: 'cd'.repeat(32), salt: null }
@@ -160,7 +162,9 @@ test('WeChat media requests pass all credential database keys, including media d
   };
   const result = await reader.readMedia(connection, credential, 'ab'.repeat(16));
   assert.equal(result.mimeType, 'audio/wav');
+  assert.equal(result.transcription, '周六见');
   assert.deepEqual([...result.bytes], [82, 73, 70, 70]);
+  assert.deepEqual(captured.imageKey, { aesKey: '0123456789abcdef', xorKey: 82 });
   assert.deepEqual(captured.databases.map(item => item.path), [
     'message/media_0.db',
     'message/message_0.db'

@@ -15,6 +15,7 @@ import {
 } from 'react';
 import appAvatarUrl from '../../assets/branding/app-logo-source.png';
 import calendarLogo from '../../assets/connectors/calendar.png';
+import cloakBrowserLogo from '../../assets/connectors/cloakbrowser.png';
 import gmailLogo from '../../assets/connectors/gmail.png';
 import githubLogo from '../../assets/connectors/github.png';
 import qqMailLogo from '../../assets/connectors/qqmail.png';
@@ -368,11 +369,13 @@ const CONNECTOR_CATEGORY_LABELS: Record<ConnectorCategory | 'all' | 'connected',
   other: '其他'
 };
 
-const CONNECTOR_FEATURED_ORDER = ['wechat', 'gmail', 'qqmail', 'calendar', 'github'];
+const CONNECTOR_DISPLAY_ORDER = ['wechat', 'gmail', 'qqmail', 'cloakbrowser', 'calendar', 'github'];
+const CONNECTOR_RECOMMENDED_IDS = new Set(['wechat', 'gmail', 'qqmail', 'cloakbrowser']);
 const CONNECTOR_LOGOS: Record<string, string> = {
   wechat: wechatLogo,
   gmail: gmailLogo,
   qqmail: qqMailLogo,
+  cloakbrowser: cloakBrowserLogo,
   calendar: calendarLogo,
   github: githubLogo
 };
@@ -2457,8 +2460,8 @@ function ConnectorsPage({
     else connectionsByProvider.set(connection.providerId, [connection]);
   }
   const sortedProviders = [...providers].sort((left, right) => {
-    const leftIndex = CONNECTOR_FEATURED_ORDER.indexOf(left.id);
-    const rightIndex = CONNECTOR_FEATURED_ORDER.indexOf(right.id);
+    const leftIndex = CONNECTOR_DISPLAY_ORDER.indexOf(left.id);
+    const rightIndex = CONNECTOR_DISPLAY_ORDER.indexOf(right.id);
     return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
   });
   const filtered = sortedProviders.filter(provider => {
@@ -2471,7 +2474,7 @@ function ConnectorsPage({
   });
   const isHomepage = category === 'all' && !normalizedQuery;
   const featured = isHomepage
-    ? filtered.filter(provider => provider.id === 'gmail' || provider.id === 'qqmail')
+    ? filtered.filter(provider => CONNECTOR_RECOMMENDED_IDS.has(provider.id))
     : [];
   const remaining = isHomepage ? filtered.filter(provider => !featured.includes(provider)) : filtered;
   const categoryOrder: ConnectorCategory[] = [
@@ -2688,7 +2691,9 @@ function ConnectorCard({
           <button type="button" className="connector-primary-button"
             disabled={!provider.available}
             onClick={() => onConnect(provider)}>
-            {provider.available ? '连接' : '即将推出'}
+            {provider.available
+              ? provider.id === 'cloakbrowser' ? '安装并连接' : '连接'
+              : '即将推出'}
           </button>
         )}
       </div>
@@ -2774,6 +2779,7 @@ function ConnectorDialog({
   const [error, setError] = useState<string | null>(null);
   const cancelledRef = useRef(false);
   const isManage = mode === 'manage' && connection;
+  const isCloakBrowser = provider.id === 'cloakbrowser';
   useEffect(() => {
     if (!connection) return;
     setGrantedIds(new Set(
@@ -2790,7 +2796,7 @@ function ConnectorDialog({
   }, [busy, oauthWaiting, onClose]);
 
   useEffect(() => () => {
-    if (challenge?.providerId === 'wechat') {
+    if (challenge?.providerId === 'wechat' || challenge?.providerId === 'cloakbrowser') {
       void window.rambo.cancelConnectorAuth(challenge).catch(() => {});
     }
   }, [challenge?.connectionId]);
@@ -2825,7 +2831,7 @@ function ConnectorDialog({
   }), [challenge?.connectionId, connectorPhase]);
 
   useEffect(() => {
-    if (!oauthWaiting || provider.id !== 'wechat') return;
+    if (!oauthWaiting || (provider.id !== 'wechat' && provider.id !== 'cloakbrowser')) return;
     const timer = window.setInterval(() => setConnectorClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [oauthWaiting, provider.id]);
@@ -2925,6 +2931,54 @@ function ConnectorDialog({
     }
   };
 
+  const startCloakBrowserConnect = async () => {
+    cancelledRef.current = false;
+    const startedAt = Date.now();
+    connectorStartedAtRef.current = startedAt;
+    setConnectorClock(startedAt);
+    setBusy(true);
+    setError(null);
+    setOauthWaiting(true);
+    setConnectorPhase('checking-prerequisites');
+    setConnectorProgress('正在准备 CloakBrowser 安装…');
+    setConnectorLog([{
+      phase: 'checking-prerequisites',
+      message: '正在准备 CloakBrowser 安装…',
+      timestamp: startedAt
+    }]);
+    try {
+      let activeChallenge = challenge;
+      if (!activeChallenge) {
+        const started = await window.rambo.beginConnectorAuth(
+          provider.id,
+          displayName.trim() || provider.name
+        );
+        activeChallenge = started.challenge;
+        setChallenge(activeChallenge);
+      }
+      const connection = await window.rambo.openConnectorAuth(activeChallenge);
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      setBusy(true);
+      await onOAuthComplete(connection);
+    } catch (issue) {
+      if (cancelledRef.current) return;
+      setOauthWaiting(false);
+      setConnectorPhase('failed');
+      const message = toError(issue);
+      setError(message);
+      const safeMessage = safeConnectorLogMessage(`安装失败：${message}`);
+      setConnectorProgress(safeMessage);
+      setConnectorLog(current => appendConnectorProgress(current, {
+        phase: 'failed',
+        message: safeMessage,
+        timestamp: Date.now()
+      }));
+    } finally {
+      if (!cancelledRef.current) setBusy(false);
+    }
+  };
+
   const finishWechatCapture = async () => {
     if (!challenge || !canFinishCapture || captureFinishingRef.current) return;
     captureFinishingRef.current = true;
@@ -2987,13 +3041,14 @@ function ConnectorDialog({
     setCaptureFinishing(false);
     setError(null);
     const cancelledAt = Date.now();
-    setConnectorProgress('已取消微信连接。');
+    const cancelledMessage = isCloakBrowser ? '已取消 CloakBrowser 安装。' : '已取消微信连接。';
+    setConnectorProgress(cancelledMessage);
     setConnectorLog(current => appendConnectorProgress(current, {
       phase: 'cancelled',
-      message: '已取消微信连接。',
+      message: cancelledMessage,
       timestamp: cancelledAt
     }));
-    if (challenge?.providerId === 'wechat') {
+    if (challenge?.providerId === 'wechat' || challenge?.providerId === 'cloakbrowser') {
       await window.rambo.cancelConnectorAuth(challenge).catch(() => {});
     }
     setChallenge(null);
@@ -3036,6 +3091,16 @@ function ConnectorDialog({
                 {connectionStatusLabel(connection.status)}
               </span>
             </div>
+            {isCloakBrowser && (
+              <div className="connector-auth-note connector-auth-note-warning">
+                <span className="connector-auth-note-icon"><Icon name="connectors" size={20} /></span>
+                <div>
+                  <strong>共享持久 profile</strong>
+                  <p>所有获授权的 Bot 共用同一个 Chromium profile，会看到彼此的 Cookie、历史、扩展和标签页影响。只授权可信 Bot。</p>
+                  <small>断开连接只停止服务并保留 profile 与缓存；清除登录数据必须走单独的明确操作。</small>
+                </div>
+              </div>
+            )}
             <div className="connector-dialog-section">
               <div className="connector-dialog-section-heading">
                 <h3>Bot 访问权限</h3>
@@ -3094,6 +3159,73 @@ function ConnectorDialog({
                 }}>断开连接</button>
               <span className="connector-dialog-footer-spacer" />
               <button type="button" className="primary-button" disabled={busy} onClick={onClose}>完成</button>
+            </footer>
+          </>
+        ) : provider.id === 'cloakbrowser' ? (
+          <>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="connectors" size={20} /></span>
+              <div>
+                <strong>独立增强浏览器</strong>
+                <p>CloakBrowser 是独立安装的修改版 Chromium，不会接管当前 Chrome 标签页。Rambo 会建立一个共享持久 profile，并通过本机串行代理向获授权 Bot 提供 MCP 工具。</p>
+                <small>它不是 Google Chrome；也不承诺绕过所有反爬、验证码、登录或二次验证。网站拒绝时 Bot 会如实返回。</small>
+              </div>
+            </div>
+            <div className="connector-auth-note connector-auth-note-warning">
+              <span className="connector-auth-note-icon"><Icon name="account" size={20} /></span>
+              <div>
+                <strong>共享登录态</strong>
+                <p>授权给多个 Bot 后，它们共享 Cookie、历史、扩展和标签页状态。新建 Bot 默认无 Grant；复制 Bot 会按现有规则继承 Grant。</p>
+                <small>只授权可信 Bot。撤销 Grant 会立即使该 Bot 的旧 token 失效，下一次线程配置也会移除 CloakBrowser。</small>
+              </div>
+            </div>
+            <div className="connector-auth-note">
+              <span className="connector-auth-note-icon"><Icon name="check" size={20} /></span>
+              <div>
+                <strong>安装前置条件</strong>
+                <p>需要本机 Node.js 22.13+ 或 24+ 以及 npm/npx。首次运行会下载约 200 MB 的 Chromium 内核，并安装固定版本 CloakBrowser MCP。</p>
+                <small>安装过程显示真实阶段、等待时长和取得的版本，不伪造下载百分比；首次下载最长等待 30 分钟，可随时取消。CloakBrowser 二进制有独立许可，不随 Rambo Release 分发。</small>
+              </div>
+            </div>
+            {(oauthWaiting || connectorLog.length > 0) && (
+              <section className="connector-progress-panel" aria-label="CloakBrowser 安装日志">
+                <header className="connector-progress-heading" aria-busy={oauthWaiting}>
+                  <div className="connector-progress-current" role="status" aria-live="polite">
+                    {oauthWaiting && <span className="connector-progress-spinner" aria-hidden="true" />}
+                    <strong>{connectorProgress ?? '安装日志'}</strong>
+                  </div>
+                  <span>{oauthWaiting
+                    ? formatConnectorElapsed(connectorStartedAtRef.current, connectorClock)
+                    : '本机诊断'}</span>
+                </header>
+                <ol className="connector-progress-log" role="log" aria-live="polite" aria-relevant="additions"
+                  aria-label="CloakBrowser 安装阶段和诊断信息">
+                  {connectorLog.map((entry, index) => (
+                    <li key={`${entry.timestamp}-${index}`} data-phase={entry.phase}>
+                      <time dateTime={new Date(entry.timestamp).toISOString()}>
+                        {new Date(entry.timestamp).toLocaleTimeString('zh-CN', {
+                          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                        })}
+                      </time>
+                      <span>{entry.message}</span>
+                    </li>
+                  ))}
+                </ol>
+                <small className="connector-progress-footnote">只显示真实安装阶段、等待时长和取得的版本；不显示伪造百分比、密钥或浏览器内容。</small>
+              </section>
+            )}
+            {error && <div className="form-error" role="alert">{error}</div>}
+            <footer className="connector-dialog-footer">
+              <button type="button" className="secondary-button" disabled={busy && !oauthWaiting}
+                onClick={() => { if (oauthWaiting) void cancelOAuth(); onClose(); }}>
+                {oauthWaiting ? '取消安装' : '取消'}
+              </button>
+              <span className="connector-dialog-footer-spacer" />
+              <button type="button" className="primary-button"
+                disabled={busy || !challenge || oauthWaiting}
+                onClick={() => void startCloakBrowserConnect()}>
+                {oauthWaiting ? '正在安装…' : busy ? '正在准备…' : '安装并连接'}
+              </button>
             </footer>
           </>
         ) : provider.id === 'wechat' ? (

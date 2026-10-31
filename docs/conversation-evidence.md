@@ -4646,3 +4646,81 @@ Connector 仍需返回稳定的会话与消息身份和时间，使 Bot 能自�
 > 我们的发版 skills 后续构建的时候 要双平台构建 分别用不同的 codes APP server 这个你做了吗？
 
 依据 [决策补充 Q208](decision-followups.md#q208)，正式 GitHub Release 默认同时包含 macOS ARM64 与 Windows x64。两个平台必须分别在匹配的原生构建机打包：macOS 包内置 `aarch64-apple-darwin` App Server，Windows x64 包内置 `x86_64-pc-windows-msvc` App Server；禁止交叉构建或混装其他平台二进制。发版 Skill 新增每平台安装包、SHA-256 和 release metadata 输出，以及合并后的双平台校验命令；任一平台缺包、App Server 版本/target 不符、入口或二进制架构不匹配时停止发布。Windows x64 构建产物仍不等于 Windows 真机安装和产品验收完成。
+
+## 2026-10-31 后续补充 · Q210 CloakBrowser 共享持久 profile
+
+用户确认用 CloakBrowser 作为独立连接应用，并接受多个 Bot 共享同一浏览器 profile。
+
+> CloakBrowser 我想用这个方式我们先讨论一下这个要怎么落地
+
+> 可以 那就按共享的吧
+
+依据 [决策补充 Q210](decision-followups.md#q210)，Rambo 建立一个 CloakBrowser Connection、一个共享持久 profile 和一个上游 Chromium；多个获 Grant 的 Bot 共用 Cookie、历史、扩展和标签页状态，但分别授权并通过本地 HTTP MCP 代理串行调用。Playwright 继续操作当前 Chrome，不与 CloakBrowser 共用 profile 或 MCP 实例。每个 Bot 的代理 token 在每次请求重新校验 Grant，撤销后立即失效；安装/取消/失败/退出不得留下半成品 Connection、profile 锁或浏览器进程。用户尚未单独确认断开时清除 profile 的流程，当前按安全默认保留数据。
+
+## 2026-10-31 后续补充 · Q211 微信保持 4.2 并维持只读工具
+
+用户明确不因发送验证回退微信版本；如果 4.2 无法完成发送，就不发送，只保留现有只读能力。
+
+> 为什么要退回 如果不行的话 我们不要发送了 我们就用 4.2 重签来 还是维持现有几个 tools 就好了
+
+依据 [决策补充 Q211](decision-followups.md#q211)，Rambo 继续使用当前微信 4.2，不新增发送 Tool，也不接入商业 PC 协议或 Frida 发送实验路径。现有 Bot 只保留会话、消息、搜索和媒体四个只读 Tool；若后续恢复 4.2 只读连接，必须按受管临时副本重签、密钥捕获、SQLCipher 解密、真实查询和官方微信在线状态完成独立验收，不能把重签或副本启动单独表述为连接成功。
+
+## 2026-10-31 后续补充 · Q212 CloakBrowser 官方 Logo 与推荐区
+
+用户指定 CloakBrowser 使用其 GitHub 官方 Logo，并要求把微信和 CloakBrowser 都放进连接应用首页的推荐区。
+
+> 给这个应用配一个 logo 用 GitHub 那个官方的 logo
+
+> 把微信跟这个应用都放到推荐里面
+
+依据 [决策补充 Q212](decision-followups.md#q212)，CloakBrowser 使用官方仓库 `CloakHQ/CloakBrowser` 的 `images/avatar.png` 方形头像，本地保存为 `assets/connectors/cloakbrowser.png`（500×500 RGBA，SHA-256 `cd8b3df6aef73bc5012f0c57d6c961dcff698da175d58d434c165932f28cae82`），不再使用 `CB` 文字占位，也不使用 Chrome 或 GitHub 平台 Logo。连接应用首页推荐区包含微信、Gmail、QQ 邮箱和 CloakBrowser；日历与 GitHub 位于“所有应用”。所有品牌图标继续按 40×40 直接显示并保持透明、无边框、无底框和无阴影。
+
+## 2026-10-31 后续补充 · Q213 CloakBrowser 透明图标与 Agent 自动化介绍
+
+用户要求去掉 CloakBrowser 图标的黑色方底，并把介绍改为突出 Agent 自动化执行和常见反爬场景。
+
+> 把它图片的黑底去掉 我们不要底色要透明的
+
+> 这个应用的介绍写成：“可让 Agent 自动化执行的浏览器” 也就是一种类似于不会被很多反爬技术打扰的浏览器 你看一下怎么说
+
+依据 [决策补充 Q213](decision-followups.md#q213)，CloakBrowser 保留官方头像中的图形、配色和字标，移除原始黑色方底后导出为 `assets/connectors/cloakbrowser.png`（500×500 RGBA，SHA-256 `1753262f7f96653fce12bbc04e0405095925683d7b44490f72b38c9383976135`）。四个画布角 Alpha 为 0，Logo 本体保持可见，卡片和弹窗继续按 40×40 透明无框显示。介绍固定为“可让 Agent 自动化执行的浏览器，减少常见反爬机制对任务流程的干扰。”；同时保留不承诺绕过所有反爬、验证码、登录或二次验证的产品边界。
+
+## 2026-10-31 后续补充 · Q214 微信 4.2 图片独立密钥
+
+用户提供 WeFlow 第三方组件说明并询问能否使用重新取得的密钥解密媒体，随后同意继续配合验证。
+
+> 你看看他这个方案我们通过重新拿到的那个密钥 能能用他这个方式来解密媒体吗？
+
+> 好的 我可以配合你
+
+依据 [决策补充 Q214](decision-followups.md#q214)，数据库 SQLCipher key 与图片 key 分离。macOS 微信 4.2 V2 图片 key 从本机 `kvcomm/key_<UIN>_*` 的 UIN 与规范化 wxid 派生，并必须先在真实缓存 DAT 上验证；验证结果与数据库 key 分开加密保存，只在内存解密本机已有图片，不联网补取、不发送、不做界面自动化，也不引入第三方二进制。当前真实样本枚举到 8 个 V2 DAT，成功解出 3,384 字节 JPEG。
+
+正式连接复验已把验证通过的图片 key 写入现有 Connection 的加密凭证，并把固定绑定更新为微信 `4.2.0`（build `270348`）、捕获版本 `rambo-wechat-platform-v4`。在 Bot Grant 以及凭证账号、目录、版本绑定检查通过的条件下，生产 `rambo_wechat` 只读 Tool 连续读取同一张本机 `image/jpeg` 两次，第二次为重新加载加密凭证后读取，均返回 1,019,210 字节；密钥、内部路径和媒体字节未持久化。视频、WXGF、其他容器、Windows 图片链路和官方主微信在线状态仍未验证。
+
+## 2026-10-31 后续补充 · 微信 4.2 语音只读验收
+
+用户继续询问除图片外的语音能力，并要求按原只读链路验证。
+
+> 除了图片 还有那个语音呢？
+
+依据 [T26](product-decisions.md#t26) 的本机媒体只读边界，排查确认媒体库实际存在 2,038 条语音记录，但微信 4.2 的 `VoiceInfo.svr_id` 是 64 位整数；此前 Worker 未以 BigInt 读取，单条超过 JavaScript 安全整数后导致整张语音表读取失败并返回空。修复后使用文本形式匹配稳定 server ID，并仅为“WAL 回放无法生成有效 SQLite 快照”增加基础库回退；覆盖信息会明确标记查询可能不含最新提交。
+
+真实正式 Connection 与 Bot Grant 复验通过：以构建后的 `out/main/wechat-worker.js` 读取最近候选中的 1 条语音消息和 1 个可用媒体，生产 `rambo_wechat` Tool 将本机 `audio/silk` 经内置解码器返回为 `audio/wav`，大小 294,764 字节。本轮未发送微信消息、未操作微信界面、未联网补取、未持久化语音内容或明文密钥。
+
+## 2026-10-31 后续补充 · Q215 微信媒体临时目录
+
+用户要求把微信解密出的语音、图片等媒体放入已经会定时清理的临时附件目录，让 Agent 读取本机路径，而不是把媒体正文继续写入会话。
+
+> 你把微信这边解密出来的语音 图片什么的 也可以放那个目录那里 是会定时清除的
+
+依据 [决策补充 Q215](decision-followups.md#q215)，微信图片、语音和视频在内存解密后保存到 `<userData>/composer-attachments/wechat-media-*`，目录权限 `0700`、文件权限 `0600`。动态 Tool 只返回 `local_path`、`expires_in_days: 7` 和处理后的 MIME/文件名；视频额外返回最多 12 张 `frame_paths`。这些文件沿用 F07 的启动与每 24 小时清理：未引用 7 天、已引用 30 天后删除，不跟随符号链接，不进入 F01/F02 或 Rambo SQLite。图片读取使用 `view_image({ path: local_path })`，视频按抽帧路径读取；语音优先使用微信已有 `transcription`，没有可靠转写时不得猜测内容。
+
+真实 macOS 微信 `4.2.0` 正式 Connection、Bot Grant、构建后的 Worker 和生产 `wechat_media` Tool 路径复验通过：图片为 1360×677 PNG（568,979 字节），语音为内置 SILK 解码器产生的 3.62 秒、24 kHz、16-bit 单声道 WAV（173,804 字节），两项均在受控目录中且权限为 `600`，Tool 输出不含 `data:image`、`data:audio` 或 `data:video`。边界是内置 `view_image` 仍可能把图片字节以内联 data URL 写入 Codex 会话 JSONL；本轮证明的是微信动态 Tool 和临时文件落盘边界，不是完整会话历史已彻底去媒体化。
+
+## 2026-10-31 后续补充 · Q216 临时资源统一目录
+
+用户要求把临时清理目录写入项目 `AGENTS.md`，让后续 Agent 统一遵守。
+
+> 你把这个临时清理目录写到 agents.md 让后面的 agent 知道，临时资源都放这里
+
+依据 [决策补充 Q216](decision-followups.md#q216)，运行时生成、需要 Agent 后续按本机路径读取的临时媒体和资源统一放入 `<userData>/composer-attachments`，不复制到仓库工作区、桌面或长期资料目录，也不把媒体 base64 写回 Tool 输出或聊天正文。现有 `pasted-image-*` 和 `wechat-media-*` 继续按 7/30 天规则清理；新增其他类型必须同时接入清理白名单、权限和测试。凭证、密钥、不可恢复数据和用户原文件不得放入该目录。

@@ -186,6 +186,7 @@ export interface WechatToolHost {
       fileName: string;
       kind?: WechatMediaRef['kind'];
       status?: WechatMediaRef['status'];
+      transcription?: string | null;
       limitation?: string;
     }>;
   };
@@ -287,6 +288,11 @@ export async function executeWechatTool(
                 mimeType: media.mimeType,
                 size: media.bytes.length,
                 delivery: delivery.delivery,
+                ...(delivery.localPath ? { local_path: delivery.localPath } : {}),
+                ...(delivery.expiresInDays ? { expires_in_days: delivery.expiresInDays } : {}),
+                ...(delivery.mimeType ? { processed_mime_type: delivery.mimeType } : {}),
+                ...(delivery.fileName ? { processed_file_name: delivery.fileName } : {}),
+                ...(media.transcription ? { transcription: media.transcription } : {}),
                 ...(media.limitation ? { limitation: media.limitation } : {}),
                 ...(delivery.frameTimesSeconds
                   ? { frame_times_seconds: delivery.frameTimesSeconds }
@@ -312,6 +318,9 @@ export async function executeWechatTool(
       }
       const isImage = media.mimeType.startsWith('image/');
       const isAudio = media.mimeType.startsWith('audio/');
+      if (isImage || isAudio) {
+        throw new Error('微信媒体临时目录未配置，不能安全地读取图片或语音');
+      }
       if (!isImage && !isAudio) {
         return {
           success: true,
@@ -331,6 +340,7 @@ export async function executeWechatTool(
                 size: media.bytes.length,
                 availableLocally: true,
                 delivery: 'short_term_resource',
+                ...(media.transcription ? { transcription: media.transcription } : {}),
                 ...(media.limitation ? { limitation: media.limitation } : {})
               },
               instruction: '继续使用这个 resource_handle 调用 wechat_media；资源只在当前微信连接的短期有效期内可读。'
@@ -338,34 +348,6 @@ export async function executeWechatTool(
           }]
         };
       }
-      const dataUrl = `data:${media.mimeType};base64,${media.bytes.toString('base64')}`;
-      const contentItem: WechatDynamicToolContentItem = isImage
-        ? { type: 'inputImage', imageUrl: dataUrl }
-        : { type: 'inputAudio', audioUrl: dataUrl };
-      return {
-        success: true,
-        contentItems: [
-          contentItem,
-          {
-            type: 'inputText',
-            text: JSON.stringify({
-              connection_id: connection.id,
-              provider: 'wechat',
-              account: connection.accountLabel,
-              media: {
-                resource_handle: resourceHandle,
-                kind: media.kind ?? (isImage ? 'image' : 'audio'),
-                status: media.status ?? 'available',
-                fileName: media.fileName,
-                mimeType: media.mimeType,
-                size: media.bytes.length,
-                delivery: isImage ? 'inline_image' : 'inline_audio',
-                ...(media.limitation ? { limitation: media.limitation } : {})
-              }
-            })
-          }
-        ]
-      };
     } else {
       throw new Error(`不支持的微信工具：${tool}`);
     }

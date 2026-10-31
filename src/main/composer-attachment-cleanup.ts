@@ -9,8 +9,14 @@ import type { ComposerAttachmentCleanupResult } from '../shared/contracts';
 export const COMPOSER_ATTACHMENT_UNREFERENCED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const COMPOSER_ATTACHMENT_REFERENCED_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
-const PASTED_IMAGE_NAME =
-  /^pasted-image-(\d{13})-([0-9a-f]{8})\.(?:png|jpe?g|webp|gif|avif|bmp)$/iu;
+const TEMP_MEDIA_NAME =
+  /^(pasted-image|wechat-media)-(\d{13})-([0-9a-f]{8})\.([a-z0-9]{1,8})$/iu;
+const PASTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp']);
+const WECHAT_MEDIA_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp',
+  'wav', 'mp3', 'm4a', 'ogg', 'opus', 'aac', 'amr', 'flac', 'silk',
+  'mp4', 'mov', 'm4v', 'webm', '3gp', 'avi'
+]);
 
 interface AttachmentStat {
   birthtimeMs: number;
@@ -78,7 +84,11 @@ export function cleanupComposerAttachments(
   }
 
   for (const entry of entries) {
-    if (!PASTED_IMAGE_NAME.test(entry.name)) continue;
+    const match = TEMP_MEDIA_NAME.exec(entry.name);
+    if (!match) continue;
+    const [, source, , , extension] = match;
+    if (source === 'pasted-image' && !PASTED_IMAGE_EXTENSIONS.has(extension.toLowerCase())) continue;
+    if (source === 'wechat-media' && !WECHAT_MEDIA_EXTENSIONS.has(extension.toLowerCase())) continue;
     const path = join(options.directory, entry.name);
     let referenced = false;
     try {

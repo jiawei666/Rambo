@@ -33,13 +33,15 @@ async function loadModule() {
   };
 }
 
-function createImage(directory, name, ageMs, now) {
+function createFile(directory, name, ageMs, now, bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])) {
   const path = join(directory, name);
-  writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  writeFileSync(path, bytes);
   const timestamp = new Date(now - ageMs);
   utimesSync(path, timestamp, timestamp);
   return path;
 }
+
+const createImage = createFile;
 
 test('cleans pasted images by referenced retention while protecting drafts', async () => {
   const { directory, module } = await loadModule();
@@ -133,6 +135,52 @@ test('only removes generated pasted images and never follows links', async () =>
     assert.equal(readFileSync(malformedName, 'utf8').length > 0, true);
     assert.equal(readFileSync(outside, 'utf8'), 'keep');
     assert.equal(readFileSync(linked, 'utf8'), 'keep');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('cleans generated WeChat media files on the same retention schedule', async () => {
+  const { directory, module } = await loadModule();
+  const attachments = join(directory, 'composer-attachments');
+  mkdirSync(attachments);
+  try {
+    const now = Date.now();
+    const expiredImage = createFile(
+      attachments, 'wechat-media-1700000000000-11111111.jpg', 7 * DAY + 1_000, now
+    );
+    const expiredAudio = createFile(
+      attachments, 'wechat-media-1700000000001-22222222.wav', 7 * DAY, now
+    );
+    const expiredOpus = createFile(
+      attachments, 'wechat-media-1700000000005-66666666.opus', 7 * DAY, now
+    );
+    const recentVideo = createFile(
+      attachments, 'wechat-media-1700000000002-33333333.mp4', 7 * DAY - 1_000, now
+    );
+    const referencedExpired = createFile(
+      attachments, 'wechat-media-1700000000003-44444444.silk', 30 * DAY + 1_000, now
+    );
+    const unsupported = createFile(
+      attachments, 'wechat-media-1700000000004-55555555.exe', 90 * DAY, now
+    );
+    const referenced = new Set([referencedExpired]);
+
+    const result = module.cleanupComposerAttachments({
+      directory: attachments,
+      now: () => now,
+      isReferenced: path => referenced.has(path)
+    });
+
+    assert.deepEqual(new Set(result.deletedPaths), new Set([
+      expiredImage,
+      expiredAudio,
+      expiredOpus,
+      referencedExpired
+    ]));
+    assert.deepEqual(result.errors, []);
+    assert.doesNotThrow(() => readFileSync(recentVideo));
+    assert.doesNotThrow(() => readFileSync(unsupported));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
