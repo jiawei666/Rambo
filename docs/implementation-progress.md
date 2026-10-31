@@ -1,5 +1,13 @@
 # 实施进度
 
+## 2026-10-31 · Q221 Windows 发布只认原生 CI
+
+- `rambo-release` Skill 和发布约定改为：macOS 继续在本地严格校验；Windows 只核对对应目标 commit 的 GitHub Actions 原生构建成功，并取上传资产作为 GitHub Release 传输文件。
+- macOS 侧不再对下载的 Windows 产物展开或检查 PE、NSIS、portable ZIP 内容、文件大小、SHA-256、归档清单或内置运行时，也不运行双平台 `release:verify` 作为发版门禁；上传完成后立即删除临时候选。
+- Windows 工作流移除构建后的独立产物复核步骤；Windows 原生打包仍负责生成安装包、portable ZIP、sidecar 和 release metadata，原生构建失败即阻止发布。
+- 本次已下载的 Windows 候选临时文件已按精确路径删除，没有留在 `tmp/` 或 Release 目录。
+- 证据边界：这不改变 Windows 真机安装、启动、登录、托盘、音频、微信或 NSIS 卸载验收边界；原生 CI 成功仍只算构建证据。
+
 ## 2026-10-31 · Q218 Windows 免安装 ZIP
 
 - Windows 正式发布增加 `Rambo-v<version>-Windows-x64-portable.zip` 和独立 SHA-256，同时保留 NSIS 安装包。

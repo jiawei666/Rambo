@@ -19,10 +19,12 @@
   - `Rambo-v<version>-win32-x64.release.json`
 - macOS 构建入口：`npm run release:package -- darwin-arm64`。
 - Windows 构建入口：`npm run release:package -- win32-x64`。
-- 双平台合并校验入口：`npm run release:verify -- darwin-arm64,win32-x64`。
+- 双平台合并校验入口：`npm run release:verify -- darwin-arm64,win32-x64` 仍保留供脚本测试或人工诊断，但不是当前发版门禁；正式发布不运行它，也不得在 macOS 下载展开或校验 Windows 产物。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。
 - GitHub Release 资产上传默认使用直连；执行 `gh release create` 或 `gh release upload` 时清除代理变量。
 - Windows 免安装 ZIP 必须从同一次原生构建的 `dist/win-unpacked` 生成，不得另做一套不一致构建；免安装只表示无需安装，应用数据仍使用正常 Windows 用户目录。
+- Windows 发布以对应目标 commit 的 GitHub Actions Windows 原生构建成功为准。macOS 侧只下载 CI 上传资产用于 GitHub Release 传输，不再检查 PE、NSIS、portable ZIP 内容、文件大小、SHA-256、归档文件清单或内置运行时；上传完成后删除临时候选。
+- Windows 构建机仍需在生成发布产物时执行自身打包逻辑和 sidecar 生成。这是原生构建输出，不是 macOS 侧二次校验；不得用 macOS 侧检查替代、补做或推翻 Windows CI 结果。
 
 ## 平台与运行时
 
@@ -34,7 +36,8 @@
   - `win32-arm64` -> `aarch64-pc-windows-msvc`
 - 固定版本、归档 SHA-256、入口和 manifest 以 `config/runtime-targets.json` 为准。
 - 打包脚本必须从包内 `runtime/codex/<version>` 读取 `codex-package.json` 与 `rambo-runtime.json`，并实际检查入口二进制为 Mach-O 或 PE 的目标架构。
-- 任一平台缺包、缺 sidecar、SHA-256 不一致、App Server 版本/目标不一致或二进制架构不符，均阻止正式发布。
+- macOS 缺包、缺 sidecar、SHA-256 不一致、App Server 版本/目标不一致或二进制架构不符，均阻止正式发布。
+- Windows 缺包、缺 sidecar、App Server 版本/目标不一致或二进制架构不符时，由 Windows 原生构建自身失败并阻止上传；macOS 侧不下载产物补验。
 
 ## 签名与安装
 

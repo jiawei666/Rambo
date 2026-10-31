@@ -36,7 +36,7 @@
   "areas": [
     {
       "id": "release-tooling",
-      "label": "双平台发版 Skill、产物与 App Server 校验",
+      "label": "发版 Skill、macOS 产物校验与 Windows 原生 CI 交接",
       "paths": [
         ".agents/skills/rambo-release/**",
         "tests/backend/release-package.test.mjs",
@@ -45,7 +45,7 @@
       ],
       "checks": ["backend-unit", "acceptance-structure"],
       "backendTargets": ["tests/backend/release-package.test.mjs"],
-      "reason": "发版必须同时验证平台产物、架构和各自内置的 Codex App Server"
+      "reason": "macOS 必须在本地验证产物、架构和内置 App Server；Windows 只采用对应目标 commit 的成功原生 CI 构建"
     },
     {
       "id": "docs-decisions",

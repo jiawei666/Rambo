@@ -4736,3 +4736,24 @@ T01 的共享技能目录与逐 Bot 启用、T02 的新 Bot 不自动获得额�
 - 本条覆盖 Q80 的 macOS 机器人图标与动画决定，并更新 Q206/P10、P02 和 B11 的托盘外观规则。实际浅色/深色菜单栏、Windows 高 DPI 与真实托盘区域仍需在目标平台目测验收。
 
 验证边界：后端定向测试需确认 macOS 使用 `brand.png` 且启用 template，Windows 浅色使用 `brand.png`、深色使用 `brand-dark.png` 且均不启用 template；运行状态变化不调用 `setImage`，只有 Windows 主题变化可切换静态图标。还需校验四张 18/36 PNG 尺寸、透明四角和安装包文件清单；真实 Electron/正式安装版在 macOS 与 Windows 浅色、暗色系统栏中的辨识度仍待复验。
+
+<a id="q221"></a>
+
+## Q221：Windows 发布产物不在 macOS 侧校验
+
+日期：2026-10-31。状态：用户明确要求以后不要校验 Windows 产物，因为当前 macOS 开发机无法运行这些 Windows 构建，下载到本机做展开或交叉检查没有实际价值。
+
+用户原话：
+
+> Windows 的产物不用校验 我们没什么好校验的 我们都运行不了 以后都不要校验
+
+生效规则：
+
+- Windows 正式发布以对应目标 commit 的 GitHub Actions Windows 原生构建成功为准。原生工作流必须完成类型检查、Windows 相关测试、Windows 打包和候选上传；构建或上传失败时停止发布。
+- macOS 侧只允许下载 Windows CI 上传的候选作为 GitHub Release 上传传输文件，不展开、不检查 PE、NSIS、portable ZIP 内容、文件大小、SHA-256、归档清单或内置运行时，也不使用本机工具补做交叉校验。
+- 双平台 `npm run release:verify` 不再是发版门禁，正式发布不运行其 Windows 部分。macOS 产物仍必须按既有规则在本地校验版本、App Server、架构、zip、SHA-256、安装版本和 ad-hoc 签名。
+- Windows 仍由原生构建生成安装包、portable ZIP、sidecar 和 release metadata，这些是发布资产，不是 macOS 侧复核。发布后只核对 GitHub Release 的资产清单和上传结果，不下载后再验。
+- Windows 候选只用于传输；上传完成或发布失败后都必须删除本机临时下载，不能留在仓库 `tmp/`、Release 目录或长期资料目录。
+- 本条更新 P09 和 `rambo-release` Skill；不改变 P10。Windows 原生 CI 成功仍不等同于 Windows 真机产品验收，不能据此宣称 Windows 已完整可用。
+
+验证边界：Skill、发布约定、Windows 工作流和变更检查映射需保持同一口径；本次候选临时文件已按精确路径删除。macOS 产物仍以本地真实构建和安装校验为准。

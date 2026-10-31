@@ -1,6 +1,6 @@
 ---
 name: rambo-release
-description: 校验并打包 Rambo 的 macOS 与 Windows 应用，分别内置对应平台的 Codex App Server，生成双平台可上传产物与校验和，更新活动 Mac 的 /Applications/Rambo.app，提交版本并发布到 GitHub Releases。用于用户明确要求打包、双平台构建、发布或创建 GitHub Release；不用于普通开发构建或仅本地预览。
+description: 打包 Rambo 的 macOS 与 Windows 应用，分别内置对应平台的 Codex App Server，更新活动 Mac 的 /Applications/Rambo.app，提交版本并发布到 GitHub Releases。macOS 在本地严格校验，Windows 只采用成功的原生 CI 构建产物，不在 macOS 侧展开或校验 Windows 包。用于用户明确要求打包、双平台构建、发布或创建 GitHub Release；不用于普通开发构建或仅本地预览。
 ---
 
 # 打包并发布 Rambo
@@ -54,25 +54,17 @@ dist/release/v<version>/Rambo-v<version>-Windows-x64-portable.zip.sha256
 dist/release/v<version>/Rambo-v<version>-win32-x64.release.json
 ```
 
-免安装 ZIP 直接压缩同一次构建的 `dist/win-unpacked`，不采用启动时自解压的单文件 portable exe。Windows x64 产物必须来自 Windows 真机构建；GitHub Actions 的 Windows unpacked/NSIS/portable 产物只能作为候选构建证据，不能替代安装、启动和产品验收。
+免安装 ZIP 直接压缩同一次构建的 `dist/win-unpacked`，不采用启动时自解压的单文件 portable exe。Windows x64 产物必须来自 Windows 真机构建；GitHub Actions 构建成功即作为发布依据。当前不在 macOS 侧下载展开、检查 PE/NSIS/ZIP、重算或交叉校验 Windows 产物。
 
-### 合并与校验
+### 合并与发布边界
 
-把两个原生构建机生成的同一版本文件合并到同一个 `dist/release/v<version>/`。然后在 macOS 构建机执行：
+当前双平台校验命令不再作为发版门禁，Windows 部分不运行。macOS 本地产物仍需通过构建脚本和安装脚本核对：
 
-```sh
-npm run release:verify -- darwin-arm64,win32-x64
-```
+- macOS 产物版本与 `package.json` 一致。
+- macOS 包的 App Server 目标是 `aarch64-apple-darwin`，包内入口、manifest、官方归档 SHA-256 与 `config/runtime-targets.json` 一致。
+- macOS zip 的实际 SHA-256 与 sidecar 一致，安装后的应用版本、Bundle ID 和 ad-hoc 签名正确。
 
-该命令必须同时找到两个平台的安装包、Windows 免安装 ZIP、全部 SHA-256 和 release metadata，并逐项核对：
-
-- 产物版本与 `package.json` 一致。
-- 两个安装包都只包含固定版本的 Codex App Server。
-- macOS 包的 App Server 目标是 `aarch64-apple-darwin`，Windows 包是 `x86_64-pc-windows-msvc`。
-- 包内入口、平台 manifest、官方归档 SHA-256 与 `config/runtime-targets.json` 一致。
-- 两个安装包和 Windows 免安装 ZIP 的实际 SHA-256 与 sidecar 和 `*.sha256` 一致。
-
-缺少任一平台、任一校验文件或任一运行时元数据时停止发布，不得把单平台产物伪装成正式双平台 Release。
+Windows 只核对原生 CI run 对应目标 commit 且构建成功，然后下载 `Rambo-windows-x64-candidate` 作为上传传输文件；不得在 macOS 解开、检查、重算或声称已完成 Windows 产物校验。缺少 Windows CI 成功记录或资产时停止发布。下载的候选只用于 Release 上传，上传完成后立即删除。
 
 ## 更新活动 Mac
 
@@ -97,8 +89,8 @@ spctl -a -vv /Applications/Rambo.app 2>&1 || true
 
 ## 提交与发布
 
-1. 运行本次发布需要的测试，至少确认双平台打包脚本、`npm run release:verify`、`npm run test:catalog` 和当前目标测试通过。用户只要求打包时，不得伪称 P08 全量验收通过。
-2. 检查两个平台的包大小、App Server 元数据、`app.asar` 不重复携带前端依赖，以及 Windows NSIS、Windows 免安装 ZIP 和 macOS zip 均非空。
+1. 运行本次发布需要的测试，至少确认打包脚本、`npm run test:catalog` 和当前目标测试通过。用户只要求打包时，不得伪称 P08 全量验收通过。
+2. 检查 macOS 包大小、App Server 元数据、`app.asar` 不重复携带前端依赖及 zip 非空。Windows 只取成功 CI 的上传资产，不在本机做内容校验。
 3. 审核 `git diff` 和 `git status`，只暂存本次发布范围。提交信息使用 `Release v<version>`；不要 amend、不重置用户改动。
 4. 推送当前分支并创建 annotated tag：
 
@@ -126,23 +118,23 @@ env -u http_proxy -u https_proxy \
   --notes-file <release-notes-file>
 ```
 
-不要添加 `--prerelease`。Release notes 至少包含目标 commit、两个构建平台与架构、各自内置的 App Server 版本和目标、macOS 未签名/未公证状态与 Gatekeeper 步骤、Windows 未签名 NSIS/免安装 ZIP 与 SmartScreen 步骤、三个分发文件的 SHA-256、已知验收边界和下载文件说明。
+不要添加 `--prerelease`。Release notes 至少包含目标 commit、两个构建平台与架构、各自内置的 App Server 版本和目标、macOS 未签名/未公证状态与 Gatekeeper 步骤、Windows 未签名 NSIS/免安装 ZIP 与 SmartScreen 步骤、三个分发文件的 SHA-256、Windows 仅由原生 CI 构建且未在本机展开校验的边界、已知产品验收边界和下载文件说明。
 
 6. 发布后回查真实远端与本机结果：
 
 ```sh
 gh release view v<version> --json tagName,name,isPrerelease,isDraft,url,assets
 git ls-remote --tags origin v<version>
-npm run release:verify -- darwin-arm64,win32-x64
 plutil -extract CFBundleShortVersionString raw /Applications/Rambo.app/Contents/Info.plist
 codesign --verify --deep --strict /Applications/Rambo.app
 ```
 
-确认 tag 指向本次发布 commit、Release 非 draft、六个资产均存在且大小正确、远端可下载，并且本机安装版本匹配。最终回复给出 Release URL、tag、commit、三个分发文件名、三个 SHA-256 和本机安装路径。
+确认 tag 指向本次发布 commit、Release 非 draft、六个资产均存在且大小正确、远端可下载，并且本机安装版本匹配。这里只核对 GitHub Release 的资产清单，不展开验证 Windows 包。上传成功后删除临时下载的 Windows CI 候选；最终回复给出 Release URL、tag、commit、三个分发文件名、三个 SHA-256 和本机安装路径。
 
 ## 失败处理
 
-- 任一平台缺失、构建失败、架构不匹配或 App Server manifest 不一致：停止正式发布。
+- macOS 缺包、构建失败、架构不匹配或 App Server manifest 不一致：停止正式发布。
+- Windows 原生 CI 失败、未对应目标 commit、未成功上传候选或 Release 缺少正式资产：停止正式发布；不要改在 macOS 交叉校验。
 - 测试失败：报告规则和失败原因；除非用户明确接受预发布风险，不继续外部发布。
 - 远端已有同名 tag/Release：停止，不覆盖、不移动已发布 tag。
 - 推送或上传失败：保留本地提交和产物，报告远端实际状态；不要重复创建 Release。
