@@ -4,6 +4,7 @@
 
 - 中英文 README 的平台说明、顶部标识和安装步骤同步覆盖 macOS 与 Windows。
 - 微信改为直接说明“可连接并读取聊天消息”，明确两个系统均已实测稳定，不再使用环境或授权条件作为能力前缀。
+- 微信提升为最大产品亮点：中英文 README 的功能亮点第一条和功能章节第一项均为独立微信介绍，原通用连接章节改为邮箱与其他连接应用，不再混写微信。
 - 新增 CloakBrowser 浏览器自动化介绍，说明独立 Chromium、共享持久 profile、逐 Bot 授权和反爬能力边界。
 - 模型接入改为第三方 Responses 兼容 API 优先，同时支持 ChatGPT 登录；Codex App Server 继续只作为底层运行时说明。
 - 验证通过：`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则 / 291 个案例）、`npm run test:acceptance` **21/21**；中英文 README 本地链接与代码块检查通过；`git diff --check`。

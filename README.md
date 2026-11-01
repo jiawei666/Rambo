@@ -61,9 +61,10 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 
 ## Highlights
 
+- **Connect directly to WeChat.** Read chats and messages on macOS and Windows, with stable message reading tested on both systems.
 - **Runs locally on macOS and Windows.** Bots, chats, routines, settings, and memory stay on your computer in a dedicated local data directory.
 - **Third-party API first, ChatGPT login also supported.** Bring a Responses-compatible third-party API with your own Base URL and key, or sign in with ChatGPT. API credentials are encrypted locally, and Rambo keeps its own isolated Codex Home.
-- **Chat with connected apps.** Use QQ Mail and Gmail, or connect directly to WeChat to read chats and messages on macOS and Windows.
+- **Connect your mail.** Use QQ Mail and Gmail for search, reading, attachments, drafts, replies, and sending.
 - **Automate browser tasks.** Give authorized Bots access to CloakBrowser for managed browser automation with a shared persistent profile and reduced common anti-bot interference.
 - **Plan work on your behalf.** Create one-time and recurring routines in natural language, with reminders, run history, retries, and catch-up behavior.
 - **Bring multiple Bots into one conversation.** Bots can work in a shared group chat while keeping their own private chat, memory, model, and permission settings.
@@ -73,6 +74,10 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 - **Rich chat output.** Markdown, code with syntax highlighting, math, Mermaid diagrams, interactive question cards, structured result cards, media, and embedded MCP content share one chat surface.
 
 ## Features
+
+### Direct WeChat access
+
+Connect to WeChat directly and read chats and messages on both macOS and Windows. Message reading has been tested for stable use on both systems. Access is granted per Bot, so a WeChat connection is not silently exposed to every assistant.
 
 ### Local-first personal agent
 
@@ -88,13 +93,12 @@ The existing interface and interaction patterns are based on a reverse-engineeri
 
 This is an independent project. It is not affiliated with Grok, Google, OpenAI, or any of the connected services.
 
-### Connected apps
+### Mail and other connected apps
 
 Rambo has connectors for:
 
-- **QQ Mail** — search, read, attach, draft, reply, and send through QQ Mail.
 - **Gmail** — new connections use a Google App Password over IMAP/SMTP with localized mailbox handling; existing local OAuth credentials remain readable for compatibility.
-- **WeChat** — connect directly and read chats and messages on macOS and Windows. Message reading has been tested for stable use on both systems.
+- **QQ Mail** — search, read, attach, draft, reply, and send through QQ Mail.
 - **CloakBrowser** — managed browser automation for authorized Bots through an independent Chromium-based browser and a shared persistent profile.
 - **Calendar, GitHub, and other MCP-backed services** — available through the MCP and resource system when configured.
 
