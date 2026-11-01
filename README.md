@@ -88,7 +88,7 @@ This is an independent project. It is not affiliated with Grok, Google, OpenAI, 
 Rambo has connectors for:
 
 - **QQ Mail** — search, read, attach, draft, reply, and send through QQ Mail.
-- **Gmail** — use either an app password or OAuth, with localized Gmail mailbox handling.
+- **Gmail** — new connections use a Google App Password over IMAP/SMTP with localized mailbox handling; existing local OAuth credentials remain readable for compatibility.
 - **WeChat** — query chats and messages from a local WeChat environment after the required local setup and authorization.
 - **Calendar, GitHub, and other MCP-backed services** — available through the MCP and resource system when configured.
 
@@ -191,7 +191,7 @@ Rambo uses an isolated Codex Home for its own configuration, authentication, ses
 
 ## Project status
 
-The current release is **v0.1.12**. The acceptance catalog tracks **158 product rules**, **281 local test cases**, **154 executable cases**, and **127 explicit implementation gaps**.
+The current release is **v0.1.12**. The acceptance catalog tracks **159 product rules**, **291 local test cases**, **163 executable cases**, and **128 explicit implementation gaps**.
 
 The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
 

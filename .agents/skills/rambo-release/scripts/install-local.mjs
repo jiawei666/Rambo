@@ -9,7 +9,9 @@ if (process.platform !== 'darwin') throw new Error('Rambo 本机安装只能在 
 const root = resolve(process.cwd());
 const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const expectedVersion = String(packageJson.version || '').trim();
-const sourceApp = join(root, 'dist', 'mac-arm64', 'Rambo.app');
+const sourceApp = process.env.RAMBO_APP_SOURCE
+  ? resolve(process.env.RAMBO_APP_SOURCE)
+  : join(root, 'dist', 'mac-arm64', 'Rambo.app');
 const installDirectory = process.env.RAMBO_INSTALL_DIR
   ? resolve(process.env.RAMBO_INSTALL_DIR)
   : '/Applications';

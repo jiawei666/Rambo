@@ -36,6 +36,8 @@ export type ImapSmtpMailAdapterConfig = {
 
 export type ImapSmtpMailAdapterDependencies = {
   imapClient?: (config: ImapFlowOptions) => ImapFlow;
+  proxyFor?: (host: string, port: number) => Promise<string | null>;
+  socksModule?: unknown;
 };
 
 export const QQ_MAIL_CONFIG: ImapSmtpMailAdapterConfig = {
@@ -84,7 +86,7 @@ export class ImapSmtpMailAdapter implements MailAdapter {
 
   async verify(_connection: ConnectorConnection): Promise<void> {
     await this.withImap(client => client.noop());
-    const transport = this.transport();
+    const transport = await this.transport();
     try { await transport.verify(); }
     catch (error) { throw new Error(`${this.config.providerName} SMTP 验证失败：${safeMailError(error)}`); }
     finally { transport.close(); }
@@ -234,7 +236,7 @@ export class ImapSmtpMailAdapter implements MailAdapter {
     input: MailSendInput,
     original?: MailMessage
   ): Promise<MailSendResult> {
-    const transport = this.transport();
+    const transport = await this.transport();
     try {
       const info = await transport.sendMail({
         from: this.credential.email,
@@ -269,16 +271,25 @@ export class ImapSmtpMailAdapter implements MailAdapter {
     return query;
   }
 
-  private transport() {
-    return createTransport({
+  private async transport() {
+    const proxy = await this.dependencies.proxyFor?.(
+      this.config.smtp.host,
+      this.config.smtp.port
+    ) ?? null;
+    const transport = createTransport({
       host: this.config.smtp.host,
       port: this.config.smtp.port,
       secure: this.config.smtp.secure,
       auth: { user: this.credential.email, pass: this.credential.password },
+      ...(proxy ? { proxy } : {}),
       connectionTimeout: 15_000,
       greetingTimeout: 15_000,
       socketTimeout: 30_000
     });
+    if (proxy?.startsWith('socks') && this.dependencies.socksModule) {
+      transport.set('proxy_socks_module', this.dependencies.socksModule);
+    }
+    return transport;
   }
 
   private outgoingMessage(input: MailSendInput) {
@@ -296,25 +307,33 @@ export class ImapSmtpMailAdapter implements MailAdapter {
   }
 
   private async withImap<T>(run: (client: ImapFlow) => Promise<T>): Promise<T> {
-    const config: ImapFlowOptions = {
-      ...this.config.imap,
-      auth: { user: this.credential.email, pass: this.credential.password },
-      logger: false,
-      clientInfo: { name: 'Rambo', version: '0.1.0' },
-      connectionTimeout: 15_000,
-      greetingTimeout: 15_000,
-      socketTimeout: 30_000
-    };
-    const client = this.dependencies.imapClient
-      ? this.dependencies.imapClient(config)
-      : new ImapFlow(config);
+    let client: ImapFlow | null = null;
     try {
+      const proxy = await this.dependencies.proxyFor?.(
+        this.config.imap.host,
+        this.config.imap.port
+      ) ?? null;
+      const config: ImapFlowOptions = {
+        ...this.config.imap,
+        auth: { user: this.credential.email, pass: this.credential.password },
+        ...(proxy ? { proxy } : {}),
+        logger: false,
+        clientInfo: { name: 'Rambo', version: '0.1.0' },
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+        socketTimeout: 30_000
+      };
+      client = this.dependencies.imapClient
+        ? this.dependencies.imapClient(config)
+        : new ImapFlow(config);
       await client.connect();
       return await run(client);
     } catch (error) {
       throw new Error(`${this.config.providerName}连接失败：${safeMailError(error)}`);
     } finally {
-      try { await client.logout(); } catch { /* socket may already be closed */ }
+      if (client) {
+        try { await client.logout(); } catch { /* socket may already be closed */ }
+      }
     }
   }
 
@@ -438,9 +457,29 @@ function htmlAsText(value: string | false | undefined): string {
 }
 
 function safeMailError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
+  const value = error && typeof error === 'object'
+    ? error as { message?: unknown; responseText?: unknown; response?: unknown }
+    : null;
+  const message = typeof value?.message === 'string'
+    ? value.message
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  const response = typeof value?.responseText === 'string'
+    ? value.responseText
+    : typeof value?.response === 'string'
+      ? value.response
+      : '';
+  return [message, response]
+    .filter((part, index, parts) => part && parts.indexOf(part) === index)
+    .join('：')
+    .replace(/Command failed\s*[：:]?\s*Invalid credentials[^\n]*/gi, '邮箱账号或应用专用密码验证失败')
+    .replace(/Failed to establish connection in required time/gi, '连接超时，请检查网络或系统代理后重试')
+    .replace(/Connection timeout/gi, '连接超时，请检查网络或系统代理后重试')
+    .replace(/Socks module not loaded/gi, '系统代理类型不受支持')
     .replace(/AUTHENTICATIONFAILED[^\n]*/i, '授权码或账号验证失败')
     .replace(/LOGIN failed[^\n]*/i, '授权码或账号验证失败')
+    .replace(/Invalid credentials[^\n]*/i, '邮箱账号或应用专用密码验证失败')
+    .replace(/Invalid login[^\n]*/i, '邮箱账号或应用专用密码验证失败')
     .slice(0, 300);
 }

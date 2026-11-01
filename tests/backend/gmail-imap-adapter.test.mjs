@@ -15,8 +15,16 @@ const stubs = {
     globalThis.__ramboGmailTransports ??= [];
     globalThis.__ramboGmailTransports.push(config);
     return {
-      verify: async () => true,
+      verify: async () => {
+        if (globalThis.__ramboGmailVerifyError) {
+          throw globalThis.__ramboGmailVerifyError instanceof Error
+            ? globalThis.__ramboGmailVerifyError
+            : new Error(globalThis.__ramboGmailVerifyError);
+        }
+        return true;
+      },
       sendMail: async () => ({ message: Buffer.from('MIME'), messageId: '<sent@example.com>', accepted: ['to@example.com'] }),
+      set(key, value) { globalThis.__ramboGmailTransportMeta = [key, value]; },
       close() {}
     };
   }`
@@ -52,31 +60,81 @@ const credential = { kind: 'imap-password', email: 'owner@gmail.com', password: 
 
 function resetTransports() {
   globalThis.__ramboGmailTransports = [];
+  globalThis.__ramboGmailVerifyError = null;
 }
 
 test('Gmail adapter authenticates to Gmail IMAP and SMTP with the app password', async () => {
   resetTransports();
+  globalThis.__ramboGmailTransportMeta = null;
   let imapConfig;
+  const proxyHosts = [];
   const client = {
     async connect() {},
     async noop() {},
     async logout() {}
   };
   const adapter = new GmailImapAdapter(connection, credential, {
-    imapClient: config => { imapConfig = config; return client; }
+    imapClient: config => { imapConfig = config; return client; },
+    proxyFor: async (host, port) => {
+      proxyHosts.push([host, port]);
+      return 'socks5://127.0.0.1:10808/';
+    },
+    socksModule: { SocksClient: {} }
   });
   await adapter.verify(connection);
 
   assert.equal(imapConfig.host, 'imap.gmail.com');
   assert.equal(imapConfig.port, 993);
   assert.equal(imapConfig.secure, true);
+  assert.equal(imapConfig.proxy, 'socks5://127.0.0.1:10808/');
   assert.deepEqual(imapConfig.auth, { user: 'owner@gmail.com', pass: credential.password });
   assert.equal(globalThis.__ramboGmailTransports[0].host, 'smtp.gmail.com');
   assert.equal(globalThis.__ramboGmailTransports[0].port, 465);
   assert.equal(globalThis.__ramboGmailTransports[0].secure, true);
+  assert.equal(globalThis.__ramboGmailTransports[0].proxy, 'socks5://127.0.0.1:10808/');
   assert.deepEqual(globalThis.__ramboGmailTransports[0].auth, {
     user: 'owner@gmail.com', pass: credential.password
   });
+  assert.deepEqual(proxyHosts, [['imap.gmail.com', 993], ['smtp.gmail.com', 465]]);
+  assert.deepEqual(globalThis.__ramboGmailTransportMeta, [
+    'proxy_socks_module',
+    { SocksClient: {} }
+  ]);
+});
+
+test('Gmail adapter turns connection timeouts into actionable Chinese errors', async () => {
+  resetTransports();
+  const client = {
+    async connect() {
+      throw new Error('Failed to establish connection in required time');
+    },
+    async logout() {}
+  };
+  const adapter = new GmailImapAdapter(connection, credential, { imapClient: () => client });
+
+  await assert.rejects(
+    adapter.verify(connection),
+    /Gmail连接失败：连接超时，请检查网络或系统代理后重试/u
+  );
+});
+
+test('Gmail adapter maps rejected app passwords without exposing provider details', async () => {
+  resetTransports();
+  globalThis.__ramboGmailVerifyError = Object.assign(
+    new Error('Command failed'),
+    { responseText: 'Invalid credentials (Failure)' }
+  );
+  const client = {
+    async connect() {},
+    async noop() {},
+    async logout() {}
+  };
+  const adapter = new GmailImapAdapter(connection, credential, { imapClient: () => client });
+
+  await assert.rejects(
+    adapter.verify(connection),
+    /Gmail SMTP 验证失败：邮箱账号或应用专用密码验证失败/u
+  );
 });
 
 test('Gmail searches the localized All Mail mailbox by special use and returns Gmail-prefixed IMAP UIDs', async () => {

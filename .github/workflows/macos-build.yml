@@ -1,0 +1,92 @@
+name: macOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - package.json
+      - package-lock.json
+      - config/**
+      - scripts/**
+      - src/**
+      - native/**
+      - tests/backend/**
+      - .agents/skills/rambo-release/**
+      - .github/workflows/macos-build.yml
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - config/**
+      - scripts/**
+      - src/**
+      - native/**
+      - tests/backend/**
+      - .agents/skills/rambo-release/**
+      - .github/workflows/macos-build.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build-arm64:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Require Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Type check
+        run: npm run typecheck
+      - name: macOS release tooling tests
+        run: >-
+          node --test
+          tests/backend/release-package.test.mjs
+          tests/backend/platform-target.test.mjs
+      - name: Build macOS ARM64 release candidate
+        run: npm run release:package -- darwin-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rambo-macos-arm64-candidate
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload macOS assets to draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft_state=""
+          for attempt in {1..60}; do
+            draft_state="$(
+              gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null ||
+                true
+            )"
+            if [[ "$draft_state" == "true" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$draft_state" != "true" ]]; then
+            echo "::error::Draft release $GITHUB_REF_NAME is not available"
+            exit 1
+          fi
+          version="$(node -p "require('./package.json').version")"
+          release_dir="dist/release/v${version}"
+          gh release upload "$GITHUB_REF_NAME" \
+            "${release_dir}/Rambo-v${version}-macOS-arm64.zip" \
+            "${release_dir}/Rambo-v${version}-macOS-arm64.zip.sha256" \
+            --clobber

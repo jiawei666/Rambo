@@ -3571,3 +3571,84 @@ input[type="checkbox"]:disabled {
     filter: invert(1) drop-shadow(0 0 1px #00000080);
   }
 }
+
+.voice-wake-section .settings-toggle-row { margin-bottom: 14px; }
+.voice-wake-target-field { margin-top: 4px; }
+.voice-wake-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 8% 20%, color-mix(in srgb, var(--avatar-ink-green) 10%, transparent), transparent 42%),
+    var(--bg-elevated);
+}
+.voice-wake-status > span:last-child { display: flex; flex-direction: column; gap: 3px; }
+.voice-wake-status strong { font-size: 12px; font-weight: 600; }
+.voice-wake-status > span:last-child > span { color: var(--text-tertiary); font-size: 11px; line-height: 17px; }
+.voice-wake-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--text-quaternary);
+}
+.voice-wake-status-listening {
+  border-color: color-mix(in srgb, var(--avatar-ink-green) 34%, var(--border-subtle));
+  background:
+    radial-gradient(circle at 8% 20%, color-mix(in srgb, var(--avatar-ink-green) 18%, transparent), transparent 46%),
+    var(--bg-elevated);
+}
+.voice-wake-status-listening .voice-wake-status-dot {
+  background: var(--avatar-ink-green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--avatar-ink-green) 14%, transparent);
+}
+.voice-wake-status-starting .voice-wake-status-dot {
+  background: var(--avatar-ink-orange);
+  animation: voice-wake-pulse 1.15s ease-in-out infinite;
+}
+.voice-wake-status-paused .voice-wake-status-dot { background: var(--avatar-ink-blue); }
+.voice-wake-status-error {
+  border-color: var(--border-error);
+  background: var(--surface-error);
+}
+.voice-wake-status-error .voice-wake-status-dot { background: var(--text-error); }
+.voice-wake-boundary { margin: 10px 0 0; }
+.bot-voice-wake-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--avatar-ink-orange) 4%, transparent), transparent 68%),
+    var(--bg-elevated);
+}
+.bot-voice-wake-card.selected {
+  border-color: color-mix(in srgb, var(--avatar-ink-orange) 38%, var(--border-subtle));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--avatar-ink-orange) 10%, transparent), transparent 72%),
+    var(--bg-elevated);
+}
+.bot-voice-wake-card > div { min-width: 0; }
+.bot-voice-wake-card strong { display: block; font-size: 12px; font-weight: 600; }
+.bot-voice-wake-card p { margin: 4px 0 5px; color: var(--text-secondary); font-size: 11px; line-height: 17px; }
+.bot-voice-wake-card .secondary-button { flex: 0 0 auto; }
+@keyframes voice-wake-pulse {
+  0%, 100% { opacity: .45; transform: scale(.86); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-wake-status-starting .voice-wake-status-dot { animation: none; }
+}
+@media (max-width: 580px) {
+  .bot-voice-wake-card { align-items: flex-start; flex-direction: column; }
+  .bot-voice-wake-card .secondary-button { width: 100%; }
+}

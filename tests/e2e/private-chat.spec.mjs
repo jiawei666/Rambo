@@ -1350,6 +1350,17 @@ test('真实 Electron 用宽幅实时频谱展示 Live 通话状态并结束后�
     }, 'Voice Loading Pilot');
     const avatarColor = /^agent-robot:v2:\d+:([a-z]+):/u.exec(chat.avatar)?.[1];
     expect(avatarColor).toBeTruthy();
+    await page.evaluate(() => {
+      window.__voiceCuePlays = [];
+      HTMLMediaElement.prototype.play = function play() {
+        window.__voiceCuePlays.push({
+          source: new URL(this.src).pathname.split('/').at(-1),
+          muted: this.muted
+        });
+        setTimeout(() => this.dispatchEvent(new Event('ended')), 0);
+        return Promise.resolve();
+      };
+    });
 
     const samplePill = () => {
       const pill = document.querySelector('.current-bot-pill-button');
@@ -1455,6 +1466,14 @@ test('真实 Electron 用宽幅实时频谱展示 Live 通话状态并结束后�
     await expect(voicePill).toHaveAttribute('aria-label', '正在聆听');
     await expect(voicePill).toHaveAttribute('data-voice-color', avatarColor);
     await expect(voicePill).toHaveAttribute('data-voice-state', 'live');
+    await expect.poll(() => page.evaluate(() => window.__voiceCuePlays
+      .filter(play => !play.muted)
+      .map(play => play.source)))
+      .toContain('connected.mp3');
+    expect(await page.evaluate(() => window.__voiceCuePlays
+      .filter(play => !play.muted)
+      .map(play => play.source)))
+      .not.toContain('wake.mp3');
     await expect(callWave).toHaveAttribute('data-state', 'live');
     await expect(callWave.locator('.voice-waveform-bar')).toHaveCount(13);
     await expect(callWave).toHaveCSS('width', '128px');
@@ -1564,6 +1583,10 @@ test('真实 Electron 用宽幅实时频谱展示 Live 通话状态并结束后�
     await expect(page.locator('.current-bot-pill-voice')).toHaveCount(0);
     await expect(page.getByLabel('打开 Voice Loading Pilot 设置')).toBeVisible();
     await expect(callWave).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__voiceCuePlays
+      .filter(play => !play.muted)
+      .map(play => play.source)))
+      .toContain('ended.mp3');
 
     await injectVoiceState('stopping');
     await page.evaluate(chatId => window.rambo.injectAcceptanceEvent({

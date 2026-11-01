@@ -98,6 +98,10 @@ const api: RamboAPI = {
   setCodexHomeSyncMode: mode => invoke('setCodexHomeSyncMode', mode),
   startVoice: (id, offerSdp) => invoke('startVoice', id, offerSdp),
   stopVoice: (id, reason) => invoke('stopVoice', id, reason),
+  setVoiceWakeSettings: input => invoke('setVoiceWakeSettings', input),
+  startVoiceWake: () => invoke('startVoiceWake'),
+  stopVoiceWake: () => invoke('stopVoiceWake'),
+  sendVoiceWakeAudio: samples => ipcRenderer.send('rambo:voiceWakeAudio', samples),
   restartRuntime: () => invoke('restartRuntime'),
   updateRuntime: () => invoke('updateRuntime'),
   onEvent(callback) {

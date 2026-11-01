@@ -53,6 +53,9 @@ import {
   voiceFrequencyBinRange
 } from './voice-waveform-model';
 import { LivePcmPlayback } from './voice-playback';
+import { VoiceCueLifecycle } from './voice-cue-lifecycle';
+import { playVoiceCue, warmVoiceCues } from './voice-cues';
+import { VoiceWakeMonitor } from './voice-wake-monitor';
 import hark, { type Harker } from 'hark';
 import type {
   AccountState,
@@ -95,7 +98,8 @@ import type {
   Snapshot,
   TurnActivity,
   VoiceAudioChunk,
-  VoiceState
+  VoiceState,
+  VoiceWakeSettings
 } from '../shared/contracts';
 import {
   composeComposerMessage,
@@ -120,7 +124,7 @@ import {
 } from '../shared/voice-support';
 
 type View = 'chat' | 'settings' | 'connectors' | 'bot-settings' | 'group-create' | 'group-chat' | 'group-members';
-type SystemSettingsTab = 'general' | 'account' | 'resources' | 'routines';
+type SystemSettingsTab = 'general' | 'voice' | 'account' | 'resources' | 'routines';
 type ResourceSection = 'skills' | 'mcp' | 'plugins';
 type AutoSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type LiveVoiceUi = {
@@ -132,6 +136,10 @@ type VoiceTranscriptFragment = { text: string; sequence: number };
 type VoiceErrorPresentation = {
   title: string;
   detail: string;
+};
+type VoiceWakeUi = {
+  state: 'off' | 'starting' | 'listening' | 'paused' | 'error';
+  error: string | null;
 };
 
 const EMPTY_SNAPSHOT: Snapshot = {
@@ -354,7 +362,11 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
 }
 
 function toError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(
+    /^Error invoking remote method '[^']+': (?:Error:\s*)?/u,
+    ''
+  );
 }
 
 function extensionLabel(fileName: string): string {
@@ -666,9 +678,14 @@ function App() {
   }, []);
   const firstRunSettingsRef = useRef(false);
   const [voice, setVoice] = useState<LiveVoiceUi | null>(null);
+  const [voiceWake, setVoiceWake] = useState<VoiceWakeUi>({ state: 'off', error: null });
   const botsRef = useRef<Bot[]>([]);
   const voiceRef = useRef<LiveVoiceUi | null>(null);
   const voiceSessionRef = useRef<VoiceMediaSession | null>(null);
+  const voiceCueLifecycleRef = useRef(new VoiceCueLifecycle());
+  const voiceWakeMonitorRef = useRef<VoiceWakeMonitor | null>(null);
+  const voiceWakeStartingRef = useRef(false);
+  const voiceWakeGenerationRef = useRef(0);
   const selectedChatRef = useRef<string | null>(null);
   const selectedGroupRef = useRef<string | null>(null);
   const windowFocusedRef = useRef(document.hasFocus());
@@ -884,8 +901,45 @@ function App() {
     []
   );
 
+  const closeVoiceWakeMonitor = useCallback(async (nextState: VoiceWakeUi['state']) => {
+    voiceWakeGenerationRef.current += 1;
+    voiceWakeStartingRef.current = false;
+    const monitor = voiceWakeMonitorRef.current;
+    voiceWakeMonitorRef.current = null;
+    await monitor?.close();
+    setVoiceWake({ state: nextState, error: null });
+  }, []);
+
+  const startVoiceWakeMonitor = useCallback(async () => {
+    if (voiceWakeMonitorRef.current || voiceWakeStartingRef.current) return;
+    warmVoiceCues();
+    const generation = ++voiceWakeGenerationRef.current;
+    voiceWakeStartingRef.current = true;
+    setVoiceWake({ state: 'starting', error: null });
+    const monitor = new VoiceWakeMonitor();
+    voiceWakeMonitorRef.current = monitor;
+    try {
+      await monitor.start();
+      if (
+        voiceWakeGenerationRef.current !== generation ||
+        voiceWakeMonitorRef.current !== monitor
+      ) return;
+      setVoiceWake({ state: 'listening', error: null });
+    } catch (error) {
+      if (voiceWakeMonitorRef.current === monitor) voiceWakeMonitorRef.current = null;
+      await monitor.close().catch(() => {});
+      if (voiceWakeGenerationRef.current !== generation) return;
+      const message = toError(error);
+      setVoiceWake({ state: 'error', error: message });
+      throw error;
+    } finally {
+      if (voiceWakeGenerationRef.current === generation) voiceWakeStartingRef.current = false;
+    }
+  }, []);
+
   const startVoice = useCallback(async (chat: Chat) => {
     if (voiceSessionRef.current || voiceRef.current?.state === 'connecting' || voiceRef.current?.state === 'live') return;
+    warmVoiceCues();
     setAppError(null);
     const voiceSupportError = voiceModelPreflightError(
       snapshot?.modelSource ?? EMPTY_SNAPSHOT.modelSource
@@ -895,9 +949,12 @@ function App() {
       setAppError(voiceSupportError);
       return;
     }
+    updateVoice({ chatId: chat.id, state: 'connecting', error: null });
+    await closeVoiceWakeMonitor(
+      snapshot?.settings.voiceWakeEnabled === 'true' ? 'paused' : 'off'
+    );
     const media = new VoiceMediaSession(chat.id);
     voiceSessionRef.current = media;
-    updateVoice({ chatId: chat.id, state: 'connecting', error: null });
     try {
       const offer = await media.start();
       await window.rambo.startVoice(chat.id, offer);
@@ -908,7 +965,14 @@ function App() {
       setAppError(toError(error));
       throw error;
     }
-  }, [snapshot?.modelSource, updateVoice]);
+  }, [
+    closeVoiceWakeMonitor,
+    snapshot?.modelSource.kind,
+    snapshot?.modelSource.manual.baseUrl,
+    snapshot?.modelSource.manual.serviceName,
+    snapshot?.settings.voiceWakeEnabled,
+    updateVoice
+  ]);
 
   const stopVoice = useCallback(async (chatId: string, reason?: string) => {
     const active = voiceRef.current;
@@ -973,6 +1037,22 @@ function App() {
     void loadActivities(chat.id);
     await loadMessages(chat.id, { clearCurrent: true, showLoading: true, resetStreamBuffer: true });
   }, [loadActivities, loadMessages, markChatRead, syncVisibleChat]);
+
+  const openVoiceWakeTarget = useCallback(async (botId: string): Promise<Chat> => {
+    const bot = botsRef.current.find(item => item.id === botId && !item.archived);
+    if (!bot) throw new Error('唤醒目标 Bot 不存在或已归档');
+    const chat = await window.rambo.ensureBotChat(botId);
+    setSnapshot(current => current
+      ? {
+          ...current,
+          chats: current.chats.some(item => item.id === chat.id)
+            ? current.chats.map(item => item.id === chat.id ? chat : item)
+            : [chat, ...current.chats]
+        }
+      : current);
+    await openChat(chat);
+    return chat;
+  }, [openChat]);
 
   useEffect(() => {
     let alive = true;
@@ -1175,6 +1255,10 @@ function App() {
       } else if (event.type === 'turnMetadata') {
         // Turn metadata remains persisted by the Host for routine/audit records.
       } else if (event.type === 'voiceState') {
+        const cue = voiceCueLifecycleRef.current.onVoiceState(
+          event.session.chatId,
+          event.session.state
+        );
         if (event.session.state === 'error') {
           void voiceSessionRef.current?.close();
           voiceSessionRef.current = null;
@@ -1184,7 +1268,10 @@ function App() {
           state: event.session.state,
           error: event.session.error
         });
+        if (cue) void playVoiceCue(cue);
       } else if (event.type === 'voiceStopFinished') {
+        const cue = voiceCueLifecycleRef.current.onStopFinished(event.chatId);
+        if (cue) void playVoiceCue(cue);
         flushPendingVoiceMessages();
         const current = voiceRef.current;
         if (current?.chatId === event.chatId) {
@@ -1192,6 +1279,25 @@ function App() {
             ? { ...current, state: 'error', error: event.error }
             : null);
         }
+      } else if (event.type === 'voiceWakeDetected') {
+        void playVoiceCue('wake');
+        void (async () => {
+          await closeVoiceWakeMonitor('paused');
+          try {
+            const chat = await openVoiceWakeTarget(event.botId);
+            await startVoice(chat);
+          } catch (error) {
+            const message = toError(error);
+            setAppError(message);
+            setVoiceWake({ state: 'error', error: message });
+          }
+        })();
+      } else if (event.type === 'voiceWakeError') {
+        void (async () => {
+          await closeVoiceWakeMonitor('off');
+          setVoiceWake({ state: 'error', error: event.message });
+          setAppError(event.message);
+        })();
       } else if (event.type === 'voiceSdp') {
         void (async () => {
           try {
@@ -1244,7 +1350,82 @@ function App() {
       alive = false;
       unsubscribe();
     };
-  }, [keepVisibleChatRead, loadActivities, loadMessages, markChatRead, openChat, updateVoice]);
+  }, [
+    closeVoiceWakeMonitor,
+    keepVisibleChatRead,
+    loadActivities,
+    loadMessages,
+    markChatRead,
+    openChat,
+    openVoiceWakeTarget,
+    startVoice,
+    updateVoice
+  ]);
+
+  const configureVoiceWake = useCallback(async (next: VoiceWakeSettings) => {
+    warmVoiceCues();
+    const previous = await window.rambo.snapshot();
+    const previousWake: VoiceWakeSettings = {
+      enabled: previous.settings.voiceWakeEnabled === 'true',
+      botId: previous.settings.voiceWakeBotId?.trim() || null
+    };
+    const target = next.botId
+      ? previous.bots.find(bot => bot.id === next.botId && !bot.archived)
+      : null;
+    if (next.botId && !target) throw new Error('唤醒目标 Bot 不存在或已归档');
+    if (next.enabled && !target) throw new Error('请先选择唤醒后接听的 Bot');
+    if (!next.enabled) await closeVoiceWakeMonitor('off');
+    try {
+      await window.rambo.setVoiceWakeSettings(next);
+      setSnapshot(await window.rambo.snapshot());
+      if (next.enabled && !voiceWakeMonitorRef.current && !voiceWakeStartingRef.current) {
+        await startVoiceWakeMonitor();
+      }
+    } catch (error) {
+      await closeVoiceWakeMonitor('off');
+      await window.rambo.setVoiceWakeSettings(previousWake).catch(() => {});
+      setSnapshot(await window.rambo.snapshot().catch(() => previous));
+      if (previousWake.enabled) {
+        await startVoiceWakeMonitor().catch(() => {});
+      }
+      throw error;
+    }
+  }, [closeVoiceWakeMonitor, startVoiceWakeMonitor]);
+
+  const voiceWakeEnabled = snapshot?.settings.voiceWakeEnabled === 'true';
+  const voiceWakeTargetId = snapshot?.settings.voiceWakeBotId?.trim() || null;
+  const voiceWakeTargetAvailable = Boolean(
+    voiceWakeTargetId &&
+    snapshot?.bots.some(bot => bot.id === voiceWakeTargetId && !bot.archived)
+  );
+  const liveVoiceBlocksWake = voice?.state === 'connecting' ||
+    voice?.state === 'live' ||
+    voice?.state === 'stopping';
+
+  useEffect(() => {
+    if (!snapshot || loading) return;
+    if (!voiceWakeEnabled || !voiceWakeTargetAvailable || liveVoiceBlocksWake) {
+      if (voiceWakeMonitorRef.current || voiceWakeStartingRef.current) {
+        void closeVoiceWakeMonitor(liveVoiceBlocksWake ? 'paused' : 'off');
+      }
+      return;
+    }
+    if (voiceWake.state === 'error') return;
+    if (!voiceWakeMonitorRef.current && !voiceWakeStartingRef.current) {
+      void startVoiceWakeMonitor().catch(error => {
+        setAppError(toError(error));
+      });
+    }
+  }, [
+    closeVoiceWakeMonitor,
+    liveVoiceBlocksWake,
+    loading,
+    snapshot,
+    startVoiceWakeMonitor,
+    voiceWake.state,
+    voiceWakeEnabled,
+    voiceWakeTargetAvailable
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -2060,6 +2241,9 @@ function App() {
             modelSource={currentSnapshot.modelSource}
             notificationUnavailable={currentSnapshot.notifications.unavailableMessage}
             launchAtLogin={currentSnapshot.settings.launchAtLogin !== 'false'}
+            voiceWakeEnabled={voiceWakeEnabled}
+            voiceWakeTargetId={voiceWakeTargetId}
+            voiceWake={voiceWake}
             globalModel={currentSnapshot.settings.defaultBotModel ?? ''}
             globalPermission={permissionModeFromSetting(currentSnapshot.settings.defaultBotPermission)}
             executionDefaultsReady={currentSnapshot.executionDefaults.ready}
@@ -2118,6 +2302,7 @@ function App() {
                 throw error;
               }
             }}
+            onSetVoiceWakeSettings={configureVoiceWake}
             onSetRuntimeProxy={async value => {
               await window.rambo.setSetting('runtimeProxy', value);
               setSnapshot(await window.rambo.snapshot());
@@ -2170,7 +2355,15 @@ function App() {
               currentSnapshot.globalResourceIds.includes(resource.id))}
             routines={currentSnapshot.routines.filter(routine => routine.botId === settingsBot.id)}
             runs={currentSnapshot.routineRuns}
+            voiceWakeEnabled={voiceWakeEnabled}
+            voiceWakeTargetId={voiceWakeTargetId}
             onSave={saveBot} onUpdateExecution={updateBotExecutionConfig}
+            onSetVoiceWakeTarget={async botId => {
+              await configureVoiceWake({
+                enabled: botId ? voiceWakeEnabled : false,
+                botId
+              });
+            }}
             onSetResource={async (resourceId, enabled) => {
               const bot = await window.rambo.setBotResource(settingsBot.id, resourceId, enabled);
               setSnapshot(current => current
@@ -5455,8 +5648,11 @@ function BotSettingsPage({
   modelError,
   routines,
   runs,
+  voiceWakeEnabled,
+  voiceWakeTargetId,
   onSave,
   onUpdateExecution,
+  onSetVoiceWakeTarget,
   onSetResource,
   onSetArchived,
   onRequestDelete
@@ -5467,8 +5663,11 @@ function BotSettingsPage({
   modelError: string | null;
   routines: RoutineListItem[];
   runs: RoutineRun[];
+  voiceWakeEnabled: boolean;
+  voiceWakeTargetId: string | null;
   onSave: (id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>) => Promise<void>;
   onUpdateExecution: (id: string, patch: { model: string; permission: PermissionMode }) => Promise<void>;
+  onSetVoiceWakeTarget: (botId: string | null) => Promise<void>;
   onSetResource: (resourceId: string, enabled: boolean) => Promise<void>;
   onSetArchived: (id: string, archived: boolean) => Promise<void>;
   onRequestDelete: () => void;
@@ -5483,6 +5682,7 @@ function BotSettingsPage({
   const [saveStatus, setSaveStatus] = useState<AutoSaveState>('idle');
   const [saveScope, setSaveScope] = useState<'profile' | 'session' | null>(null);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [wakeTargetBusy, setWakeTargetBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'model' | 'resources' | 'memory' | 'routines' | 'manage'>('profile');
   const [resourceSection, setResourceSection] = useState<ResourceSection>('skills');
@@ -5587,6 +5787,21 @@ function BotSettingsPage({
     finally { setLifecycleBusy(false); }
   };
 
+  const changeVoiceWakeTarget = async () => {
+    setWakeTargetBusy(true);
+    setError(null);
+    setSaveStatus('saving');
+    try {
+      await onSetVoiceWakeTarget(voiceWakeTargetId === bot.id ? null : bot.id);
+      setSaveStatus('saved');
+    } catch (issue) {
+      setError(toError(issue));
+      setSaveStatus('error');
+    } finally {
+      setWakeTargetBusy(false);
+    }
+  };
+
   return (
     <section className="settings-page bot-settings-page">
       <div className="settings-page-heading">
@@ -5666,6 +5881,26 @@ function BotSettingsPage({
             disabled={saving}
             onChange={event => saveBotChange({ notificationsEnabled: event.target.checked })} />
         </label>
+        <div className={'bot-voice-wake-card' + (voiceWakeTargetId === bot.id ? ' selected' : '')}>
+          <div>
+            <strong>语音唤醒目标</strong>
+            <p>固定唤醒词是“Rambo”；如果英文发音不顺口，也可以说“兰博”“软博”或“然博”。这里只切换由哪个 Bot 接听，不会改变唤醒词。</p>
+            <small className="field-hint">
+              {voiceWakeTargetId === bot.id
+                ? voiceWakeEnabled
+                  ? '当前正在监听，唤醒后会打开这个 Bot 的私聊并进入 Live。'
+                  : '已选为唤醒目标；在“设置 → 语音与唤醒”开启后台监听后生效。'
+                : '全应用只有一个唤醒目标；设置后会覆盖原来的目标 Bot。'}
+            </small>
+          </div>
+          <button type="button" className="secondary-button"
+            disabled={wakeTargetBusy || saving || bot.archived}
+            onClick={() => void changeVoiceWakeTarget()}>
+            {wakeTargetBusy
+              ? '正在更新…'
+              : voiceWakeTargetId === bot.id ? '取消唤醒目标' : '设为唤醒目标'}
+          </button>
+        </div>
         <div className="settings-autosave-row">
           <AutoSaveIndicator state={saveScope === 'profile' ? saveStatus : 'idle'}
             error={saveScope === 'profile' ? error : null} />
@@ -6048,6 +6283,9 @@ function AccountSettingsPage({
   modelSource,
   notificationUnavailable,
   launchAtLogin,
+  voiceWakeEnabled,
+  voiceWakeTargetId,
+  voiceWake,
   globalModel,
   globalPermission,
   executionDefaultsReady,
@@ -6072,6 +6310,7 @@ function AccountSettingsPage({
   onVerifyPlaywrightConnection,
   onCancelPlaywrightVerification,
   onSetLaunchAtLogin,
+  onSetVoiceWakeSettings,
   onSetRuntimeProxy,
   onSetCodexHomeSyncMode,
   onSetModelSource,
@@ -6092,6 +6331,9 @@ function AccountSettingsPage({
   modelSource: ModelSourceState;
   notificationUnavailable: string | null;
   launchAtLogin: boolean;
+  voiceWakeEnabled: boolean;
+  voiceWakeTargetId: string | null;
+  voiceWake: VoiceWakeUi;
   globalModel: string;
   globalPermission: PermissionMode | null;
   executionDefaultsReady: boolean;
@@ -6116,6 +6358,7 @@ function AccountSettingsPage({
   onVerifyPlaywrightConnection: () => Promise<PlaywrightVerificationResult>;
   onCancelPlaywrightVerification: () => Promise<void>;
   onSetLaunchAtLogin: (enabled: boolean) => Promise<void>;
+  onSetVoiceWakeSettings: (settings: VoiceWakeSettings) => Promise<void>;
   onSetRuntimeProxy: (value: string) => Promise<void>;
   onSetCodexHomeSyncMode: (mode: CodexHomeSyncMode) => Promise<CodexHomeSyncChangeResult>;
   onSetModelSource: (kind: ModelSourceKind) => Promise<ModelSourceChangeResult>;
@@ -6132,6 +6375,9 @@ function AccountSettingsPage({
   const [codexHomeSyncBusy, setCodexHomeSyncBusy] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [generalNotice, setGeneralNotice] = useState<string | null>(null);
+  const [voiceWakeBusy, setVoiceWakeBusy] = useState(false);
+  const [voiceWakeError, setVoiceWakeError] = useState<string | null>(null);
+  const [voiceWakeNotice, setVoiceWakeNotice] = useState<string | null>(null);
   const [configurationError, setConfigurationError] = useState<string | null>(null);
   const [configurationNotice, setConfigurationNotice] = useState<string | null>(null);
   const [globalModelDraft, setGlobalModelDraft] = useState(globalModel);
@@ -6725,6 +6971,7 @@ function AccountSettingsPage({
 
   const tabs: Array<[SystemSettingsTab, string]> = [
     ['general', '常规'],
+    ['voice', '语音与唤醒'],
     ['account', '模型配置'],
     ['resources', '资源管理'],
     ['routines', '定时任务']
@@ -6797,6 +7044,29 @@ function AccountSettingsPage({
   const sourcePickerVisible = sourcePickerOpen || accountSettings.activeSource === null;
   const globalModelsForDisplay = manualEditorOpen ? selectedManualModels : models;
   const globalModelSelectValue = manualEditorOpen ? manualDefaultModel : globalModelDraft;
+  const availableWakeBots = bots.filter(bot => !bot.archived);
+  const selectedVoiceWakeBotId = voiceWakeTargetId &&
+    availableWakeBots.some(bot => bot.id === voiceWakeTargetId)
+    ? voiceWakeTargetId
+    : '';
+  const voiceWakeStatusText = voiceWake.state === 'listening'
+    ? '正在监听'
+    : voiceWake.state === 'starting'
+      ? '正在启动监听'
+      : voiceWake.state === 'paused'
+        ? '语音对话中，监听已暂停'
+        : voiceWake.state === 'error'
+          ? '监听异常'
+          : '未监听';
+  const voiceWakeStatusDetail = voiceWake.state === 'listening'
+    ? '固定监听“Rambo”“兰博”“软博”“然博”及对应问候语；音频只在内存中检测，不保存录音。'
+    : voiceWake.state === 'starting'
+      ? '正在加载本机模型并请求麦克风。首次使用需要允许 Rambo 访问麦克风。'
+      : voiceWake.state === 'paused'
+        ? '麦克风交给 Codex Live；结束或连接失败后会按开关自动恢复监听。'
+        : voiceWake.state === 'error'
+          ? voiceWake.error ?? '无法启动本机唤醒监听。'
+          : '开启后会调用本机模型检测唤醒词，不会把待机音频发送到语音服务。';
 
   return (
     <section className="settings-page system-settings-page" aria-label="系统设置">
@@ -6847,6 +7117,88 @@ function AccountSettingsPage({
           {(generalError || generalNotice) && (
             <div className={generalError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
               {generalError ?? generalNotice}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'voice' && (
+        <div className="system-settings-panel settings-tab-panel" role="tabpanel"
+          id="system-panel-voice" aria-labelledby="system-tab-voice">
+          <div className="settings-section voice-wake-section">
+            <div className="settings-section-title">
+              <div>
+                <h2>本机语音唤醒</h2>
+                <p>固定使用“Rambo”；如果英文发音不顺口，也可以说“兰博”“软博”或“然博”，支持在前面加“你好”。唤醒后打开指定 Bot 的唯一私聊，并直接进入 Codex Live 语音对话；唤醒、接通和结束都会播放提示音，接通后等待你开口。</p>
+              </div>
+            </div>
+            <label className="settings-toggle-row">
+              <span>
+                <strong>后台等待唤醒</strong>
+                <span>首次开启会请求麦克风权限；之后重启应用时恢复上次开启状态。关闭窗口仍可监听，显式退出 Rambo 会停止。</span>
+              </span>
+              <input type="checkbox" aria-label="后台等待唤醒"
+                checked={voiceWakeEnabled}
+                disabled={voiceWakeBusy || !availableWakeBots.length}
+                onChange={event => {
+                  const enabled = event.target.checked;
+                  const botId = selectedVoiceWakeBotId || availableWakeBots[0]?.id || null;
+                  setVoiceWakeBusy(true);
+                  setVoiceWakeError(null);
+                  setVoiceWakeNotice(null);
+                  void onSetVoiceWakeSettings({ enabled, botId }).then(() => {
+                    setVoiceWakeNotice(enabled
+                      ? '已开启本机唤醒。说“Rambo”即可进入语音对话。'
+                      : '已关闭本机唤醒，麦克风监听已停止。');
+                  }).catch(issue => {
+                    setVoiceWakeError(toError(issue));
+                  }).finally(() => {
+                    setVoiceWakeBusy(false);
+                  });
+                }} />
+            </label>
+            <label className="settings-field voice-wake-target-field">
+              <span>唤醒后接听</span>
+              <span className="select-input-control">
+                <select className="text-input select-input" aria-label="唤醒后接听的 Bot"
+                  value={selectedVoiceWakeBotId}
+                  disabled={voiceWakeBusy || !availableWakeBots.length}
+                  onChange={event => {
+                    const botId = event.target.value || null;
+                    setVoiceWakeBusy(true);
+                    setVoiceWakeError(null);
+                    setVoiceWakeNotice(null);
+                    void onSetVoiceWakeSettings({ enabled: voiceWakeEnabled, botId }).then(() => {
+                      setVoiceWakeNotice('唤醒目标已更新。');
+                    }).catch(issue => {
+                      setVoiceWakeError(toError(issue));
+                    }).finally(() => {
+                      setVoiceWakeBusy(false);
+                    });
+                  }}>
+                  {!selectedVoiceWakeBotId && <option value="">请选择 Bot</option>}
+                  {availableWakeBots.map(bot => (
+                    <option value={bot.id} key={bot.id}>{bot.name}</option>
+                  ))}
+                </select>
+                <span className="select-input-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+              </span>
+              <small className="field-hint">无论当前正在查看哪个聊天或设置页，唤醒都由这里选中的 Bot 接听。</small>
+            </label>
+            <div className={'voice-wake-status voice-wake-status-' + voiceWake.state} role="status">
+              <span className="voice-wake-status-dot" aria-hidden="true" />
+              <span>
+                <strong>{voiceWakeStatusText}</strong>
+                <span>{voiceWakeStatusDetail}</span>
+              </span>
+            </div>
+            <p className="field-hint voice-wake-boundary">
+              支持 macOS 和 Windows 的本机离线关键词检测；系统真正睡眠时不承诺继续监听。合盖使用时，需要外接显示器并让系统继续向 Rambo 提供耳机麦克风。
+            </p>
+          </div>
+          {(voiceWakeError || voiceWakeNotice) && (
+            <div className={voiceWakeError ? 'form-error settings-message' : 'form-saved settings-message'} role="status">
+              {voiceWakeError ?? voiceWakeNotice}
             </div>
           )}
         </div>

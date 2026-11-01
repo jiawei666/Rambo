@@ -1,5 +1,65 @@
 # 实施进度
 
+## 2026-11-01 · Q229 恢复唤醒成功提示音，窗口仍保持后台
+
+- 运行播放器重新加入 `wake` 提示音映射，直接使用用户认可的 UI SFX `scifi/wake` 原始媒体；关键词命中后立即尝试播放，不等待播放结束就继续后台切换目标 Bot 和启动 Live。
+- 唤醒仅播放一次提示音，不恢复窗口、不聚焦，也不重新引入主动问候；手动进入 Live 仍只播放接通音和结束音。
+- 自动测试更新为校验三段媒体加载、唤醒音播放、隐藏窗口保持不可见，以及接通/结束生命周期不变。
+- 验证通过：`npm run typecheck`；提示音媒体定向测试 **2/2**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则、291 个案例、163 个局部已实现案例）；`npm run test:acceptance` **21/21**；`npm run build`；隐藏窗口唤醒与手动 Live 生命周期 Electron E2E **2/2**；仓库与构建产物 `wake.mp3` SHA-256 一致；`git diff --check`。
+- 证据边界：自动测试证明播放器与唤醒事件记录到 `wake.mp3`，但不证明用户当前耳机/扬声器实际听到的三段音量与连续听感；仍需真实设备验收。
+
+## 2026-11-01 · Q228 后台唤醒保持静默且不展示窗口
+
+- 删除唤醒命中时的 `playVoiceCue('wake')` 调用；运行播放器只保留 connected、ended 两段，`wake.mp3` 仅作为派生源和哈希校验资料保留，不再加载或播放。
+- 删除主进程唤醒命中后的 `showWindow()` 调用。隐藏或最小化的 Rambo 在唤醒后继续在后台切换目标 Bot 并启动现有 Live，不再恢复、显示或聚焦窗口。
+- 隔离 Electron 用例在开启监听后主动隐藏窗口，再触发真实唤醒 PCM；验证目标 Bot/Live 路径启动、没有 `wake.mp3` 播放且窗口始终保持隐藏。
+
+## 2026-11-01 · Q227 三段提示音统一基于 Sci-fi 唤醒音，并取消主动问候（唤醒播放与窗口行为已由 Q228 取代）
+
+- 用户否定此前选择的 Universfield 通知音后，保留其认可的 UI SFX `scifi/wake`（CC0-1.0）作为唤醒音；接通与结束均改为该音色的派生变体，不再使用外部人员通知音。
+- 接通音第一段保持原样，第二段升高 `2` 个半音并恢复时长，形成上行成功反馈；结束音第一段降低 `2` 个半音、第二段降低 `5` 个半音并恢复时长，形成下行收尾。三段均为单声道 44.1 kHz 192 kbps，平均音量相差不超过约 `0.3 dB`，继续使用 `0.75` 播放音量。
+- 派生参数、峰值限制、最终哈希和 CC0 来源记录在 `UPSTREAM.md`；播放器优先加载随应用打包的媒体，失败时才回退到本地合成铃声。
+- 新增提示音生命周期，同一 Live 只播放一次接通音；正常结束或接通后失败只播放一次结束音，接通前失败不播放结束音。手动 Live 与语音唤醒路径一致。
+- 删除 `wakeInitiated`、`sendVoiceGreeting`、`VoiceGreetingController` 和 `thread/realtime/appendSpeech` 主动问候链路；Realtime prompt/instructions 明确要求接通后不主动打招呼、等待用户先说话。
+- 验证通过：`npm run typecheck`；提示音媒体与生命周期定向测试 **4/4**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则、291 个案例、163 个局部已实现案例）；`npm run test:acceptance` **21/21**；`npm run build`；语音唤醒与 Live 提示音生命周期 Electron E2E **2/2**；构建产物三条音频哈希与仓库源文件一致；`git diff --check`。
+- 证据边界：真实耳机上的三段音量、真实 Live 在接通后是否保持安静、环境噪声识别与监听恢复仍须实机验收，不能以自动测试替代。
+
+## 2026-11-01 · Q226 修复唤醒 Live 的 Responses delegation 错误
+
+- 用户真机反馈：手动点击 Live 正常，但语音唤醒启动的 Live 报 `response.create requires a session with Responses delegation`。核对 App Server 0.165.0 schema 与 Frameless Bidi 源码后确认，普通 Realtime V3 不能从客户端 DataChannel 直接发 `response.create`。
+- 删除渲染层发送 DataChannel `response.create` 的路径。连接提示音结束后，渲染层只请求 Host；Host 仅在 `wakeInitiated: true` 且当前会话为 `live` 时，通过 `thread/realtime/appendSpeech` 发送一次固定问候“我在，想让我做什么？”。
+- Host 记录 `wakeInitiated` 与 `greetingSent`，手动 Live 不发送，同一连接重复请求会被去重；Realtime start 的 prompt/instructions 继续携带主动问候要求。
+- `playVoiceCue()` 现在等最后一个音符结束并留出 40ms 尾音后才完成；唤醒音和连接音峰值音量提升到 0.58–0.72，连接音结束后才请求 Host 发送问候。
+- 验证通过：`npm run typecheck`；`voice-cues` + `voice-greeting` + `voice-wake` + Host 定向后端 **130/130**；验收目录同步与校验通过。
+- 证据边界：自动测试证明请求入口、文本、去重和手动 Live 对照，不证明用户当前耳机、真实 Realtime sideband 下已经实际播报；仍需真实唤醒复验错误胶囊消失、Bot 实际先开口和连接音顺序。
+
+## 2026-11-01 · Q225 口音近音唤醒、增强提示音与主动问候修复
+
+- 针对用户英文发音不标准，关键词文件新增“软博”“然博”及“你好，软博”“你好，然博”；连同既有“兰博”，这些说法都只作为 Rambo 的识别近音，继续路由到同一个全局唤醒目标 Bot。
+- 新增四段真实离线模型夹具和中英文普通语音控制样本，验证标准 Rambo、中文近音及对应问候能够命中，普通语音不触发；没有通过降低全局阈值换取召回。
+- 唤醒和连接提示音改为基音加高八度泛音的更响亮铃声，峰值音量提高到旧实现的四倍以上，并使用不同音高和节奏区分唤醒成功与 Live 接通。
+- 当时曾尝试修复真实 Live 中 `Unknown parameter: 'response'`：问候文本继续由 Host 在 Realtime start 的 prompt/instructions 注入，DataChannel 改为只发送 `{"type":"response.create"}`。该方案随后在真实联调中触发 Responses delegation 错误，已由 Q226 的 `thread/realtime/appendSpeech` 路径取代。
+- 验证通过：`npm run typecheck`；`voice-cues` + `voice-greeting` + `voice-wake` + Host 定向后端 **129/129**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则、288 个案例、160 个局部已实现案例）、`npm run test:acceptance` **21/21**；`npm run build`；完整私聊 + 语音唤醒 + 运行时启动 Electron **45 通过、1 跳过**。
+- 证据边界：自动测试可证明近音词命中、控制样本拒绝、提示音频率/音量结构及问候消息格式；尚未使用用户实际耳机麦克风验收音量、自然口音召回率、环境噪声误触率、真实 Live 主动开口和错误胶囊消失，不能据此宣称 V12/V16 已整体通过。
+
+## 2026-11-01 · Q224 唤醒/连接提示音与 Live 主动问候
+
+- 用户反馈能唤醒但必须说得很标准，且唤醒后没有明确反馈。本机关键词文件增加“兰博”和“你好，兰博”两种中文读音写法，同时保留“Rambo”和“你好，Rambo”；产品名称和视觉品牌仍为 Rambo。
+- 唤醒命中后立即播放短促唤醒提示音；由唤醒启动的 Live 首次进入 `live` 后播放另一组连接成功提示音。提示音由 Web Audio 合成，不依赖外部媒体文件。
+- 新增 `VoiceGreetingController`，只在语音唤醒启动的会话中，等连接提示音完成后请求一次主动问候。该控制器后来保留为触发入口，但询问通道已由 Q226 改为 Host 的 `thread/realtime/appendSpeech`；手动进入 Live 不发送强制问候，同一连接不重复请求。
+- Host 仅在 `wakeInitiated: true` 时为 Realtime prompt/instructions 注入主动问候要求，避免把普通手动 Live 也变成强制先开口。监听仍按 Q223 在 Live 连接、进行和结束期间暂停，结束或失败后按设置恢复。
+- 验证通过：`npm run typecheck`；`voice-cues` + `voice-greeting` + `voice-wake` + Host 定向后端 **129/129**；`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则、288 个案例、160 个局部已实现案例）、`npm run test:acceptance` **21/21**；`npm run build`；完整私聊 + 语音唤醒 + 运行时启动 Electron **45 通过、1 跳过**；`git diff --check`。
+- 证据边界：自动测试证明两段音的调度、问候时序/去重与 Host 提示注入，尚未使用用户实际耳机麦克风验收提示音听感、真实 Live 模型是否立即开口、环境噪声下的新读音召回率/误触率，以及 Live 结束后的真实后台监听恢复。不能据此宣称 V12/V16 或完整发布已整体通过。
+
+## 2026-10-31 · Q222 macOS 与 Windows 均由 Actions 原生构建
+
+- 新增 `.github/workflows/macos-build.yml`，在 Apple Silicon 的 `macos-15` runner 上运行类型检查、发布工具测试和 `npm run release:package -- darwin-arm64`；开发 Mac 不再执行正式 macOS 发布构建。
+- macOS 与 Windows 的 `v*` tag workflow 现在分别等待同名 Draft Release，并把各自正式资产直接上传到 draft；Actions artifact 仅作工作流留存，不下载到本机。
+- 开发 Mac 不下载 Windows Actions artifact 或其他 Windows 产物，只核对 Draft Release 的资产清单、名称、大小和 GitHub API digest/size；这不构成 Windows 产物或真机验收。
+- `rambo-release` Skill、发布约定和变更检查映射改为双平台 Actions 原生构建流程；macOS Release ZIP 仅在安装 `/Applications/Rambo.app` 时临时下载，校验 sidecar 后解压安装并清理临时目录。
+- 发版顺序固定为：提交并推送 `main`、创建并推送 annotated tag、创建 Draft Release、等待两条 workflow、核对六个资产、安装活动 Mac、公开 Draft Release。
+- 证据边界：当前只完成工作流、Skill、文档与本地测试接线；两条 tag workflow 的真实运行、macOS runner 构建结果、Draft Release 直传和 Windows 原生 CI 结果尚需下一次明确发版时验证。Windows CI 成功仍不代表 Windows 真机安装、启动、登录、Bot/Routine、托盘、音频、微信或 NSIS 卸载验收通过。
+
 ## 2026-10-31 · Q221 Windows 发布只认原生 CI
 
 - `rambo-release` Skill 和发布约定改为：macOS 继续在本地严格校验；Windows 只核对对应目标 commit 的 GitHub Actions 原生构建成功，并取上传资产作为 GitHub Release 传输文件。
@@ -748,3 +808,13 @@
 - 安装包只包含当前四个黑/白运行时 PNG。旧机器人 SVG、`00-*` 至 `16-*`、`working*`、旧彩色源图及重复 template 资源已全部删除，不进入项目或安装包。
 - 验证通过：`npm run typecheck`、托盘/桌面外壳定向测试、`npm run test:catalog`（158 条规则、281 个案例）、`npm run test:acceptance`（21/21）和 `npm run build`。独立 Electron `Tray` 进程加载过黑色、白色与 template 资源，未出现空图或托盘创建异常；`screencapture` 受当前屏幕录制权限限制，无法归档实际菜单栏截图。
 - 证据边界：尚未在浅色/暗色 macOS 菜单栏或 Windows 真机托盘完成目测；macOS 系统实际着色结果、Windows 高 DPI、点击托盘菜单和真实运行态仍需平台验收，不能据此宣称 P10/Q220 已全部通过。
+
+## 2026-10-31：Q223 固定 Rambo 唤醒并进入目标 Bot 的 Live
+
+- 固定离线唤醒采用 `sherpa-onnx-node@2.0.1` 与 `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` 中英模型；`assets/voice-wake/` 随应用分发 encoder、decoder、joiner、tokens、关键词文件和 Apache-2.0 许可，不在运行时下载。`keywords.txt` 固定覆盖 `Rambo` 与 `你好，Rambo`。
+- 渲染层用 `getUserMedia` + `AudioWorklet` 采集单声道音频并降采样到 16 kHz，只把内存 PCM 分块发给主进程；主进程用本机 KWS 检测，不保存待机录音，也不发送给语音服务。
+- 系统设置新增“语音与唤醒”，保存唯一 `voiceWakeBotId` 与 `voiceWakeEnabled`；Bot 资料页的“设为唤醒目标”修改同一份全局设置。命中后停止监听、打开目标 Bot 的唯一私聊并启动现有 Codex Live；Live 连接/进行/结束期间暂停监听，结束或失败后按开关恢复。目标 Bot 归档或删除时关闭唤醒并清空目标。
+- 后端真实模型测试覆盖两种固定说法命中与普通语音拒绝，缺模型时失败关闭。隔离 Electron 用模拟麦克风播放真实 `rambo.wav`，经过 AudioWorklet、主进程 KWS、全局目标路由与现有 Live 麦克风启动路径；同时覆盖设置保存、重启回读、关闭后旧 PCM 不再触发、归档目标后清空设置。
+- 修复唤醒事件依赖整个 `modelSource` 对象导致的渲染层订阅重挂载与高频刷新循环；`startVoice` 现只依赖语音预检查实际读取的源类型、手动 API Base URL 与服务名，Live 转写侧栏预览回归通过。
+- 验证通过：`npm run typecheck`；相关后端 `voice-wake` + Host 共 **126/126**；`npm run test:catalog`（158 条规则、284 个案例、157 个局部已实现案例）；`npm run test:acceptance` **21/21**；`npm run build`；完整私聊 Electron **40 通过、1 跳过**；唤醒 Electron **1/1**；运行时启动 Electron 定向 **4/4**；`git diff --check`。
+- 证据边界：模拟麦克风不是用户实际耳机麦克风，隔离 Electron 也不等于正式安装版。真实后台持续监听、macOS 系统麦克风授权、外接显示器合盖、真实 Codex Live 双向音频、真实耳机下的口音/音量/误触率、长时间资源占用和系统睡眠边界仍未验收，不能据此宣称 V03/V05/V11/V12 或完整发布已通过。

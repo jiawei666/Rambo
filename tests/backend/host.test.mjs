@@ -5162,7 +5162,12 @@ test('a new Live private thread receives secret management tools and autonomy in
     assert.match(threadStart.params.developerInstructions, /rambo_secrets\.run_with_secret/u);
     const realtimeStart = runtime.requests.find(request => request.method === 'thread/realtime/start');
     assert.equal(realtimeStart.params.threadId, store.chat(chat.id).threadId);
+    assert.match(realtimeStart.params.realtimeStartInstructions, /不要主动打招呼/u);
+    assert.match(realtimeStart.params.realtimeStartInstructions, /等待用户开始说话/u);
+    assert.match(realtimeStart.params.prompt, /不要主动打招呼/u);
+    assert.match(realtimeStart.params.prompt, /等待用户开始说话/u);
     await voiceStart;
+    assert.equal(runtime.requests.filter(request => request.method === 'thread/realtime/appendSpeech').length, 0);
   });
 });
 
@@ -5273,6 +5278,7 @@ test('voice transcript items persist on delta, deduplicate completion, and are r
     assert.equal('tools' in realtimeStart.params, false);
     assert.equal('dynamicTools' in realtimeStart.params, false);
     assert.equal(await voiceStart.then(value => value.threadId), threadId);
+    assert.equal(runtime.requests.some(request => request.method === 'thread/realtime/appendSpeech'), false);
 
     runtime.emit('notification', 'thread/realtime/item/started', {
       threadId,

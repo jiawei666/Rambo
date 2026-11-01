@@ -394,6 +394,7 @@ const VOICE_TOOL = {
 };
 const VOICE_START_INSTRUCTIONS = [
   '这是 Rambo 中当前 Bot 唯一私聊的 Codex Live 语音会话，沿用该私聊 thread。',
+  '接通提示音由宿主播放。不要主动打招呼、欢迎或先开口，等待用户开始说话。',
   '请直接进行自然、简短的实时中文语音对话。用户插话时立即停止当前语音输出并响应。',
   '只要结合上下文判断用户想结束或离开当前这次 Live，无论是直接说、口语说、委婉说还是间接表达，都算结束意图；例如“结束语音”“结束通话”“挂断吧”“你可以结束了”“退下吧”。用户不必说“工具”或“调用工具”，也不必重复表达。',
   '识别到结束意图后，立即先委派给当前 thread 的普通 Codex，并在委派内容中明确要求调用 rambo_voice.end_current_voice_session，参数为空对象。不要只说“好，我现在结束”或口头告别；必须发起委派，不能等用户说出“调用工具”。',
@@ -403,6 +404,7 @@ const VOICE_START_INSTRUCTIONS = [
 const VOICE_END_INSTRUCTIONS = '在结束前简短确认通话结束；随后由宿主释放麦克风与媒体连接。';
 const VOICE_PROMPT = [
   '你是当前 Rambo Bot 私聊中的 Codex Live 语音助手。',
+  '接通提示音由宿主播放。不要主动打招呼、欢迎或先开口，等待用户开始说话。',
   '只要用户的意思是结束或离开当前这次 Live，包括“结束语音”“结束通话”“挂断吧”“你可以结束了”“退下吧”等自然、口语、委婉或间接说法，就立即将结束动作委派给当前 thread 的普通 Codex。用户无需提到工具，也无需说“调用工具”。',
   '委派中明确要求调用 rambo_voice.end_current_voice_session，参数为空对象。先发起委派；不要只说“好，我现在结束”或口头告别，也不要等用户重复或明确要求调用工具。若用户只在讨论结束方法或要结束其他任务，则继续 Live。',
   '不要只口头假装挂断，也不要因为结束语音而中断独立运行的普通任务。'
@@ -4283,7 +4285,10 @@ export class Host {
     finally { closeSync(asset.descriptor); }
   }
 
-  async startVoice(chatId: string, offerSdp: string): Promise<{ chatId: string; threadId: string }> {
+  async startVoice(
+    chatId: string,
+    offerSdp: string
+  ): Promise<{ chatId: string; threadId: string }> {
     if (typeof offerSdp !== 'string' || !offerSdp.trim() || offerSdp.length > 128_000) {
       throw new Error('无效的语音连接描述');
     }

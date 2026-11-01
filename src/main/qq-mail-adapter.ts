@@ -19,7 +19,8 @@ export class QQMailAdapter extends ImapSmtpMailAdapter {
 
 export function qqMailAdapterFactory(
   connection: ConnectorConnection,
-  credential: ConnectorCredentialPayload
+  credential: ConnectorCredentialPayload,
+  dependencies: ImapSmtpMailAdapterDependencies = {}
 ): MailAdapter {
-  return new QQMailAdapter(connection, credential);
+  return new QQMailAdapter(connection, credential, dependencies);
 }

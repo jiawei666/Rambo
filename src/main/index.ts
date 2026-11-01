@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, protocol, session, shell, Tray, utilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
+import * as mailSocks from 'socks';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   closeSync,
@@ -28,6 +29,7 @@ import {
 import { ConnectorCredentials } from './connector-credentials';
 import { SecureMailAdapterRegistry } from './mail-adapter';
 import { MailRuntime } from './mail-runtime';
+import { mailProxyUrlForHost } from './mail-network';
 import { qqMailAdapterFactory } from './qq-mail-adapter';
 import { gmailMailAdapterFactory } from './gmail-adapter';
 import { gmailImapAdapterFactory } from './gmail-imap-adapter';
@@ -48,6 +50,7 @@ import {
 } from './login-item';
 import { SystemIndicators, type RunningBotIndicator } from './system-indicators';
 import { cleanupComposerAttachments } from './composer-attachment-cleanup';
+import { VoiceWakeEngine, type VoiceWakeKeywordSpotter } from './voice-wake';
 import {
   isMessageContent,
   type AppEvent,
@@ -64,7 +67,8 @@ import {
   type ModelCatalogRefresh,
   type ModelOption,
   type ModelSourceKind,
-  type ModelSourceState
+  type ModelSourceState,
+  type VoiceWakeSettings
 } from '../shared/contracts';
 import {
   composerAttachmentKind,
@@ -102,6 +106,7 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 }]);
 app.setName('Rambo');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const desktop = desktopPlatform(process.platform);
 if (desktop === 'win32') app.setAppUserModelId('local.rambo.desktop');
 const startHidden = process.argv.includes('--hidden');
@@ -152,6 +157,7 @@ let loginItem: LoginItemController;
 let systemIndicators: SystemIndicators<Electron.NativeImage, Electron.Menu> | null = null;
 let manualModelCredentials: ConnectorCredentials;
 let composerAttachmentCleanupTimer: ReturnType<typeof setInterval> | null = null;
+let voiceWakeEngine: VoiceWakeEngine | null = null;
 const messageAssetGrants = new Map<string, { messageId: string; source: string; expiresAt: number }>();
 const composerAttachmentGrants = new Map<string, { path: string; mimeType: string; expiresAt: number }>();
 const composerDraftAttachmentPaths = new Map<string, Set<string>>();
@@ -861,6 +867,70 @@ const emit = (event: AppEvent) => {
   }
   if (window && !window.isDestroyed()) window.webContents.send('rambo:event', event);
 };
+function activeVoiceWakeBot(botId: string | null) {
+  if (!botId) return null;
+  return store.bots().find(bot => bot.id === botId && !bot.archived) ?? null;
+}
+function currentVoiceWakeSettings(): VoiceWakeSettings {
+  const settings = store.settings();
+  return {
+    enabled: settings.voiceWakeEnabled === 'true',
+    botId: settings.voiceWakeBotId?.trim() || null
+  };
+}
+function emitVoiceWakeError(error: unknown): void {
+  voiceWakeEngine?.close();
+  voiceWakeEngine = null;
+  if (window && !window.isDestroyed()) window.webContents.setBackgroundThrottling(true);
+  emit({
+    type: 'voiceWakeError',
+    message: `本机唤醒已停止：${error instanceof Error ? error.message : String(error)}`
+  });
+}
+function stopVoiceWakeRuntime(): void {
+  voiceWakeEngine?.close();
+  voiceWakeEngine = null;
+  if (window && !window.isDestroyed()) window.webContents.setBackgroundThrottling(true);
+}
+function startVoiceWakeRuntime(): { keyword: string; sampleRate: number } {
+  const settings = currentVoiceWakeSettings();
+  if (!settings.enabled) throw new Error('本机唤醒尚未开启');
+  if (!activeVoiceWakeBot(settings.botId)) throw new Error('唤醒目标 Bot 不存在或已归档');
+  const appRequire = createRequire(join(app.getAppPath(), 'package.json'));
+  const sherpa = appRequire('sherpa-onnx-node') as {
+    KeywordSpotter: new (config: unknown) => VoiceWakeKeywordSpotter;
+  };
+  const engine = new VoiceWakeEngine({
+    modelDirectory: join(
+      app.isPackaged ? process.resourcesPath : app.getAppPath(),
+      app.isPackaged ? 'voice-wake' : 'assets/voice-wake'
+    ),
+    createSpotter: config => new sherpa.KeywordSpotter(config)
+  });
+  voiceWakeEngine?.close();
+  voiceWakeEngine = null;
+  try {
+    engine.start();
+  } catch (error) {
+    engine.close();
+    throw error;
+  }
+  voiceWakeEngine = engine;
+  window?.webContents.setBackgroundThrottling(false);
+  return { keyword: 'Rambo', sampleRate: engine.sampleRate };
+}
+function voiceWakeSamples(value: unknown): Float32Array {
+  let samples: Float32Array;
+  if (value instanceof Float32Array) samples = value;
+  else if (value instanceof ArrayBuffer) samples = new Float32Array(value);
+  else if (ArrayBuffer.isView(value)) {
+    samples = new Float32Array(value.buffer, value.byteOffset, Math.floor(value.byteLength / 4));
+  } else {
+    throw new Error('无效的唤醒音频分块');
+  }
+  if (!samples.length || samples.length > 16_000) throw new Error('无效的唤醒音频长度');
+  return samples;
+}
 let codexHomeSyncApplying: Promise<void> | null = null;
 async function applyPendingCodexHomeSync(): Promise<void> {
   if (!runtime || !host || codexHomeSyncApplying) return;
@@ -1465,6 +1535,11 @@ function registerIPC(): void {
     setBotArchived: (botId, archived) => {
       if (typeof archived !== 'boolean') throw new Error('无效的归档状态');
       const bot = store.setBotArchived(id(botId), archived);
+      if (archived && store.settings().voiceWakeBotId === bot.id) {
+        store.setSetting('voiceWakeEnabled', 'false');
+        store.setSetting('voiceWakeBotId', '');
+        stopVoiceWakeRuntime();
+      }
       host.changed();
       return bot;
     },
@@ -1509,6 +1584,11 @@ function registerIPC(): void {
         for (const threadId of threadIds) await runtime.request('thread/delete', { threadId });
       }
       store.deleteBot(bot.id);
+      if (store.settings().voiceWakeBotId === bot.id) {
+        store.setSetting('voiceWakeEnabled', 'false');
+        store.setSetting('voiceWakeBotId', '');
+        stopVoiceWakeRuntime();
+      }
       for (const credentialRef of secretRefs) connectorCredentials.delete(credentialRef);
       try {
         removeManagedBotDirectory(store.directory, bot.id);
@@ -2081,6 +2161,25 @@ function registerIPC(): void {
       host.changed();
       return { ...state, catalogRefresh: null };
     },
+    setVoiceWakeSettings: (inputValue: unknown): VoiceWakeSettings => {
+      const input = object(inputValue);
+      if (typeof input.enabled !== 'boolean') throw new Error('无效的本机唤醒开关状态');
+      const botId = input.botId === null || input.botId === undefined || input.botId === ''
+        ? null
+        : id(input.botId);
+      if (botId) {
+        const bot = store.bot(botId);
+        if (bot.archived) throw new Error('唤醒目标 Bot 已归档，请选择其他 Bot');
+      }
+      if (input.enabled && !botId) throw new Error('请先选择唤醒后接听的 Bot');
+      store.setSetting('voiceWakeBotId', botId ?? '');
+      store.setSetting('voiceWakeEnabled', String(input.enabled));
+      if (!input.enabled) stopVoiceWakeRuntime();
+      host.changed();
+      return { enabled: input.enabled, botId };
+    },
+    startVoiceWake: () => startVoiceWakeRuntime(),
+    stopVoiceWake: () => stopVoiceWakeRuntime(),
     saveManualModelSource: async inputValue => {
       if (host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再保存手动 API 配置');
@@ -2116,7 +2215,10 @@ function registerIPC(): void {
       return catalogRefresh;
     },
     testModelConnection: source => testModelConnection(source),
-    startVoice: (chatId, offerSdp) => host.startVoice(id(chatId), text(offerSdp, 128_000)),
+    startVoice: (chatId, offerSdp) => host.startVoice(
+      id(chatId),
+      text(offerSdp, 128_000)
+    ),
     stopVoice: (chatId, reason) => host.stopVoice(
       id(chatId),
       reason === undefined ? undefined : text(reason, 2_000)
@@ -2150,6 +2252,25 @@ function registerIPC(): void {
   for (const [name, method] of Object.entries(methods)) ipcMain.handle(`rambo:${name}`, (event, ...args) => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('拒绝未知界面请求');
     return method(...args);
+  });
+  ipcMain.on('rambo:voiceWakeAudio', (event, samplesValue) => {
+    if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return;
+    const engine = voiceWakeEngine;
+    if (!engine) return;
+    try {
+      const keyword = engine.push(voiceWakeSamples(samplesValue));
+      if (!keyword) return;
+      const settings = currentVoiceWakeSettings();
+      const bot = activeVoiceWakeBot(settings.botId);
+      stopVoiceWakeRuntime();
+      if (!settings.enabled || !bot) {
+        emitVoiceWakeError(new Error('唤醒目标 Bot 不存在或已归档'));
+        return;
+      }
+      emit({ type: 'voiceWakeDetected', botId: bot.id, keyword });
+    } catch (error) {
+      emitVoiceWakeError(error);
+    }
   });
 }
 
@@ -2255,14 +2376,23 @@ else {
     manualModelCredentials = connectorCredentials;
     directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
     const initialSettings = store.settings();
+    const mailAdapterDependencies = {
+      proxyFor: (host: string, port: number) => mailProxyUrlForHost(
+        host,
+        port,
+        url => session.defaultSession.resolveProxy(url)
+      ),
+      socksModule: mailSocks
+    };
     mailRuntime = new MailRuntime(new SecureMailAdapterRegistry(
       connectorCredentials,
       connectionId => store.connectorCredentialRef(connectionId),
       {
-        qqmail: qqMailAdapterFactory,
+        qqmail: (connection, credentials) =>
+          qqMailAdapterFactory(connection, credentials, mailAdapterDependencies),
         gmail: (connection, credentials) => {
           if (credentials.kind === 'imap-password') {
-            return gmailImapAdapterFactory(connection, credentials);
+            return gmailImapAdapterFactory(connection, credentials, mailAdapterDependencies);
           }
           if (credentials.kind === 'oauth-token') {
             return gmailMailAdapterFactory(connection, credentials, {
@@ -2483,6 +2613,7 @@ else {
       while (wechatAuthControllers.size) await new Promise(resolve => setTimeout(resolve, 25));
       systemIndicators?.dispose();
       systemIndicators = null;
+      stopVoiceWakeRuntime();
       host?.dispose();
       wechatReader?.dispose();
       wechatReader = null;

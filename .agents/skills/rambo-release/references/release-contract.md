@@ -5,8 +5,16 @@
 - 正式分发渠道：GitHub Releases，仓库 `jiawei666/Rambo`。
 - 不使用 Mac App Store、Microsoft Store 或其他应用商店。
 - `package.json` 是版本单一来源；tag 使用 `v<version>`。
-- 正式 Release 默认必须同时提供 macOS ARM64 和 Windows x64；其他架构只有在用户明确要求并在对应原生构建机完成后才能加入。
+- 正式 Release 默认必须同时提供 macOS ARM64 和 Windows x64；其他架构只有在用户明确要求并由对应 GitHub Actions 原生 runner 构建后才能加入。
 - tag 必须指向已推送的发布 commit，不能覆盖已有远端 tag。
+
+## 原生构建与上传
+
+- macOS：`.github/workflows/macos-build.yml` 使用 Apple Silicon 的 `macos-15` runner 运行 `npm run release:package -- darwin-arm64`。
+- Windows：`.github/workflows/windows-build.yml` 使用 Windows x64 runner 运行 `npm run release:package -- win32-x64`。
+- 两个工作流在 `v*` tag 触发时都等待同名 Draft Release，然后把各自正式资产直接上传到该 draft；Actions artifact 仅作工作流留存。
+- 开发 Mac 不执行正式发布构建，不下载 Actions artifact，也不下载或处理 Windows 产物。
+- `npm run release:verify -- darwin-arm64,win32-x64` 仍保留供脚本测试或人工诊断，但不是发版门禁；正式发布不运行它。
 
 ## 产物
 
@@ -14,21 +22,16 @@
   - `Rambo-v<version>-macOS-arm64.zip` 与 `.sha256`
   - `Rambo-v<version>-Windows-x64.exe` 与 `.sha256`
   - `Rambo-v<version>-Windows-x64-portable.zip` 与 `.sha256`
-- 本机 release metadata：
-  - `Rambo-v<version>-darwin-arm64.release.json`
-  - `Rambo-v<version>-win32-x64.release.json`
-- macOS 构建入口：`npm run release:package -- darwin-arm64`。
-- Windows 构建入口：`npm run release:package -- win32-x64`。
-- 双平台合并校验入口：`npm run release:verify -- darwin-arm64,win32-x64` 仍保留供脚本测试或人工诊断，但不是当前发版门禁；正式发布不运行它，也不得在 macOS 下载展开或校验 Windows 产物。
+- macOS 构建入口：`npm run release:package -- darwin-arm64`，只在 GitHub Actions macOS runner 执行。
+- Windows 构建入口：`npm run release:package -- win32-x64`，只在 GitHub Actions Windows runner 执行。
 - 不把 `dist/`、`acceptance-runs/` 或运行中的开发 profile 提交到 Git。
-- GitHub Release 资产上传默认使用直连；执行 `gh release create` 或 `gh release upload` 时清除代理变量。
+- GitHub Release 上传默认使用直连；需要手工执行 `gh release` 上传或下载时应清除代理变量。
 - Windows 免安装 ZIP 必须从同一次原生构建的 `dist/win-unpacked` 生成，不得另做一套不一致构建；免安装只表示无需安装，应用数据仍使用正常 Windows 用户目录。
-- Windows 发布以对应目标 commit 的 GitHub Actions Windows 原生构建成功为准。macOS 侧只下载 CI 上传资产用于 GitHub Release 传输，不再检查 PE、NSIS、portable ZIP 内容、文件大小、SHA-256、归档文件清单或内置运行时；上传完成后删除临时候选。
-- Windows 构建机仍需在生成发布产物时执行自身打包逻辑和 sidecar 生成。这是原生构建输出，不是 macOS 侧二次校验；不得用 macOS 侧检查替代、补做或推翻 Windows CI 结果。
+- Windows 发布以对应目标 commit 的 GitHub Actions Windows 原生构建成功和 Draft Release 上传结果为准。macOS 侧不检查 PE、NSIS、portable ZIP 内容、文件大小、SHA-256、归档文件清单或内置运行时。
 
 ## 平台与运行时
 
-- 平台打包必须在匹配的宿主上执行；禁止用 macOS 交叉生成 Windows 原生包，也禁止用 x64 结果冒充 ARM64。
+- 正式发布构建必须在匹配的 GitHub Actions 原生 runner 上执行；禁止用 macOS 交叉生成 Windows 原生包，也禁止用 x64 结果冒充 ARM64。
 - 每个安装包只能包含本平台、本架构的 `codex-app-server`：
   - `darwin-arm64` -> `aarch64-apple-darwin`
   - `darwin-x64` -> `x86_64-apple-darwin`
@@ -36,26 +39,29 @@
   - `win32-arm64` -> `aarch64-pc-windows-msvc`
 - 固定版本、归档 SHA-256、入口和 manifest 以 `config/runtime-targets.json` 为准。
 - 打包脚本必须从包内 `runtime/codex/<version>` 读取 `codex-package.json` 与 `rambo-runtime.json`，并实际检查入口二进制为 Mach-O 或 PE 的目标架构。
-- macOS 缺包、缺 sidecar、SHA-256 不一致、App Server 版本/目标不一致或二进制架构不符，均阻止正式发布。
-- Windows 缺包、缺 sidecar、App Server 版本/目标不一致或二进制架构不符时，由 Windows 原生构建自身失败并阻止上传；macOS 侧不下载产物补验。
+- macOS 缺包、缺 sidecar、SHA-256 不一致、App Server 版本/目标不一致或二进制架构不符时，由 macOS 原生工作流失败并阻止上传。
+- Windows 缺包、缺 sidecar、App Server 版本/目标不一致或二进制架构不符时，由 Windows 原生工作流失败并阻止上传；开发 Mac 不下载产物补验。
 
-## 签名与安装
+## Draft Release 与安装
+
+- 本机创建不含资产的 Draft Release，不直接用 `gh release create` 上传平台资产。
+- 两个 tag workflow 成功并完成直传后，本机只核对 Release 资产清单、名称、大小和 GitHub API digest/size。这是上传结果核对，不是 Windows 产物验收。
+- macOS Release ZIP 是唯一允许临时下载到开发 Mac 的平台产物，且只用于更新 `/Applications/Rambo.app`。临时目录必须使用 `mktemp -d` 并在结束时清理；不得把 ZIP 或解压目录留在仓库、桌面或长期资料目录。
+- 安装前验证 macOS ZIP 的 SHA-256；安装后核对版本、Bundle ID、签名和 `/Applications/Rambo.app` 路径。
+- 本机更新不得清理或覆盖应用数据目录。本地只保留活动应用，不保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`。
+- 只有双平台 workflow、六个资产和 macOS 安装均验证通过后，才把 draft 公开；Windows 构建机不执行 macOS 的 `/Applications` 安装步骤。
+
+## 签名与安全提示
 
 - macOS 当前不使用 Developer ID、不公证；构建后只做本地 ad-hoc 重封。`codesign --verify` 必须通过，`codesign -dv` 必须为 `Signature=adhoc` 且无 Authority/TeamIdentifier，`spctl` 仍会拒绝。
 - Windows 当前 NSIS 安装包和免安装 ZIP 均未签名，Release notes 必须提示 SmartScreen 警告，不得声称无警告安装或首次运行。
-- 每次发布在提交和上传前使用 macOS 构建更新活动开发机的 `/Applications/Rambo.app`；覆盖前正常退出正在运行的 Rambo，安装后核对版本、Bundle ID 和签名。
-- 本机更新不得清理或覆盖应用数据目录。本地只保留活动应用，不保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`。
-- Windows 构建机不执行 macOS 的 `/Applications` 安装步骤；Windows 产品验收与安装验收另行记录。
+- 发布说明必须明确 macOS 与 Windows 各自内置的 App Server 版本和 target，以及两个平台当前均无商业签名或公证。
 
 ## 产品边界
 
-仓库当前记录 158 条规则；验收目录含 281 个案例，其中 154 个可执行、127 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
+仓库当前记录 159 条规则；验收目录含 291 个案例，其中 163 个可执行、128 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
 
-发布说明必须明确：
-
-- macOS 与 Windows 各自内置的 App Server 版本和 target。
-- 两个平台当前均无商业签名或公证。
-- Windows 真机安装、登录、Bot/Routine、托盘、音频、微信扫描和 NSIS 卸载等验收是否已经完成；仅有 Windows CI 或交叉编译时不得写“Windows 完整可用”。
+发布说明必须明确 Windows 真机安装、登录、Bot/Routine、托盘、音频、微信扫描和 NSIS 卸载等验收是否已经完成；仅有 Windows CI 或交叉编译时不得写“Windows 完整可用”。
 
 ## 发布隔离
 

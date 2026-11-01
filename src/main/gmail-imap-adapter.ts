@@ -19,7 +19,8 @@ export class GmailImapAdapter extends ImapSmtpMailAdapter {
 
 export function gmailImapAdapterFactory(
   connection: ConnectorConnection,
-  credential: ConnectorCredentialPayload
+  credential: ConnectorCredentialPayload,
+  dependencies: ImapSmtpMailAdapterDependencies = {}
 ): MailAdapter {
-  return new GmailImapAdapter(connection, credential);
+  return new GmailImapAdapter(connection, credential, dependencies);
 }

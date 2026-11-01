@@ -36,16 +36,17 @@
   "areas": [
     {
       "id": "release-tooling",
-      "label": "发版 Skill、macOS 产物校验与 Windows 原生 CI 交接",
+      "label": "发版 Skill 与 macOS/Windows Actions 原生构建",
       "paths": [
         ".agents/skills/rambo-release/**",
         "tests/backend/release-package.test.mjs",
+        ".github/workflows/macos-build.yml",
         ".github/workflows/windows-build.yml",
         "config/runtime-targets.json"
       ],
       "checks": ["backend-unit", "acceptance-structure"],
       "backendTargets": ["tests/backend/release-package.test.mjs"],
-      "reason": "macOS 必须在本地验证产物、架构和内置 App Server；Windows 只采用对应目标 commit 的成功原生 CI 构建"
+      "reason": "两个平台均由对应原生 Actions runner 构建并直传 Draft Release；本机不执行发布构建，也不下载 Windows 产物"
     },
     {
       "id": "docs-decisions",
@@ -170,6 +171,7 @@
         "src/main/qq-mail-adapter.ts",
         "src/main/mail-adapter.ts",
         "src/main/mail-runtime.ts",
+    "src/main/mail-network.ts",
         "src/main/mail-tools.ts",
         "src/main/bot-credential-tools.ts",
         "src/main/bot-secret-tools.ts",
@@ -179,6 +181,7 @@
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",
         "tests/backend/gmail-imap-adapter.test.mjs",
+    "tests/backend/mail-network.test.mjs",
         "tests/backend/qq-mail-adapter.test.mjs",
         "tests/backend/mail-runtime.test.mjs",
         "tests/backend/mail-tools.test.mjs"
@@ -191,6 +194,7 @@
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",
         "tests/backend/gmail-imap-adapter.test.mjs",
+    "tests/backend/mail-network.test.mjs",
         "tests/backend/qq-mail-adapter.test.mjs",
         "tests/backend/mail-runtime.test.mjs",
         "tests/backend/mail-tools.test.mjs",
@@ -330,6 +334,34 @@
         "tests/e2e/private-chat.spec.mjs"
       ],
       "reason": "频段分析与语音活动门控同时需要纯状态和真实 Web Audio 链路验证"
+    },
+    {
+      "id": "voice-wake",
+      "label": "本机语音唤醒、目标 Bot 路由与离线模型",
+      "paths": [
+        "src/main/voice-wake.ts",
+        "src/renderer/voice-cue-lifecycle.ts",
+        "src/renderer/voice-cues.ts",
+        "src/renderer/voice-wake-monitor.ts",
+        "src/renderer/public/voice-cues/**",
+        "assets/voice-wake/**",
+        "tests/backend/voice-cue-lifecycle.test.mjs",
+        "tests/backend/voice-cues.test.mjs",
+        "tests/backend/voice-wake.test.mjs",
+        "tests/e2e/voice-wake.spec.mjs",
+        "tests/fixtures/voice-wake/**"
+      ],
+      "checks": ["typecheck", "backend-unit", "electron-e2e"],
+      "backendTargets": [
+        "tests/backend/voice-cue-lifecycle.test.mjs",
+        "tests/backend/voice-cues.test.mjs",
+        "tests/backend/voice-wake.test.mjs"
+      ],
+      "e2eTargets": [
+        "tests/e2e/voice-wake.spec.mjs",
+        "tests/e2e/private-chat.spec.mjs"
+      ],
+      "reason": "固定唤醒词必须由本机模型检测，命中后只路由到全局目标 Bot 并进入现有 Live"
     },
     {
       "id": "electron-file-preview",

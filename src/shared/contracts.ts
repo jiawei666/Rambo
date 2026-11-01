@@ -505,6 +505,10 @@ export interface Snapshot {
     }>;
   };
 }
+export interface VoiceWakeSettings {
+  enabled: boolean;
+  botId: string | null;
+}
 export type AppEvent =
   | { type: 'changed' }
   | { type: 'connectorAuthProgress'; connectionId: string; phase: string; message: string; canFinishCapture?: boolean; canContinueCapture?: boolean }
@@ -530,6 +534,8 @@ export type AppEvent =
   | { type: 'voiceAudio'; chatId: string; audio: VoiceAudioChunk }
   | { type: 'voiceTranscript'; transcript: VoiceTranscript }
   | { type: 'voiceEndRequested'; chatId: string; reason: string }
+  | { type: 'voiceWakeDetected'; botId: string; keyword: string }
+  | { type: 'voiceWakeError'; message: string }
   | { type: 'mcpElicitation'; prompt: McpElicitationPrompt }
   | { type: 'mcpElicitationResolved'; requestId: string }
   | { type: 'secretCapture'; prompt: SecretCapturePrompt }
@@ -640,8 +646,15 @@ export interface RamboAPI {
   syncModelCatalogForCurrentSource(): Promise<ModelCatalogRefresh>;
   testModelConnection(source?: ModelSourceKind): Promise<ModelConnectionTestResult>;
   setCodexHomeSyncMode(mode: CodexHomeSyncMode): Promise<CodexHomeSyncChangeResult>;
-  startVoice(chatId: string, offerSdp: string): Promise<{ chatId: string; threadId: string }>;
+  startVoice(
+    chatId: string,
+    offerSdp: string
+  ): Promise<{ chatId: string; threadId: string }>;
   stopVoice(chatId: string, reason?: string): Promise<void>;
+  setVoiceWakeSettings(input: VoiceWakeSettings): Promise<VoiceWakeSettings>;
+  startVoiceWake(): Promise<{ keyword: string; sampleRate: number }>;
+  stopVoiceWake(): Promise<void>;
+  sendVoiceWakeAudio(samples: Float32Array): void;
   restartRuntime(): Promise<void>;
   updateRuntime(): Promise<RuntimeUpdateResult>;
   onEvent(callback: (event: AppEvent) => void): () => void;
