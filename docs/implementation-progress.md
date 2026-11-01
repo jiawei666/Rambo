@@ -1,5 +1,13 @@
 # 实施进度
 
+## 2026-11-01 · Q230 README 更新双平台微信、浏览器自动化与模型接入说明
+
+- 中英文 README 的平台说明、顶部标识和安装步骤同步覆盖 macOS 与 Windows。
+- 微信改为直接说明“可连接并读取聊天消息”，明确两个系统均已实测稳定，不再使用环境或授权条件作为能力前缀。
+- 新增 CloakBrowser 浏览器自动化介绍，说明独立 Chromium、共享持久 profile、逐 Bot 授权和反爬能力边界。
+- 模型接入改为第三方 Responses 兼容 API 优先，同时支持 ChatGPT 登录；Codex App Server 继续只作为底层运行时说明。
+- 验证通过：`npm run test:catalog:sync`、`npm run test:plan`、`npm run test:catalog`（159 条规则 / 291 个案例）、`npm run test:acceptance` **21/21**；中英文 README 本地链接与代码块检查通过；`git diff --check`。
+
 ## 2026-11-01 · Q229 恢复唤醒成功提示音，窗口仍保持后台
 
 - 运行播放器重新加入 `wake` 提示音映射，直接使用用户认可的 UI SFX `scifi/wake` 原始媒体；关键词命中后立即尝试播放，不等待播放结束就继续后台切换目标 Bot 和启动 Live。

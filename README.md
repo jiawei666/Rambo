@@ -7,7 +7,7 @@
 <h1 align="center">Rambo</h1>
 
 <p align="center">
-  A personal AI agent that lives on your Mac.
+  A personal AI agent that runs locally on macOS and Windows.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 <p align="center">
   <a href="https://github.com/jiawei666/Rambo/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/jiawei666/Rambo?style=flat-square" /></a>
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20arm64-111111?style=flat-square" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-111111?style=flat-square" />
   <img alt="Built with Electron" src="https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848f?style=flat-square" />
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-Codex%20App%20Server-222222?style=flat-square" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
@@ -29,9 +29,9 @@
 
 ## Why Rambo?
 
-I wanted to connect my own Codex App Server to a personal agent that runs on my Mac, keeps its own memory, and can work on my behalf throughout the day. **Rambo** is that project.
+I wanted a personal agent that runs locally, keeps its own memory, and can work on my behalf throughout the day. **Rambo** is that project.
 
-Rambo is built around an interface and interaction study of **Grok Bot**, reconstructed from its decompiled desktop app and UI assets. The underlying agent runtime is **Codex App Server**. The result is a local-first personal agent with a familiar Mac app experience.
+Rambo is built around an interface and interaction study of **Grok Bot**, reconstructed from its decompiled desktop app and UI assets. The underlying agent runtime is **Codex App Server**. The result is a local-first personal agent with a familiar desktop app experience.
 
 > **Project status:** Rambo is under active development. The latest release is usable for day-to-day exploration, but it is not yet a fully acceptance-tested product. See [Project status](#project-status).
 
@@ -61,9 +61,10 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 
 ## Highlights
 
-- **Runs locally on macOS.** Bots, chats, routines, settings, and memory stay on your Mac in a dedicated local data directory.
-- **Uses your Codex account without a Rambo account.** Sign in to ChatGPT directly in Rambo, copy a local Codex configuration, or configure a compatible API. Rambo keeps its own isolated Codex Home.
-- **Chat with connected apps.** Use QQ Mail and Gmail, and connect to a local WeChat environment when its permissions and local database access are available.
+- **Runs locally on macOS and Windows.** Bots, chats, routines, settings, and memory stay on your computer in a dedicated local data directory.
+- **Third-party API first, ChatGPT login also supported.** Bring a Responses-compatible third-party API with your own Base URL and key, or sign in with ChatGPT. API credentials are encrypted locally, and Rambo keeps its own isolated Codex Home.
+- **Chat with connected apps.** Use QQ Mail and Gmail, or connect directly to WeChat to read chats and messages on macOS and Windows.
+- **Automate browser tasks.** Give authorized Bots access to CloakBrowser for managed browser automation with a shared persistent profile and reduced common anti-bot interference.
 - **Plan work on your behalf.** Create one-time and recurring routines in natural language, with reminders, run history, retries, and catch-up behavior.
 - **Bring multiple Bots into one conversation.** Bots can work in a shared group chat while keeping their own private chat, memory, model, and permission settings.
 - **Control resources per Bot.** Choose which Skills, MCP servers, Apps, and Plugins are available to each Bot after they are added to the shared catalog.
@@ -75,7 +76,11 @@ Rambo is built around an interface and interaction study of **Grok Bot**, recons
 
 ### Local-first personal agent
 
-Rambo is not tied to a browser tab or a hosted dashboard. It runs as a native macOS app, manages its own agent runtime, and keeps the product data on your machine. It is designed for a single person who wants a long-running assistant rather than another account-based SaaS product.
+Rambo is not tied to a browser tab or a hosted dashboard. It runs as a native desktop app for macOS and Windows, manages its own agent runtime, and keeps the product data on your machine. It is designed for a single person who wants a long-running assistant rather than another account-based SaaS product.
+
+### Model access
+
+Rambo treats Responses-compatible third-party APIs as a first-class model source. Configure your own Base URL and API key, discover models from `/models` when the service supports it, or add custom model IDs. ChatGPT login is also supported. Provider capabilities can vary, so a third-party service may not implement every Codex feature such as tool calls, reasoning, MCP, or Voice.
 
 ### Grok Bot interface study
 
@@ -89,10 +94,17 @@ Rambo has connectors for:
 
 - **QQ Mail** — search, read, attach, draft, reply, and send through QQ Mail.
 - **Gmail** — new connections use a Google App Password over IMAP/SMTP with localized mailbox handling; existing local OAuth credentials remain readable for compatibility.
-- **WeChat** — query chats and messages from a local WeChat environment after the required local setup and authorization.
+- **WeChat** — connect directly and read chats and messages on macOS and Windows. Message reading has been tested for stable use on both systems.
+- **CloakBrowser** — managed browser automation for authorized Bots through an independent Chromium-based browser and a shared persistent profile.
 - **Calendar, GitHub, and other MCP-backed services** — available through the MCP and resource system when configured.
 
 Connections are scoped per Bot. A connection can be available to one Bot without being silently exposed to every other Bot.
+
+### Browser automation
+
+CloakBrowser gives authorized Bots a managed browser for automated web tasks, including navigation, snapshots, and interaction. It uses an independent Chromium build and a shared persistent profile. Bots with access share cookies, history, extensions, and tab state, so grant access only to trusted Bots.
+
+CloakBrowser reduces common anti-bot friction, but it does not guarantee bypassing every verification, CAPTCHA, login, or two-factor authentication check. When a site rejects the workflow, the Bot reports the real failure.
 
 ### Routines and reminders
 
@@ -127,7 +139,7 @@ Start a voice session from the Bot you are talking to. Live transcription is wri
 
 ### Chat workspace and files
 
-The chat surface is designed as one continuous workspace: a floating Bot header, a scrollable transcript, and a composer that stays out of the way. Files can be previewed in-app, opened with a local application, revealed in Finder, or referenced directly from a Bot response.
+The chat surface is designed as one continuous workspace: a floating Bot header, a scrollable transcript, and a composer that stays out of the way. Files can be previewed in-app, opened with a local application, revealed in the system file manager, or referenced directly from a Bot response.
 
 Dragging a file into the composer inserts its absolute path. It does not upload or copy the file, and it does not create an attachment record unless you explicitly use the attachment workflow.
 
@@ -135,7 +147,7 @@ Dragging a file into the composer inserts its absolute path. It does not upload 
 
 ```text
 ┌─────────────────────────────────────────────┐
-│ Rambo.app                                   │
+│ Rambo desktop app                           │
 │  Electron + React + TypeScript              │
 │                                             │
 │  Bots · chats · groups · routines · memory  │
@@ -152,24 +164,32 @@ Dragging a file into the composer inserts its absolute path. It does not upload 
              authentication, and tool resources
 ```
 
-Rambo bundles a verified macOS arm64 `codex-app-server` `0.165.0` baseline, so a clean installation can start without downloading a runtime. The app always launches its own stdio child process and keeps product data, chats, and runtime state in an isolated Codex Home. If a local Codex configuration exists, Rambo can copy the supported configuration and resource files into that isolated space. App Server updates are explicit and independent from app updates.
+Rambo bundles a verified native `codex-app-server` `0.165.0` baseline for macOS arm64 and Windows x64 releases, so a clean installation can start without downloading a runtime. The app always launches its own stdio child process and keeps product data, chats, and runtime state in an isolated Codex Home. If a local Codex configuration exists, Rambo can copy the supported configuration and resource files into that isolated space. App Server updates are explicit and independent from app updates.
 
 ## Installation
 
-Download the latest macOS arm64 build from [GitHub Releases](https://github.com/jiawei666/Rambo/releases/latest).
+Download the latest macOS arm64 or Windows x64 build from [GitHub Releases](https://github.com/jiawei666/Rambo/releases/latest).
+
+### macOS
 
 1. Unzip the downloaded archive.
 2. Move `Rambo.app` to your Applications folder.
 3. Because the app is not Developer ID signed or notarized, macOS Gatekeeper will block the first launch. Open **System Settings → Privacy & Security** and allow the app, or Control-click the app in Finder and choose **Open**.
-4. Open the app and sign in to ChatGPT, copy a local Codex configuration, or configure a compatible API. A separate local Codex installation is not required for the bundled runtime.
+4. Open the app and configure a compatible third-party API or sign in with ChatGPT. A separate local Codex installation is not required for the bundled runtime.
 
 The app has an ad-hoc local signature only. It is not a warning-free install and it does not carry a Developer ID certificate.
+
+### Windows
+
+1. Run the NSIS installer or extract the portable ZIP.
+2. Because the Windows builds are not code-signed, SmartScreen may warn on first launch. After verifying that the download came from the official Release, choose **More info → Run anyway**.
+3. Open the app and configure a compatible third-party API or sign in with ChatGPT. A separate local Codex installation is not required for the bundled runtime.
 
 ### Build from source
 
 Requirements:
 
-- macOS on Apple Silicon
+- macOS on Apple Silicon or Windows 11 x64
 - Node.js and npm
 - Network access for dependency installation and initial runtime preparation
 
@@ -192,6 +212,8 @@ Rambo uses an isolated Codex Home for its own configuration, authentication, ses
 ## Project status
 
 The current release is **v0.1.12**. The acceptance catalog tracks **159 product rules**, **291 local test cases**, **163 executable cases**, and **128 explicit implementation gaps**.
+
+The release ships for macOS arm64 and Windows x64. Direct WeChat message reading has been tested for stable use on both platforms; other Windows-specific workflows still require their own platform acceptance evidence.
 
 The deterministic checks and targeted Electron flows pass for the latest release, but this is not a claim that every product rule is complete. Real-device voice, external account flows, system-level behavior, and some full end-to-end workflows still require verification. The repository keeps the rule-level status and evidence separately so local tests are not mistaken for full product acceptance.
 
