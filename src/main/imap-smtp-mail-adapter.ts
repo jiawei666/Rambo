@@ -326,8 +326,23 @@ export class ImapSmtpMailAdapter implements MailAdapter {
       client = this.dependencies.imapClient
         ? this.dependencies.imapClient(config)
         : new ImapFlow(config);
-      await client.connect();
-      return await run(client);
+      const activeClient = client;
+      let clientError: Promise<never> | null = null;
+      if (typeof activeClient.on === 'function') {
+        clientError = new Promise<never>((_resolve, reject) => {
+          // ImapFlow reports post-connect socket failures as EventEmitter errors.
+          // Keep a listener for the client's full lifetime so a timeout can never
+          // escape as an uncaught main-process exception while it is closing.
+          activeClient.on('error', error => reject(error));
+        });
+      }
+      const operation = (async () => {
+        await activeClient.connect();
+        return await run(activeClient);
+      })();
+      return clientError
+        ? await Promise.race([operation, clientError])
+        : await operation;
     } catch (error) {
       throw new Error(`${this.config.providerName}连接失败：${safeMailError(error)}`);
     } finally {
@@ -474,8 +489,9 @@ function safeMailError(error: unknown): string {
     .filter((part, index, parts) => part && parts.indexOf(part) === index)
     .join('：')
     .replace(/Command failed\s*[：:]?\s*Invalid credentials[^\n]*/gi, '邮箱账号或应用专用密码验证失败')
-    .replace(/Failed to establish connection in required time/gi, '连接超时，请检查网络或系统代理后重试')
-    .replace(/Connection timeout/gi, '连接超时，请检查网络或系统代理后重试')
+    .replace(/Failed to establish connection in required time/gi, '连接超时，请检查网络或代理设置后重试')
+    .replace(/Connection timeout/gi, '连接超时，请检查网络或代理设置后重试')
+    .replace(/Socket timeout/gi, '连接超时，请检查网络或代理设置后重试')
     .replace(/Socks module not loaded/gi, '系统代理类型不受支持')
     .replace(/AUTHENTICATIONFAILED[^\n]*/i, '授权码或账号验证失败')
     .replace(/LOGIN failed[^\n]*/i, '授权码或账号验证失败')

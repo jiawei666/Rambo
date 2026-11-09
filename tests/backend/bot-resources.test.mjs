@@ -12,9 +12,14 @@ const compilerOptions = {
 };
 const sourceRoot = new URL('../../src/', import.meta.url);
 const resourcesSource = readFileSync(new URL('main/bot-resources.ts', sourceRoot), 'utf8');
+const proxySettingsSource = readFileSync(
+  new URL('shared/proxy-settings.ts', sourceRoot),
+  'utf8'
+);
 const sourceFiles = {
   'bot-resources.mjs': resourcesSource,
   'contracts.mjs': readFileSync(new URL('shared/contracts.ts', sourceRoot), 'utf8'),
+  'proxy-settings.mjs': proxySettingsSource,
   'robot-avatar.mjs': readFileSync(new URL('shared/robot-avatar.ts', sourceRoot), 'utf8'),
   'routine-schedule.mjs': readFileSync(new URL('main/routine-schedule.ts', sourceRoot), 'utf8'),
   'store.mjs': readFileSync(new URL('main/store.ts', sourceRoot), 'utf8')
@@ -27,6 +32,7 @@ function writeFixtureModule(directory) {
       compiled = compiled
         .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
         .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
+        .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'")
         .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'");
     } else if (name === 'bot-resources.mjs') {
       compiled = compiled.replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
@@ -295,7 +301,7 @@ test('discovery is separate from global selection and Bot switches', async () =>
       );
       const first = store.createBot('First', 'avatar-first').bot;
       assert.equal(first.model, 'model-before-bots');
-      assert.equal(first.permission, 'readOnly');
+      assert.equal(first.permission, 'fullAccess');
       assert.deepEqual(new Set(first.resourceIds), new Set([
         'skill:documents', 'skill:pdf', 'mcp:playwright'
       ]));
@@ -309,9 +315,9 @@ test('discovery is separate from global selection and Bot switches', async () =>
       store.setSetting('defaultBotPermission', 'workspaceWrite');
       const second = store.createBot('Second', 'avatar-second').bot;
       assert.equal(store.bot(first.id).model, 'model-before-bots');
-      assert.equal(store.bot(first.id).permission, 'readOnly');
+      assert.equal(store.bot(first.id).permission, 'fullAccess');
       assert.equal(second.model, 'model-for-second-bot');
-      assert.equal(second.permission, 'workspaceWrite');
+      assert.equal(second.permission, 'fullAccess');
       assert.equal(store.botResourceEnabled(first.id, 'skill:documents'), false);
       assert.equal(store.botResourceEnabled(second.id, 'skill:documents'), true);
       assert.equal(store.botResourceEnabled(first.id, 'mcp:playwright'), true);

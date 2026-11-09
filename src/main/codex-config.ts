@@ -5,7 +5,8 @@ import type { ManualApiConfig } from '../shared/contracts';
 import { manualProviderToml } from './model-source';
 import { renameWithRetry } from './platform/fs';
 
-const MANUAL_PROVIDER_ID = 'rambo_manual';
+export const RAMBO_MANUAL_PROVIDER_ID = 'rambo_manual';
+const MANUAL_PROVIDER_ID = RAMBO_MANUAL_PROVIDER_ID;
 const MANUAL_SECTION = `[model_providers.${MANUAL_PROVIDER_ID}]`;
 const BACKUP_SUFFIX = '.rambo-base';
 const MISSING_BACKUP_SUFFIX = '.rambo-base-missing';
@@ -46,6 +47,50 @@ function topLevelStringValue(line: string, key: 'model' | 'model_provider'): str
 
 function providerValue(line: string): string | null {
   return topLevelStringValue(line, 'model_provider');
+}
+
+/**
+ * Read the standard Codex provider selector without interpreting any
+ * third-party integration state. This is used only to avoid replacing an
+ * existing standard provider when Rambo starts.
+ */
+export function configuredModelProviderId(source: string): string | null {
+  const lines = splitLines(source);
+  const firstSection = lines.findIndex(line => sectionName(line) !== null);
+  const topLevelEnd = firstSection === -1 ? lines.length : firstSection;
+  for (const line of lines.slice(0, topLevelEnd)) {
+    const value = providerValue(line);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+/** Change only the active standard provider selector and preserve all other TOML. */
+export function selectConfiguredModelProvider(
+  source: string,
+  providerId: string | null
+): string {
+  const lines = splitLines(source);
+  const firstSection = lines.findIndex(line => sectionName(line) !== null);
+  const topLevelEnd = firstSection === -1 ? lines.length : firstSection;
+  const topLevel = lines.slice(0, topLevelEnd);
+  const remainder = lines.slice(topLevelEnd);
+  const providerAssignments = topLevel
+    .map((line, index) => /^\s*model_provider\s*=/u.test(line) ? index : -1)
+    .filter(index => index !== -1);
+
+  if (providerId === null) {
+    for (const index of providerAssignments.reverse()) topLevel.splice(index, 1);
+  } else {
+    const selector = `model_provider = ${tomlString(providerId)}`;
+    if (!providerAssignments.length) {
+      topLevel.push(selector);
+    } else {
+      topLevel[providerAssignments[0]] = selector;
+      for (const index of providerAssignments.slice(1).reverse()) topLevel.splice(index, 1);
+    }
+  }
+  return joinLines([...topLevel, ...remainder]);
 }
 
 function tomlString(value: string): string {
@@ -152,6 +197,20 @@ async function readOptional(path: string): Promise<string | null> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
+}
+
+export async function readConfiguredModelProviderId(path: string): Promise<string | null> {
+  const source = await readOptional(path);
+  return source === null ? null : configuredModelProviderId(source);
+}
+
+export async function writeConfiguredModelProviderId(
+  path: string,
+  providerId: string | null
+): Promise<void> {
+  const source = await readOptional(path) ?? '';
+  const next = selectConfiguredModelProvider(source, providerId);
+  if (next !== source) await writeAtomic(path, next);
 }
 
 async function writeAtomic(path: string, value: string): Promise<void> {

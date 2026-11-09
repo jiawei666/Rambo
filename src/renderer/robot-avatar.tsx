@@ -62,10 +62,11 @@ function syncRobotEyePose(robot: RobotElement, eyeStyle: RobotEyeStyle, animated
   }
 }
 
-export function RobotAvatar({ value, size = 'regular', animated = false, followOnHover = false }: {
+export function RobotAvatar({ value, size = 'regular', animated = false, working = false, followOnHover = false }: {
   value: string;
   size?: keyof typeof SIZES;
   animated?: boolean;
+  working?: boolean;
   followOnHover?: boolean;
 }) {
   const host = useRef<HTMLSpanElement>(null);
@@ -80,7 +81,7 @@ export function RobotAvatar({ value, size = 'regular', animated = false, followO
     robot.setAttribute('color', `var(--avatar-ink-${selection.color}, ${ROBOT_COLORS.find(c => c.id === selection.color)?.value})`);
     robot.setAttribute('auto-sleep', '0');
     robot.setAttribute('wake-on', 'manual');
-    robot.setAttribute('motion', animated ? 'auto' : 'reduce');
+    robot.setAttribute('motion', animated || working ? 'auto' : 'reduce');
     robot.setAttribute('press-squeeze', 'false');
     robot.setAttribute('antenna-drag', 'false');
     robot.setAttribute('aria-hidden', 'true');
@@ -94,7 +95,7 @@ export function RobotAvatar({ value, size = 'regular', animated = false, followO
     const noAntenna = document.createElement('style');
     noAntenna.textContent = '#antennaDot{display:none!important;pointer-events:none!important}';
     robot.shadowRoot?.append(noAntenna);
-    syncRobotEyePose(robot, selection.eyeStyle, animated);
+    syncRobotEyePose(robot, selection.eyeStyle, animated || working);
     const followArea = followOnHover
       ? container.closest<HTMLElement>('[data-avatar-follow-region]') ?? container
       : null;
@@ -118,28 +119,53 @@ export function RobotAvatar({ value, size = 'regular', animated = false, followO
     }
     let settleTimer = 0;
     const enableFollow = () => {
-      if (animated) return;
+      if (animated || working) return;
       window.clearTimeout(settleTimer);
       robot.setAttribute('motion', 'auto');
       robot.setPointerFollow(true);
     };
     const disableFollow = () => {
-      if (animated) return;
+      if (animated || working) return;
       robot.setPointerFollow(false);
       window.clearTimeout(settleTimer);
       settleTimer = window.setTimeout(() => {
         if (!container.matches(':hover')) robot.setAttribute('motion', 'reduce');
       }, 360);
     };
-    if (!animated && followArea) {
+    if (!animated && !working && followArea) {
       followArea.addEventListener('pointermove', enableFollow);
       followArea.addEventListener('pointerenter', enableFollow);
       followArea.addEventListener('pointerleave', disableFollow);
     } else if (animated) {
       void robot.startWaiting();
     }
+    // Working avatars keep their normal eyes, autonomous gaze and blinking.
+    // A slow head turn/nod adds an unmistakable work pose without waiting eyes.
+    const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let headAnimation: Animation | undefined;
+    const syncWorkMotion = () => {
+      headAnimation?.cancel();
+      if (!working || motionPreference.matches) return;
+      const head = robot.shadowRoot?.getElementById('headMotion');
+      if (!head) return;
+      head.style.transformBox = 'view-box';
+      head.style.transformOrigin = '120px 120px';
+      headAnimation = head.animate([
+        { transform: 'translate(0px, 0px) rotate(0deg)' },
+        { transform: 'translate(-2px, 1px) rotate(-7deg)', offset: 0.25 },
+        { transform: 'translate(0px, 3px) rotate(0deg)', offset: 0.48 },
+        { transform: 'translate(2px, -1px) rotate(7deg)', offset: 0.75 },
+        { transform: 'translate(0px, 0px) rotate(0deg)' }
+      ], { duration: 4200, iterations: Infinity, easing: 'ease-in-out' });
+      // Concurrent Bots should feel alive rather than move in lockstep.
+      headAnimation.currentTime = Math.random() * 4200;
+    };
+    syncWorkMotion();
+    motionPreference.addEventListener('change', syncWorkMotion);
     // Idle avatars stay still. The sidebar can map its whole Bot row into the original follow range.
     return () => {
+      headAnimation?.cancel();
+      motionPreference.removeEventListener('change', syncWorkMotion);
       window.clearTimeout(settleTimer);
       followArea?.removeEventListener('pointermove', enableFollow);
       followArea?.removeEventListener('pointerenter', enableFollow);
@@ -148,14 +174,14 @@ export function RobotAvatar({ value, size = 'regular', animated = false, followO
       robot.remove();
       if (robotRef.current === robot) robotRef.current = null;
     };
-  }, [size, animated, followOnHover]);
+  }, [size, animated, working, followOnHover]);
 
   useLayoutEffect(() => {
     const robot = robotRef.current;
     if (!robot) return;
     robot.setAttribute('color', `var(--avatar-ink-${selection.color}, ${ROBOT_COLORS.find(c => c.id === selection.color)?.value})`);
-    syncRobotEyePose(robot, selection.eyeStyle, animated);
-  }, [selection.color, selection.eyeStyle, animated]);
+    syncRobotEyePose(robot, selection.eyeStyle, animated || working);
+  }, [selection.color, selection.eyeStyle, animated, working]);
 
   return <span ref={host} className={`bot-avatar robot-avatar avatar-${size}`}
     data-avatar-color={selection.color}

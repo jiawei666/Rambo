@@ -4,14 +4,16 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { fileURLToPath } from 'node:url';
 import type {
   ActivityKind, ActivityStatus, AppEvent, AccountLoginStart, AccountState, Bot, GroupChat, GroupMessage, GroupRuntimeMember, GroupRuntimeState,
-  ConnectorConnection, ModelOption, Message, QuestionMessageContent, ResultCardMessageContent,
+  ConnectorConnection, ModelOption, Message, MessageContent, QuestionMessageContent, ResultCardMessageContent,
   PermissionMode, Snapshot, TurnActivity, TurnModelSource, TurnPermissionSnapshot, TurnRecord,
   RoutineDefinition, RoutineRun, TurnStatus, VoiceSessionState, BotResource,
   ModelSourceState, ModelConnectionTestResult, McpElicitationAction, McpElicitationPrompt,
   SecretCapturePrompt, ModelSourceKind
 } from '../shared/contracts';
+import { runtimeModelConfigurationDetails } from './model-config-details';
 import { botExecutionConfigError } from '../shared/execution-config';
 import { voiceModelPreflightError } from '../shared/voice-support';
+import { runtimeProxyScopesFromSetting } from '../shared/proxy-settings';
 import {
   clearBotResourceCache,
   discoverBotResources,
@@ -23,8 +25,9 @@ import type { CodexRuntime } from './runtime';
 import type { BotReplyNotificationRecord, NotificationRuntimeState } from '../shared/notifications';
 import { Store, type MessageAnswerTarget, type UnknownTurnOperation } from './store';
 import { connectorProvider, connectorProviders } from './connectors';
-import { createRoutineDispatcher, RoutineScheduler, type RoutineRecoveryResolution } from './routine-scheduler';
+import { createRoutineDispatcher, RoutineScheduler, RunTurnTracker, type RoutineRecoveryResolution } from './routine-scheduler';
 import {
+  buildAuthorizationContent,
   buildDisplayContent,
   buildQuestionContent,
   CHAT_UI_TOOL_NAMESPACE,
@@ -487,7 +490,7 @@ const MEMORY_MANAGEMENT_TOOL = {
 const BOT_PROFILE_TOOL = {
   type: 'namespace',
   name: BOT_SELF_TOOL_NAMESPACE,
-  description: '当前 Bot 管理自身资料、模型和权限。所有写入只作用于当前 Bot，无需用户逐次批准。系统设置中的模型和权限只是新建 Bot 的初值，不能通过此工具修改。不能操作其他 Bot、共享配置或应用级资源，也不能归档、删除自身或清空聊天。',
+  description: '当前 Bot 管理自身资料和模型，也可创建一个带独立职责的新 Bot。自身资料写入和新 Bot 创建无需用户逐次批准；不能修改自身权限、其他已有 Bot、共享配置或应用级资源，也不能归档、删除 Bot 或清空聊天。',
   tools: [{
     type: 'function',
     name: 'update_profile',
@@ -505,13 +508,43 @@ const BOT_PROFILE_TOOL = {
   }, {
     type: 'function',
     name: 'update_config',
-    description: '修改当前 Bot 自己的模型或权限。该值用于当前 Bot 的唯一私聊、群聊成员执行和 Routine；只影响后续轮次。',
+    description: '修改当前 Bot 自己的模型。模型用于当前 Bot 的唯一私聊、群聊成员执行和 Routine；只影响后续轮次。Bot 权限没有修改入口。',
     inputSchema: {
       type: 'object',
       properties: {
-        model: { type: 'string', minLength: 1, maxLength: 500, description: '当前 Bot 使用的具体模型 ID。' },
-        permission: { type: 'string', enum: ['fullAccess', 'workspaceWrite', 'readOnly'], description: '当前 Bot 使用的完整权限。' }
+        model: { type: 'string', minLength: 1, maxLength: 500, description: '当前 Bot 使用的具体模型 ID。' }
       },
+      additionalProperties: false
+    }
+  }, {
+    type: 'function',
+    name: 'list_bots',
+    description: '查询当前未归档 Bot 的 ID、名称和短职责，选择适合的协作对象。不会返回其私聊、记忆或凭证。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  }, {
+    type: 'function',
+    name: 'send_message',
+    description: '在群聊之外给另一个 Bot 发消息，用于提问、讨论、征求意见或安排任务。消息进入对方已有私聊 thread，忙时排队，新 turn 结束后把这一轮回复交回发送者。工具立即返回消息 ID。收到回复后按需再次调用本工具继续交流；不要仅为礼貌互相确认而循环发送。',
+    inputSchema: {
+      type: 'object', properties: {
+        botId: { type: 'string', description: 'list_bots 或 create_bot 返回的目标 Bot ID。' },
+        text: { type: 'string', minLength: 1, maxLength: 20000, description: '完整消息正文，可为问题、讨论内容或任务说明；只提供必要背景。' }
+      }, required: ['botId', 'text'], additionalProperties: false
+    }
+  }, {
+    type: 'function',
+    name: 'create_bot',
+    description: '创建一个承担独立、持续职责的新 Bot。用户直接要求创建，或工作确实需要一个长期专职角色时可直接调用，无需逐次批准。必须提供名称、一句话短职责，以及根据新 Bot 职责动态编写的一次性首次问候指引；指引说明首轮问候的语气或重点，不要写死最终问候句，也不会保存为长期指令。可补充长期指令。新 Bot 使用创建时的全局默认模型和资源开关，并固定为 Full Access，不继承当前 Bot 的记忆、连接授权、私有密钥、资源覆盖、聊天记录或工作区。省略头像时沿用当前 Bot 的头像。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 255, description: '新 Bot 的名称。' },
+        role: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明新 Bot 长期负责什么；只写角色目的。' },
+        greetingInstruction: { type: 'string', minLength: 1, maxLength: 1000, description: '根据新 Bot 的职责动态编写首次问候指引，例如语气、重点或适合的开场方向；不要写死最终问候句。只用于创建后的首个回合，不作为长期指令保存。' },
+        instructions: { type: 'string', maxLength: 50000, description: '可选的完整长期行为规则；写稳定遵循或避免的做法，不写事实或背景。' },
+        avatar: { type: 'string', maxLength: 200, description: '可选头像标识；省略时沿用当前 Bot 的头像。' }
+      },
+      required: ['name', 'role', 'greetingInstruction'],
       additionalProperties: false
     }
   }]
@@ -958,6 +991,7 @@ export class Host {
   private threadChats = new Map<string, string>();
   private unknownOperations = new Map<string, TrackedUnknownOperation>();
   private completedTurns = new Map<string, Set<string>>();
+  private delegationTurns = new RunTurnTracker();
   private turnAssistantTexts = new Map<string, string>();
   private itemTurns = new Map<string, string>();
   private pendingTurnRecords = new Map<string, string>();
@@ -1023,7 +1057,8 @@ export class Host {
     wechatMediaProcessor?: WechatMediaContentProcessor,
     private readonly modelSourceStatus?: () => ModelSourceState,
     private readonly testModelConnection?: () => Promise<ModelConnectionTestResult>,
-    private readonly managedMcp?: ManagedMcpProvider
+    private readonly managedMcp?: ManagedMcpProvider,
+    private readonly baseInstructions: string | null = null
   ) {
     this.managedSkillLibrary = new ManagedSkillLibrary(store.directory);
     this.directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
@@ -1178,6 +1213,7 @@ export class Host {
       codexHome: join(resolve(this.store.directory), 'codex-home'),
       codexHomeSync: this.runtime.homeSyncState,
       runtimeProxy: settings.runtimeProxy?.trim() ?? '',
+      runtimeProxyScopes: runtimeProxyScopesFromSetting(settings.runtimeProxyScopes),
       modelSource: this.modelSourceStatus?.() ?? {
         kind: 'local',
         manual: { serviceName: '', baseUrl: '', model: '' },
@@ -1245,20 +1281,27 @@ export class Host {
   }
 
   async botResources(refresh = false): Promise<BotResourceDirectory> {
-    let refreshError: string | null = null;
+    const refreshErrors: string[] = [];
+    try {
+      await this.migrateManagedSkills();
+    } catch (error) {
+      refreshErrors.push(`无法迁移 Rambo Skills：${
+        error instanceof Error ? error.message : String(error)
+      }`);
+    }
     if (refresh) {
       try {
         await this.syncMcpMetadata();
       } catch (error) {
-        refreshError = `无法刷新 Codex 本机资源：${
+        refreshErrors.push(`无法刷新 Rambo MCP 资源：${
           error instanceof Error ? error.message : String(error)
-        }`;
+        }`);
       }
     }
     const discovery = this.botResourceDiscovery(refresh);
     return {
       resources: discovery.resources.map(resource => ({ ...resource })),
-      errors: [...discovery.errors, ...(refreshError ? [refreshError] : [])]
+      errors: [...discovery.errors, ...refreshErrors]
     };
   }
 
@@ -1331,6 +1374,7 @@ export class Host {
   }
 
   async importLocalSkill(directory: string): Promise<{ resourceId: string; name: string }> {
+    await this.migrateManagedSkills();
     const skill = await this.managedSkillLibrary.import(directory);
     clearBotResourceCache();
     const resourceId = `skill:${skill.id}`;
@@ -1394,21 +1438,11 @@ export class Host {
     const model = typeof settings.defaultBotModel === 'string'
       ? settings.defaultBotModel.trim()
       : '';
-    const rawPermission = settings.defaultBotPermission;
-    const permission: PermissionMode | null =
-      rawPermission === undefined || rawPermission === ''
-        ? 'fullAccess'
-        : permissionModes.has(rawPermission as PermissionMode)
-          ? rawPermission as PermissionMode
-          : null;
-    const error =
-      permission === null
-        ? '新建 Bot 的全局权限配置无效，请在系统设置中重新选择一个权限。'
-        : settings.modelInitializationError?.trim() ||
-          (!model
-            ? '尚未取得唯一可用的 Codex 模型，暂时不能新建 Bot。'
-            : null);
-    return { ready: !error, model, permission, error };
+    const error = settings.modelInitializationError?.trim() ||
+      (!model
+        ? '尚未取得唯一可用的 Codex 模型，暂时不能新建 Bot。'
+        : null);
+    return { ready: !error, model, permission: 'fullAccess', error };
   }
 
   async runRoutineNow(routineId: string): Promise<ReturnType<Store['routineRun']>> {
@@ -1501,6 +1535,12 @@ export class Host {
     id: string; result: unknown;
   }> {
     return this.submitAcceptanceTool(this.handleWechatToolCall.bind(this), request);
+  }
+
+  async submitAcceptanceChatContentTool(request: unknown): Promise<{
+    id: string; result: unknown;
+  }> {
+    return this.submitAcceptanceTool(this.handleChatContentToolCall.bind(this), request);
   }
 
   acceptNotification(method: string, params: unknown): void {
@@ -1929,7 +1969,7 @@ export class Host {
     return group;
   }
 
-  async greetNewBot(botId: string): Promise<void> {
+  async greetNewBot(botId: string, greetingInstruction?: string): Promise<void> {
     const bot = this.store.bot(botId);
     if (bot.archived) throw new Error('已归档的 Bot 不能启动创建问候');
     this.assertBotExecutionReady(bot);
@@ -1937,21 +1977,26 @@ export class Host {
     const prompt = [
       '这是宿主在新 Bot 创建完成后启动的隐藏问候 seed，不是用户发送的聊天消息，也不要在回复中提及 seed、系统提示或内部流程。',
       `当前 Bot 名称：${bot.name}。短职责：${bot.role.trim() || '个人助手'}。`,
+      ...(greetingInstruction?.trim() ? [
+        '创建者为本次首轮问候提供了以下一次性动态指引，只约束当前问候，不是长期指令：',
+        greetingInstruction.trim(),
+        '请结合当前 Bot 的职责和长期指令自然落实，不要机械复述这条指引或把它直接当作最终问候句。'
+      ] : []),
       '请直接用第一人称向用户打一个简短、自然的招呼，说明你能怎样协助。只能依据当前真实资料、长期指令、Tools、连接、密钥和权限说明能力；未接通的能力不要声称可用。',
       '这次问候失败时保持空聊天即可，不要伪造用户消息或后续对话。'
     ].join('\n');
     await this.sendConversation(
       chat.id,
       prompt,
-      '这是新 Bot 创建后的首个真实问候回合。直接输出一条简短问候，不要调用 chat UI 展示卡片，不要询问尚未提供的个人资料。',
+      '这是新 Bot 创建后的首个真实问候回合。遵循 seed 中创建者提供的一次性问候指引（如有），结合 Bot 职责自然表达，不要照抄指引；直接输出一条简短问候，不要调用 chat UI 展示卡片，不要询问尚未提供的个人资料。',
       undefined,
       undefined,
       false
     );
   }
 
-  startBotGreeting(botId: string): void {
-    void this.greetNewBot(botId).catch(error => {
+  startBotGreeting(botId: string, greetingInstruction?: string): void {
+    void this.greetNewBot(botId, greetingInstruction).catch(error => {
       this.publish({
         type: 'error',
         message: `新 Bot 已创建，但问候回合未能启动：${error instanceof Error ? error.message : String(error)}`
@@ -2148,6 +2193,11 @@ export class Host {
     return path;
   }
 
+  private newThreadBaseParameters(): { baseInstructions?: string } {
+    const baseInstructions = this.baseInstructions?.trim();
+    return baseInstructions ? { baseInstructions } : {};
+  }
+
   private applicationContext(
     bot: Bot,
     memoryToolsEnabled: boolean,
@@ -2253,7 +2303,42 @@ export class Host {
         ].join('\n')
       };
     }
+    const pendingConnections = this.pendingConnections(bot.id);
+    if (pendingConnections.length) {
+      context['rambo.pending-connections'] = {
+        kind: 'application',
+        value: [
+          '当前 Bot 尚未获授权、但本机已连接可用的应用目录：',
+          JSON.stringify(pendingConnections, null, 2),
+          '只有完成用户任务确实需要其中某个连接时，才调用 rambo_chat_ui.request_authorization，并传入目录中的 connection_id 和简短原因。用户会在聊天中看到授权卡，点击后立即为当前 Bot 授权；不要引导用户自己打开应用设置或连接页，也不要请求目录外的连接。用户拒绝后不要重复发起同一请求。',
+          '这些连接当前不可调用；授权卡展示成功后仍需等待用户点击，不能声称已经获得授权。'
+        ].join('\n')
+      };
+    }
     return context;
+  }
+
+  private pendingConnections(botId: string): Array<{
+    connection_id: string; provider: string; provider_name: string; brand_color: string;
+    monogram: string; display_name: string; account: string;
+  }> {
+    const granted = new Set(
+      this.store.connectorGrants().filter(grant => grant.botId === botId).map(grant => grant.connectionId)
+    );
+    return this.store.connectorConnections()
+      .filter(connection => connection.status === 'ready' && !granted.has(connection.id))
+      .map(connection => {
+        const provider = connectorProvider(connection.providerId);
+        return {
+          connection_id: connection.id,
+          provider: connection.providerId,
+          provider_name: provider.name,
+          brand_color: provider.brandColor,
+          monogram: provider.monogram,
+          display_name: connection.displayName,
+          account: connection.accountLabel
+        };
+      });
   }
 
   private mailConnections(botId: string): MailConnectionDirectoryEntry[] {
@@ -2303,15 +2388,19 @@ export class Host {
           '当前还提供 rambo_group_messages.send：当你根据成员职责需要其他 Bot 协作时，可点名一个其他成员或通知全部其他活跃成员；不要用普通文本假装已经通知。用户要求 Bot 逐轮对答时，每次回复上一位 Bot 都必须再次用该 Tool 点名对方，直接回复当前发送者不按回派任务处理。'
         : '',
       chatContentToolsEnabled
-        ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接可引用当前 Bot 工作区内的相对路径，也可引用本机已有的绝对路径，不必复制进工作区。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S)、当前 Bot 工作区内的文件路径或本机已有的绝对路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
+        ? '普通回复可自由使用 Markdown、表格、数学公式和代码，不要求套固定格式；Markdown 图片/文件链接可引用当前 Bot 工作区内的相对路径，也可引用本机已有的绝对路径，不必复制进工作区。需要用户选择或确认时才调用 rambo_chat_ui.ask_question 创建聊天问题卡；展示专用结果卡、媒体、语音行、MCP 嵌入或可视化时调用 rambo_chat_ui.show_content。媒体地址可用 HTTP(S)、当前 Bot 工作区内的文件路径或本机已有的绝对路径。问题卡与带操作的卡片会留在聊天中，用户点选或在同一对话输入文字都作为对当前待答卡片的回答；回答会在后续 Bot 轮次中提供。当前任务确实需要某个已连接应用、但当前 Bot 尚未获得它的授权时，用 rambo_chat_ui.request_authorization 在聊天中展示授权卡并说明用途；用户点击后立即为当前 Bot 授权，不要引导用户自己去应用设置或连接页操作。不要声称卡片已展示，除非工具成功返回。Routine 独立会话不提供这些工具。'
         : '',
       this.managedMcp?.hasAccess(bot.id)
         ? '当前 Bot 还获授权使用 CloakBrowser MCP。它操作独立安装的增强 Chromium 和共享持久 profile，不是当前 Chrome；获授权 Bot 会共享 Cookie、历史、扩展和标签页状态，因此不要把它描述成隔离浏览器。工具调用由 Rambo 串行执行；遇到网站拒绝、验证码或二次验证时如实报告，不要声称能绕过所有反爬。'
         : '',
       secretToolInstructions(secretTools),
       memoryToolsEnabled
-        ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型和权限，这两项会同时用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail 应用专用密码并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新连接凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
+        ? '你可以在当前唯一单聊中通过应用工具自主管理自身，不需用户逐次批准：用 rambo_bot.update_profile 修改自己的名称、头像、短职责和长期完整指令；用 update_config 修改当前 Bot 自己的模型，该模型用于本 Bot 的唯一私聊、群聊成员执行和 Routine，之后仍可独立修改；Bot 权限没有修改入口；用 rambo_memories.save_memory/delete_memory 管理自己的私有记忆；用 rambo_routines 创建、修改、暂停、恢复或删除自己的 Routine；用户明确要求创建多 Bot 群聊时，用 rambo_groups.create_group 创建群聊并指定已存在的未归档成员，当前 Bot 会自动加入。用户明确要求时，用 rambo_resources.manage_resource 把发现目录中已有的 Skills、MCP、Apps 或 Plugins 加入全局可选目录、移出全局可选目录、设置新建 Bot 默认开关，或开启/关闭当前 Bot 自己的资源；该动作只加入已发现资源，不等于导入新的 Skill 或 MCP。只有用户明确提供本地 Skill 文件夹路径并要求安装时，才用 rambo_resources.import_local_skill 真正导入共享技能库；不要声称支持 ZIP、在线市场或任意服务器软件安装。Bot 主动建议全局资源变更时必须先征求用户同意。用户提供 QQ 邮箱授权码或 Gmail 应用专用密码并明确要求保存时，用 rambo_credentials.save_credential 交给宿主使用应用本地密钥加密保存并验证连接；目前该工具只支持 QQ 邮箱和 Gmail。Bot 主动建议保存或更新连接凭证时必须先征求用户同意。凭证正文只用于本次工具调用，绝不复述、记忆、写文件或放进后续工具参数；不要代填系统密码、验证码、Face ID 或 Codex 登录密码。不能直接修改其他 Bot 的资源开关、其他 Bot 或系统账号授权。每个成功资源和凭证变更都会由宿主写入不含秘密的系统提醒。绝不自我归档、永久删除自身或清空聊天；这些能力不提供，也不能借其他工具隐式完成。名称/头像变化应反映到所有展示身份；只在真实工具 success=true 并回读持久化后声称完成。群聊创建失败、没有调用工具或没有成功结果时，必须如实说明未创建，不能假装群聊已存在。'
         : '当前上下文没有自管理写入工具；不要声称已修改自身资料、运行配置、记忆或 Routine，应引导用户在对应 Bot 私聊或设置中完成。',
+      memoryToolsEnabled ? '需要其他 Bot 协作时，先用 rambo_bot.list_bots 查询职责，再用 rambo_bot.send_message 提问、讨论或安排工作。消息在对方已有私聊中排队执行，一轮回复会自动交回；turn 结束只代表这一轮说完，不代表讨论结束或任务完成。需要继续交流时明确再次调用 send_message，不要仅为确认收件自动互相回复。' : '',
+      memoryToolsEnabled
+        ? '当用户直接要求创建 Bot，或确实需要另一个承担独立、持续职责的角色时，可直接调用 rambo_bot.create_bot，无需逐次批准；至少提供名称和一句话短职责，可补充完整长期指令。不要为同一短期任务反复创建 Bot。新 Bot 使用创建时的全局默认模型和资源开关，并固定为 Full Access，不继承当前 Bot 的私有记忆、连接授权、私有密钥、资源覆盖、聊天记录或工作区。只在真实工具成功返回后确认创建。'
+        : '',
       routineToolsEnabled
         ? '长期记忆和职责变更按各自规则处理。只要从当前对话判断用户希望未来执行或重复执行某项工作，即使没说“创建定时任务”，也应主动整理创建 Routine。先结合对话、近期上下文、当前时间和当前 Bot 已保存的职责与记忆推断标题、执行内容、计划、触发时间、一次性或周期属性以及执行方式，不要逐项向用户索取已有或可可靠推断的信息。用户以“几分钟后”等相对时间委托时，先结合当前时间和用户时区换算成明确日期与 HH:mm，换算不含歧义时直接创建，不要要求用户重复提供本来能算出的时间。用户要一天内多个任意时刻时，只创建一条 Routine 并把全部 HH:mm 填入 triggerTimes，例如 00:00、01:30、04:50；不得拆成多条任务，也不得把“每 30 分钟”静默改成每天一次。先判断任务性质与执行约束，再自主选择执行方式：需要持续理解、沟通或开放判断时选 chat；目标确定、结果可计算或可核验、适合命令或脚本稳定复现时选 script；先理解判断、再执行确定性步骤时选 hybrid。确定性计算、日期换算、批量变换和重复命令通常满足 script 的条件，但不要仅因任务简单而默认 chat，也不要忽略交互、外部副作用、权限和结果核验要求。script/hybrid 要写清可复用模板。只有实际缺失关键信息，且该缺失会在安全或不可逆操作中造成实质歧义时，才向用户提出最短的必要问题；收到答复后再创建。Bot 自己想到的自动化建议仍先征求用户同意。Routine 创建成功后的本轮回复只确认任务名称、计划、执行方式和执行内容；这是登记未来工作，不要提前计算或回答未来结果。未来结果由实际 Routine 完成后按交接规则返回。一次性定义仅在结果成功交回 Bot 私聊后自动清理，失败或中断也按同样规则清理；不要要求用户或 Bot 再调用 delete_routine，已有运行记录、聊天结果和成果继续保留。任务由本机后台服务执行；窗口关闭不影响，电脑真正睡眠或关机时不保证按时执行。工具成功返回后，以真实结果为准直接告知用户完成状态；不要继续声称“正在创建”或“稍等”，也不得调用 rambo_voice.end_current_voice_session，除非当前确实存在用户正在使用的 Live 语音会话。'
         : '没有提供定时任务创建工具时，不要声称已保存周期任务定义。',
@@ -2824,7 +2913,78 @@ export class Host {
       if (typeof args === 'string') args = JSON.parse(args);
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Bot 自管理参数格式无效。');
       const input = args as Record<string, unknown>;
-      if (params.tool === 'update_profile') {
+      if (params.tool === 'list_bots') {
+        if (Object.keys(input).length) throw new Error('list_bots 不接受参数');
+        result = routineToolText(JSON.stringify(this.store.bots().filter(item => !item.archived).map(item => ({
+          id: item.id, name: item.name, role: item.role
+        }))));
+      } else if (params.tool === 'send_message') {
+        if (Object.keys(input).some(key => !['botId', 'text'].includes(key)) ||
+            typeof input.botId !== 'string' || typeof input.text !== 'string' ||
+            !input.text.trim() || input.text.trim().length > 20000) throw new Error('请提供目标 Bot ID 和有效消息正文');
+        const callKey = `${params.threadId}:${params.callId}`;
+        const existing = this.store.delegations().find(task => task.callKey === callKey);
+        if (existing) {
+          result = routineToolText(`消息已登记，消息 ID：${existing.id}，状态：${existing.status}；未重复投递。`);
+        } else {
+          const worker = this.store.bot(input.botId);
+          if (worker.id === bot.id || worker.archived) throw new Error('请选择其他未归档 Bot');
+          this.assertBotExecutionReady(worker);
+          const currentTurn = this.activeTurns.get(chatId);
+          const currentRecord = currentTurn ? this.store.turnByServerId(params.threadId, currentTurn) : null;
+          const workerChat = this.store.ensureBotChat(worker.id);
+          const task = {
+            id: randomUUID(), callKey, sourceChatId: chatId, workerChatId: workerChat.id,
+            senderBotId: bot.id, senderName: bot.name, workerBotId: worker.id, workerName: worker.name,
+            messageId: '', reportMessageId: null, status: 'queued' as const, turnId: null,
+            result: null, error: null, parentId: null, sourceTurnId: currentTurn ?? null, createdAt: this.now().toISOString()
+          };
+          const message = this.store.createDelegation(task, input.text.trim());
+          this.publish({ type: 'message', message });
+          this.changed();
+          void this.drainQueuedMessages(workerChat.id);
+          result = routineToolText(`已发送给「${worker.name}」，消息 ID：${task.id}。对方本轮回复会自动交回；需要继续讨论时再调用 send_message，不能把一轮结束当作任务已完成。`);
+        }
+      } else if (params.tool === 'create_bot') {
+        for (const key of Object.keys(input)) {
+          if (!['name', 'role', 'greetingInstruction', 'instructions', 'avatar'].includes(key)) {
+            throw new Error(`创建 Bot 不支持字段：${key}`);
+          }
+        }
+        if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 255) {
+          throw new Error('新 Bot 名称必须为 1 到 255 个字符。');
+        }
+        if (typeof input.role !== 'string' || !input.role.trim() || input.role.trim().length > 500) {
+          throw new Error('新 Bot 短职责必须为 1 到 500 个字符。');
+        }
+        if (typeof input.greetingInstruction !== 'string' ||
+            !input.greetingInstruction.trim() || input.greetingInstruction.trim().length > 1000) {
+          throw new Error('新 Bot 首次问候指引必须为 1 到 1000 个字符。');
+        }
+        if (input.instructions !== undefined &&
+            (typeof input.instructions !== 'string' || input.instructions.length > 50_000)) {
+          throw new Error('新 Bot 长期指令必须为不超过 50000 个字符的文字。');
+        }
+        if (input.avatar !== undefined &&
+            (typeof input.avatar !== 'string' || !input.avatar.trim() || input.avatar.length > 200)) {
+          throw new Error('新 Bot 头像标识无效。');
+        }
+        const readiness = this.snapshot().executionDefaults;
+        if (!readiness.ready) throw new Error(readiness.error ?? '模型配置尚未就绪，暂时不能新建 Bot。');
+        const created = this.store.createBot(
+          input.name.trim(),
+          typeof input.avatar === 'string' ? input.avatar.trim() : bot.avatar,
+          {
+            role: input.role.trim(),
+            instructions: typeof input.instructions === 'string' ? input.instructions.trim() : ''
+          }
+        );
+        this.changed();
+        this.startBotGreeting(created.bot.id, input.greetingInstruction.trim());
+        result = routineToolText(
+          `已创建新 Bot「${created.bot.name}」，短职责：${created.bot.role}。Bot ID：${created.bot.id}。`
+        );
+      } else if (params.tool === 'update_profile') {
         const patch: Record<string, string> = {};
         for (const key of ['name', 'avatar', 'role', 'instructions'] as const) {
           if (input[key] === undefined) continue;
@@ -2844,9 +3004,9 @@ export class Host {
         this.changed();
         result = routineToolText(`已更新当前 Bot 资料。名称：${updated.name}。`);
       } else if (params.tool === 'update_config') {
-        const patch: { model?: string; permission?: PermissionMode } = {};
+        const patch: { model?: string } = {};
         for (const key of Object.keys(input)) {
-          if (key !== 'model' && key !== 'permission') {
+          if (key !== 'model') {
             throw new Error(`不支持修改 Bot 执行配置字段：${key}`);
           }
         }
@@ -2857,21 +3017,10 @@ export class Host {
           }
           patch.model = value.trim();
         }
-        if (input.permission !== undefined) {
-          const value = input.permission;
-          if (!['fullAccess', 'workspaceWrite', 'readOnly'].includes(String(value))) {
-            throw new Error('当前 Bot 权限模式无效。');
-          }
-          patch.permission = value as PermissionMode;
-        }
         if (!Object.keys(patch).length) throw new Error('没有提供要修改的 Bot 配置。');
-        const current = this.store.bot(bot.id);
-        this.store.updateBotExecutionConfig(bot.id, {
-          model: patch.model ?? current.model,
-          permission: patch.permission ?? current.permission
-        });
+        this.store.updateBotExecutionConfig(bot.id, { model: patch.model! });
         this.changed();
-        result = routineToolText('已更新当前 Bot 的模型和权限；变更会从后续轮次生效。');
+        result = routineToolText('已更新当前 Bot 的模型；变更会从后续轮次生效。');
       } else {
         throw new Error('此对话不支持该 Bot 自管理操作。');
       }
@@ -2926,6 +3075,7 @@ export class Host {
         if (typeof input.directory !== 'string' || !input.directory.trim()) {
           throw new Error('请提供包含 SKILL.md 的本地 Skill 文件夹路径。');
         }
+        await this.migrateManagedSkills();
         const imported = await this.managedSkillLibrary.import(input.directory);
         clearBotResourceCache();
         const resourceId = `skill:${imported.id}`;
@@ -3548,17 +3698,21 @@ export class Host {
   }
 
   private botResourceDiscovery(refresh = false): BotResourceDiscovery {
+    const runtimeHome = join(resolve(this.store.directory), 'codex-home');
     return discoverBotResources(refresh, {
       knownMcpServers: this.cachedMcpServers,
-      managedSkillRoots: [{
-        path: this.managedSkillLibrary.root,
-        source: 'Rambo Skills'
-      }],
+      skillRoots: [{ path: this.managedSkillLibrary.root, source: 'Codex Skills' }],
+      pluginRoot: join(runtimeHome, 'plugins', 'cache'),
       directMcpServers: this.directMcpRegistry.list().map(server => ({
         name: server.name,
         ...(server.description ? { description: server.description } : {})
       }))
     });
+  }
+
+  private async migrateManagedSkills(): Promise<void> {
+    await this.managedSkillLibrary.migrateLegacyRoot();
+    clearBotResourceCache();
   }
 
   private isolatedMcpConfig(): {
@@ -3587,6 +3741,7 @@ export class Host {
     if (this.skillsExtraRootsSync) return this.skillsExtraRootsSync;
     const pending = (async () => {
       try {
+        await this.migrateManagedSkills();
         await this.runtime.request('skills/extraRoots/set', {
           extraRoots: [resolve(this.managedSkillLibrary.root)]
         });
@@ -4058,6 +4213,24 @@ export class Host {
         }
       }
       await this.routineScheduler.recoverAfterRestart();
+      for (const task of this.store.delegations()) {
+        if (['queued', 'running'].includes(task.status)) {
+          const record = this.store.turns(task.workerChatId).find(turn => task.turnId
+            ? turn.turnId === task.turnId : turn.userMessageId === task.messageId);
+          if (record?.turnId && this.activeTurns.get(task.workerChatId) === record.turnId) {
+            task.status = 'running'; task.turnId = record.turnId;
+            this.delegationTurns.attach(task.workerChatId, record.turnId, task.id);
+            this.store.saveDelegation(task);
+          } else if (record || task.status === 'running') {
+            task.status = record?.status === 'completed' ? 'completed' : 'needs_user';
+            task.result = record?.turnId ? this.store.messages(task.workerChatId)
+              .filter(message => message.role === 'assistant' && message.turnId === record.turnId).at(-1)?.text ?? null : null;
+            task.error = task.status === 'needs_user' ? '上次执行结果未确认；请检查 worker 聊天记录，不自动重跑。' : null;
+            this.store.saveDelegation(task);
+          }
+        }
+        if (!['queued', 'running'].includes(task.status) && !task.reportMessageId) this.deliverDelegationReport(task);
+      }
       for (const chatId of this.store.queuedChatMessageChats()) {
         if (!this.unknownOperations.has(chatId) && !this.busyChats.has(chatId)) {
           void this.drainQueuedMessages(chatId);
@@ -4118,6 +4291,28 @@ export class Host {
     };
   }
 
+  private delegationForMessage(messageId: string | null | undefined) {
+    if (!messageId) return undefined;
+    const tasks = this.store.delegations();
+    const assignment = tasks.find(task => task.messageId === messageId);
+    if (assignment) return assignment;
+    return undefined;
+  }
+
+  private deliverDelegationReport(task: import('../shared/contracts').BotDelegation): void {
+    try {
+      const message = this.store.queueDelegationReport(task);
+      if (message) {
+        this.publish({ type: 'message', message });
+        this.changed();
+      }
+      void this.drainQueuedMessages(task.sourceChatId);
+    } catch (error) {
+      this.publish({ type: 'error', chatId: task.sourceChatId,
+        message: `Bot 回复尚未交回：${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+
   private async drainQueuedMessages(chatId: string): Promise<void> {
     if (this.queueDrainingChats.has(chatId) || this.busyChats.has(chatId) || this.unknownOperations.has(chatId)) return;
     this.queueDrainingChats.add(chatId);
@@ -4125,10 +4320,26 @@ export class Host {
       while (!this.busyChats.has(chatId) && !this.unknownOperations.has(chatId)) {
         const message = this.store.queuedChatMessages(chatId)[0];
         if (!message) break;
+        if (message.delegation && this.activeTurns.has(chatId)) break;
         try {
           await this.sendConversation(chatId, message.text, undefined, undefined, undefined, true,
             undefined, undefined, message.id, false);
         } catch (error) {
+          if (message.delegation) {
+            this.store.setQueuedChatMessageStatus(message.id,
+              this.unknownOperations.has(chatId) ? 'needs_user' : 'failed',
+              error instanceof Error ? error.message : String(error));
+            this.publishMessageDispatchState(chatId, message.id);
+          }
+          if (message.delegation?.kind === 'assignment') {
+            const task = this.store.delegations().find(item => item.id === message.delegation!.taskId);
+            if (task && ['queued', 'running'].includes(task.status)) {
+              task.status = this.unknownOperations.has(chatId) ? 'needs_user' : 'failed';
+              task.error = error instanceof Error ? error.message : String(error);
+              this.store.saveDelegation(task);
+              this.deliverDelegationReport(task);
+            }
+          }
           this.publish({
             type: 'error', chatId,
             message: `排队消息暂未派发：${error instanceof Error ? error.message : String(error)}`
@@ -4202,6 +4413,39 @@ export class Host {
     this.busyGroups.add(target.groupId);
     try { await this.answerGroupCard(target, answer); }
     finally { this.busyGroups.delete(target.groupId); }
+  }
+
+  async resolveAuthorization(messageId: string, decision: 'approve' | 'deny'): Promise<void> {
+    if (decision !== 'approve' && decision !== 'deny') throw new Error('授权操作无效');
+    const target = this.store.authorizationTarget(messageId);
+    if (!target) throw new Error('这张授权卡已经处理或不再可用');
+    const chat = this.store.chat(target.chatId);
+    const bot = this.store.bot(target.botId);
+    if (chat.archived || bot.archived) throw new Error('请先恢复已归档的聊天或机器人');
+    const connection = this.store.connectorConnections()
+      .find(item => item.id === target.content.connectionId);
+    if (decision === 'approve') {
+      if (!connection) throw new Error('这个连接已经被移除，无法授权');
+      if (connection.status !== 'ready') throw new Error('这个连接当前不可用，暂时无法授权');
+      this.store.setConnectorGrant(bot.id, connection.id, true);
+    }
+    const content = {
+      ...target.content,
+      state: decision === 'approve' ? 'approved' as const : 'denied' as const,
+      decidedAt: new Date().toISOString()
+    };
+    const message = this.store.saveAuthorizationContent(messageId, content);
+    this.publish({ type: 'message', message });
+    this.changed();
+    const label = connection
+      ? `${connection.displayName}（${target.content.providerName} · ${connection.accountLabel}）`
+      : target.content.connectionName;
+    const followup = decision === 'approve'
+      ? `已授权连接「${label}」。请继续刚才需要这个连接完成的任务。`
+      : `我暂时不授权连接「${label}」。请不要重复发起同一授权请求；先说明没有它时还能完成哪些部分。`;
+    await this.sendConversation(
+      chat.id, followup, undefined, undefined, undefined, true, undefined, undefined, undefined, true
+    );
   }
 
   openMessageAsset(messageId: string, source: string): OpenedMessageAsset | null {
@@ -4348,7 +4592,8 @@ export class Host {
     if (!threadId) {
       const wechatToolsEnabled = this.wechatToolSurfaceAvailable();
       const result: any = await this.runtime.request('thread/start', {
-        ...context, serviceName: 'Rambo', selectedCapabilityRoots: [], historyMode: 'paginated',
+        ...context, ...this.newThreadBaseParameters(),
+        serviceName: 'Rambo', selectedCapabilityRoots: [], historyMode: 'paginated',
         dynamicTools: [
           VOICE_TOOL,
           ...(this.store.chatRoutineToolsEnabled(chatId) ? [ROUTINE_MANAGEMENT_TOOL] : []),
@@ -4739,7 +4984,7 @@ export class Host {
     let result = routineToolFailure('无法展示聊天内容。');
     try {
       if (params.namespace !== CHAT_UI_TOOL_NAMESPACE ||
-          !['ask_question', 'show_content'].includes(String(params.tool))) {
+          !['ask_question', 'show_content', 'request_authorization'].includes(String(params.tool))) {
         throw new Error('此对话不支持该聊天展示工具。');
       }
       if (typeof params.threadId !== 'string' || !params.threadId || typeof params.callId !== 'string' || !params.callId) {
@@ -4754,12 +4999,47 @@ export class Host {
       }
       let input = params.arguments;
       if (typeof input === 'string') input = JSON.parse(input);
-      const built = params.tool === 'ask_question'
-        ? buildQuestionContent(input)
-        : buildDisplayContent(input);
+      const groupSession = this.groupSessionsByChat.get(chatId);
+      let built: { content: MessageContent; text: string };
+      if (params.tool === 'request_authorization') {
+        if (groupSession) throw new Error('授权请求只支持 Bot 私聊。');
+        const value = input && typeof input === 'object' && !Array.isArray(input)
+          ? input as Record<string, unknown>
+          : {};
+        const connectionId = typeof value.connection_id === 'string' ? value.connection_id.trim() : '';
+        if (!connectionId) throw new Error('请提供待授权连接目录中的 connection_id。');
+        const visible = this.pendingConnections(bot.id).find(item => item.connection_id === connectionId);
+        if (!visible) throw new Error('该连接不在待授权目录中，或当前 Bot 已经获得授权。');
+        const pending = this.store.pendingAuthorization(chatId, connectionId);
+        if (pending) {
+          result = routineToolText(
+            `当前对话已有一张待处理的授权卡（消息 ${pending.id}）。等待用户点击即可，不要重复展示或引导用户打开设置页。`
+          );
+          try { this.runtime.respondToServerRequest(request.id, result); }
+          catch { /* runtime may have disconnected while responding */ }
+          return;
+        }
+        built = buildAuthorizationContent(
+          value,
+          {
+            id: connectionId,
+            displayName: visible.display_name,
+            accountLabel: visible.account
+          },
+          {
+            id: visible.provider,
+            name: visible.provider_name,
+            brandColor: visible.brand_color,
+            monogram: visible.monogram
+          }
+        );
+      } else {
+        built = params.tool === 'ask_question'
+          ? buildQuestionContent(input)
+          : buildDisplayContent(input);
+      }
       if (JSON.stringify(built.content).length > 80_000) throw new Error('聊天展示内容过长');
 
-      const groupSession = this.groupSessionsByChat.get(chatId);
       if (groupSession?.purpose === 'member') {
         const message = this.store.addGroupMessage(groupSession.groupId, 'assistant', built.text, {
           senderBot: bot, content: built.content
@@ -4772,7 +5052,11 @@ export class Host {
           chatId, 'assistant', built.text, 'complete', null, this.activeTurns.get(chatId) ?? null, null, built.content
         );
         this.publish({ type: 'message', message });
-        result = routineToolText(`已在当前 Bot 对话展示内容卡片（消息 ${message.id}）。不要把选项再次复制成普通文字。`);
+        result = routineToolText(
+          built.content.kind === 'authorization'
+            ? `已在当前 Bot 对话展示授权卡（消息 ${message.id}）。等待用户点击授权，不要引导用户打开应用设置，也不要声称已经授权。`
+            : `已在当前 Bot 对话展示内容卡片（消息 ${message.id}）。不要把选项再次复制成普通文字。`
+        );
       }
       this.changed();
     } catch (error) {
@@ -4883,7 +5167,8 @@ export class Host {
       }
       if (!threadId) {
         const startParams = {
-          ...context, serviceName: 'Rambo', selectedCapabilityRoots: [],
+          ...context, ...this.newThreadBaseParameters(),
+          serviceName: 'Rambo', selectedCapabilityRoots: [],
           dynamicTools: [
             ...(chatContentToolsEnabled ? [CHAT_UI_TOOLS] : []),
             ...(routineToolsEnabled ? [ROUTINE_MANAGEMENT_TOOL] : []),
@@ -5010,6 +5295,26 @@ export class Host {
         !this.groupSessionsByChat.has(chatId),
         chatId
       );
+      const incoming = queuedMessageId ? this.store.messages(chatId).find(message => message.id === queuedMessageId)?.delegation : null;
+      if (incoming?.kind === 'report') {
+        const reported = this.store.delegations().find(task => task.id === incoming.taskId);
+        const batch = reported?.sourceTurnId ? this.store.delegations().filter(task =>
+          task.sourceChatId === chatId && task.sourceTurnId === reported.sourceTurnId) : reported ? [reported] : [];
+        additionalContext['rambo.delegation-batch'] = {
+          kind: 'application',
+          value: '同一发送回合的消息往来如下。每条状态只表示该消息对应 turn 的执行情况；按内容决定继续讨论或整理结果，不把 completed 理解成任务完成：\n' +
+            JSON.stringify(batch.map(task => ({ taskId: task.id, worker: task.workerName, status: task.status,
+              result: task.result, error: task.error })))
+        };
+      }
+      if (incoming) {
+        additionalContext['rambo.delegation'] = {
+          kind: 'application',
+          value: incoming.kind === 'assignment'
+            ? `本轮消息来自 Bot「${incoming.senderName}」，消息 ID：${incoming.taskId}。根据消息自然回应：可以提问、讨论、表达意见或执行明确任务。宿主会把本轮回复交回发送者，不必再用 Tool 重复发送同一回复。只陈述真实进展，不预设任务已确定或完成。不要声称是用户亲自发送。`
+            : `这是 Bot「${incoming.senderName}」对上一条消息的回复，消息 ID：${incoming.taskId}。按内容决定继续讨论、明确需求或向用户整理结果。需要继续与对方交流时明确调用 send_message；本轮普通回复仅面向用户，不会自动转发给对方。不要仅为确认收件而再次发送。`
+        };
+      }
       if (widgetAnswerContext) {
         additionalContext[CHAT_CARD_ANSWER_CONTEXT] = { kind: 'application', value: widgetAnswerContext };
       }
@@ -5079,6 +5384,15 @@ export class Host {
             this.store.attachTurnIdToTerminal(turnRecord.id, threadId!, turnId);
             this.store.attachTurnId(turnRecord.id, threadId!, turnId, 'running');
             this.store.setTurnDispatchStatus(turnRecord.id, 'dispatched');
+            if (turnRecord.userMessageId) {
+              const task = this.delegationForMessage(turnRecord.userMessageId);
+              if (task && ['queued', 'running'].includes(task.status)) {
+                task.turnId = turnId;
+                task.status = 'running';
+                this.store.saveDelegation(task);
+                this.delegationTurns.attach(chatId, turnId, task.id);
+              }
+            }
             if (turnRecord.userMessageId) this.publishMessageDispatchState(chatId, turnRecord.userMessageId);
             if (this.pendingTurnRecords.get(chatId) === turnRecord.id) this.pendingTurnRecords.delete(chatId);
           }
@@ -5156,6 +5470,7 @@ export class Host {
 
   private notifyChatIdle(chatId: string): void {
     if (this.busyChats.has(chatId) || this.activeTurns.has(chatId)) return;
+    void this.drainQueuedMessages(chatId);
     const waiters = this.idleWaiters.get(chatId);
     if (!waiters) return;
     this.idleWaiters.delete(chatId);
@@ -5656,6 +5971,16 @@ export class Host {
       if (record) this.publishTurnMetadata(chatId, turnId);
       else this.changed();
       if (typeof turnId === 'string') {
+        const taskId = this.delegationTurns.take(chatId, turnId);
+        const task = this.store.delegations().find(item => item.id === taskId) ?? this.delegationForMessage(record?.userMessageId);
+        if (task && ['queued', 'running'].includes(task.status)) {
+          task.turnId = turnId;
+          task.status = p.turn.status === 'completed' ? 'completed' : p.turn.status === 'interrupted' ? 'interrupted' : 'failed';
+          task.result = finalAssistant ?? null;
+          task.error = p.turn.error?.message ?? null;
+          this.store.saveDelegation(task);
+          this.deliverDelegationReport(task);
+        }
         this.routineScheduler.completeTurn(
           chatId, turnId, this.serverTurnStatus(p.turn?.status), finalAssistant, p.turn?.error?.message
         );
@@ -5957,6 +6282,22 @@ export class Host {
         statusError: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  async modelConfigurationDetails(): Promise<import('../shared/contracts').RuntimeModelConfigurationDetails> {
+    await this.runtime.start();
+    const response: any = await this.runtime.request('config/read', { includeLayers: false });
+    let auth: unknown = null;
+    try {
+      auth = JSON.parse(readFileSync(join(this.store.directory, 'codex-home', 'auth.json'), 'utf8'));
+    } catch {
+      // Authentication details are optional; never return auth file contents.
+    }
+    const config = response?.config;
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('无法读取 Rambo 当前模型配置详情');
+    }
+    return runtimeModelConfigurationDetails(config, auth);
   }
 
   /**

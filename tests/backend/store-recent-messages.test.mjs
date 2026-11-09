@@ -19,13 +19,18 @@ const compiledRobotAvatar = ts.transpileModule(
   readFileSync(new URL('../../src/shared/robot-avatar.ts', import.meta.url), 'utf8'),
   { compilerOptions }
 ).outputText;
+const compiledProxySettings = ts.transpileModule(
+  readFileSync(new URL('../../src/shared/proxy-settings.ts', import.meta.url), 'utf8'),
+  { compilerOptions }
+).outputText;
 const compiled = ts.transpileModule(
   readFileSync(new URL('../../src/main/store.ts', import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }
 ).outputText
   .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
-  .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'");
+  .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'")
+  .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'");
 
 async function loadStore() {
   const directory = mkdtempSync(join(tmpdir(), 'rambo-store-recent-'));
@@ -33,6 +38,7 @@ async function loadStore() {
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule);
   writeFileSync(join(directory, 'contracts.mjs'), compiledContracts);
   writeFileSync(join(directory, 'robot-avatar.mjs'), compiledRobotAvatar);
+  writeFileSync(join(directory, 'proxy-settings.mjs'), compiledProxySettings);
   writeFileSync(path, compiled);
   const { Store } = await import(`${pathToFileURL(path).href}?${Date.now()}`);
   return { Store, cleanup: () => rmSync(directory, { recursive: true, force: true }) };

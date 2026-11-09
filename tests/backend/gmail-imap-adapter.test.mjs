@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import ts from 'typescript';
@@ -114,7 +115,28 @@ test('Gmail adapter turns connection timeouts into actionable Chinese errors', a
 
   await assert.rejects(
     adapter.verify(connection),
-    /Gmail连接失败：连接超时，请检查网络或系统代理后重试/u
+    /Gmail连接失败：连接超时，请检查网络或代理设置后重试/u
+  );
+});
+
+test('Gmail adapter handles asynchronous IMAP socket timeouts without an uncaught error event', async () => {
+  resetTransports();
+  const client = new EventEmitter();
+  client.connect = async () => {};
+  client.noop = () => new Promise(() => {});
+  client.logout = async () => {};
+  const adapter = new GmailImapAdapter(connection, credential, { imapClient: () => client });
+
+  const verification = adapter.verify(connection);
+  setImmediate(() => {
+    const error = new Error('Socket timeout');
+    error.code = 'ETIMEOUT';
+    client.emit('error', error);
+  });
+
+  await assert.rejects(
+    verification,
+    /Gmail连接失败：连接超时，请检查网络或代理设置后重试/u
   );
 });
 

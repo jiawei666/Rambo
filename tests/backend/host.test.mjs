@@ -21,7 +21,9 @@ const storeSource = readFileSync(new URL('../../src/main/store.ts', import.meta.
 const hostSource = readFileSync(new URL('../../src/main/host.ts', import.meta.url), 'utf8');
 const chatContentToolsSource = readFileSync(new URL('../../src/main/chat-content-tools.ts', import.meta.url), 'utf8');
 const contractsSource = readFileSync(new URL('../../src/shared/contracts.ts', import.meta.url), 'utf8');
+const proxySettingsSource = readFileSync(new URL('../../src/shared/proxy-settings.ts', import.meta.url), 'utf8');
 const executionConfigSource = readFileSync(new URL('../../src/shared/execution-config.ts', import.meta.url), 'utf8');
+const modelConfigDetailsSource = readFileSync(new URL('../../src/main/model-config-details.ts', import.meta.url), 'utf8');
 const voiceSupportSource = readFileSync(new URL('../../src/shared/voice-support.ts', import.meta.url), 'utf8');
 const robotAvatarSource = readFileSync(new URL('../../src/shared/robot-avatar.ts', import.meta.url), 'utf8');
 const connectorsSource = readFileSync(new URL('../../src/main/connectors.ts', import.meta.url), 'utf8');
@@ -45,11 +47,13 @@ const compiledSchedule = ts.transpileModule(scheduleSource, { compilerOptions })
 const compiledStore = ts.transpileModule(storeSource, { compilerOptions }).outputText
   .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
+  .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'")
   .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'");
 const compiledScheduler = ts.transpileModule(schedulerSource, { compilerOptions }).outputText;
 const compiledHost = ts.transpileModule(hostSource, { compilerOptions }).outputText
   .replaceAll("from '../shared/execution-config'", "from './execution-config.mjs'")
   .replaceAll("from '../shared/voice-support'", "from './voice-support.mjs'")
+  .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'")
   .replaceAll("from './store'", "from './store.mjs'")
   .replaceAll("from './bot-resources'", "from './bot-resources.mjs'")
   .replaceAll("from './bot-resource-tools'", "from './bot-resource-tools.mjs'")
@@ -61,6 +65,7 @@ const compiledHost = ts.transpileModule(hostSource, { compilerOptions }).outputT
   .replaceAll("from './mail-tools'", "from './mail-tools.mjs'")
   .replaceAll("from './routine-scheduler'", "from './routine-scheduler.mjs'")
   .replaceAll("from './chat-content-tools'", "from './chat-content-tools.mjs'")
+  .replaceAll("from './model-config-details'", "from './model-config-details.mjs'")
   .replaceAll("from './wechat-tools'", "from './wechat-tools.mjs'")
   .replaceAll("from './wechat-adapter'", "from './wechat-adapter.mjs'")
   .replaceAll("from './platform/paths'", "from './platform/paths.mjs'")
@@ -373,7 +378,9 @@ async function withHost(run) {
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule, { mode: 0o600 });
   writeFileSync(join(directory, 'routine-scheduler.mjs'), compiledScheduler, { mode: 0o600 });
   writeFileSync(join(directory, 'contracts.mjs'), ts.transpileModule(contractsSource, { compilerOptions }).outputText, { mode: 0o600 });
+  writeFileSync(join(directory, 'proxy-settings.mjs'), ts.transpileModule(proxySettingsSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'execution-config.mjs'), compiledExecutionConfig, { mode: 0o600 });
+  writeFileSync(join(directory, 'model-config-details.mjs'), ts.transpileModule(modelConfigDetailsSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'voice-support.mjs'), compiledVoiceSupport, { mode: 0o600 });
   writeFileSync(join(directory, 'robot-avatar.mjs'), ts.transpileModule(robotAvatarSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'bot-resources.mjs'), compiledBotResources, { mode: 0o600 });
@@ -410,10 +417,11 @@ async function withHost(run) {
     const runtime = new FakeRuntime();
     const events = [];
     const toolHosts = [];
-    const createHost = (mailRuntime, credentials, managedMcp) => {
+    const createHost = (mailRuntime, credentials, managedMcp, baseInstructions) => {
       const created = new Host(
         store, runtime, event => events.push(event), mailRuntime, credentials,
-        undefined, undefined, undefined, undefined, undefined, undefined, managedMcp
+        undefined, undefined, undefined, undefined, undefined, undefined, managedMcp,
+        baseInstructions
       );
       toolHosts.push(created);
       return created;
@@ -440,6 +448,10 @@ async function withHost(run) {
       storeToClose.close();
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+function setStoredBotPermission(store, botId, permission) {
+  store.db.prepare('UPDATE bots SET permission=? WHERE id=?').run(permission, botId);
 }
 
 async function withCredentialHost(run) {
@@ -586,15 +598,15 @@ test('a version 12 duplicate chat migration keeps only the surviving thread in h
   });
 });
 
-test('execution defaults readiness distinguishes invalid permission from legacy empty values', async () => {
+test('execution defaults readiness ignores the retired global permission setting', async () => {
   await withHost(async ({ store, host }) => {
     store.setSetting('defaultBotModel', 'ready-model');
     store.setSetting('defaultBotPermission', 'invalid-mode');
     assert.deepEqual(host.executionDefaultsReadiness(), {
-      ready: false,
+      ready: true,
       model: 'ready-model',
-      permission: null,
-      error: '新建 Bot 的全局权限配置无效，请在系统设置中重新选择一个权限。'
+      permission: 'fullAccess',
+      error: null
     });
 
     store.setSetting('defaultBotPermission', '');
@@ -659,6 +671,44 @@ test('global initial-value errors do not block configured Bots; each Bot still r
     store.db.prepare("UPDATE bots SET model='' WHERE id=?").run(bot.id);
     await assert.rejects(host.send(chat.id, 'this Bot has no model'), /尚未配置模型/u);
     assert.deepEqual(store.messages(chat.id), afterValidTurn);
+  });
+});
+
+test('new chat and Live threads receive managed base instructions while resumed threads do not', async () => {
+  const baseInstructions = 'You are a Rambo personal assistant. Infer the user need and finish the task.';
+  await withHost(async ({ store, runtime, createHost }) => {
+    const configuredHost = createHost(undefined, undefined, undefined, baseInstructions);
+    const direct = store.createBot('Base instructions Bot', 'a');
+    const directSending = configuredHost.send(direct.chat.id, 'plan my week');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const directStart = runtime.requests.find(request => request.method === 'thread/start');
+    assert.equal(directStart.params.baseInstructions, baseInstructions);
+    const directTurn = runtime.requests.find(request => request.method === 'turn/start');
+    directTurn.resolve({ turn: { id: 'base-turn-1', status: 'inProgress' } });
+    await directSending;
+    const directThreadId = store.chat(direct.chat.id).threadId;
+    runtime.emit('notification', 'turn/completed', {
+      threadId: directThreadId,
+      turn: { id: 'base-turn-1', status: 'completed' }
+    });
+    await waitFor(() => !configuredHost.activeTurns.has(direct.chat.id));
+
+    const voice = store.createBot('Base voice Bot', 'b');
+    runtime.turnList = [{ status: 'completed' }];
+    await configuredHost.startVoice(voice.chat.id, 'v=0\r\n');
+    const starts = runtime.requests.filter(request => request.method === 'thread/start');
+    assert.equal(starts.length, 2);
+    assert.ok(starts.every(start => start.params.baseInstructions === baseInstructions));
+    configuredHost.dispose();
+
+    const resumedHost = createHost(undefined, undefined, undefined, baseInstructions);
+    const resumedSending = resumedHost.send(direct.chat.id, 'continue after restart');
+    await waitFor(() => runtime.requests.some(request => request.method === 'thread/resume'));
+    const resume = runtime.requests.filter(request => request.method === 'thread/resume').at(-1);
+    assert.equal('baseInstructions' in resume.params, false);
+    const resumedTurn = runtime.requests.filter(request => request.method === 'turn/start').at(-1);
+    resumedTurn.resolve({ turn: { id: 'base-turn-2', status: 'inProgress' } });
+    await resumedSending;
   });
 });
 
@@ -843,22 +893,110 @@ test('granting an existing WeChat connection after the first turn uses the same 
   });
 });
 
+test('an ungranted ready connection can be requested as an in-chat authorization card and approved directly', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const { bot, chat } = store.createBot('Authorization requester', 'a');
+    const connection = store.createConnectorConnection({
+      id: 'qq-in-chat-authorization',
+      providerId: 'qqmail',
+      displayName: '工作 QQ 邮箱',
+      accountLabel: 'owner@qq.com',
+      authKind: 'credentials',
+      credentialRef: 'db:qq-in-chat-authorization',
+      capabilities: { 'mail.search': 'ready', 'mail.send': 'ready' }
+    });
+
+    const firstSend = host.send(chat.id, 'Check my mail');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 1);
+    const threadId = store.chat(chat.id).threadId;
+    const firstTurn = runtime.requests.find(request => request.method === 'turn/start');
+    const pendingDirectory = firstTurn.params.additionalContext['rambo.pending-connections'].value;
+    assert.match(pendingDirectory, /qq-in-chat-authorization/u);
+    assert.match(pendingDirectory, /owner@qq\.com/u);
+    assert.match(pendingDirectory, /request_authorization/u);
+    firstTurn.resolve({ turn: { id: 'authorization-request-turn' } });
+    await firstSend;
+    runtime.emit('notification', 'turn/completed', {
+      threadId,
+      turn: { id: 'authorization-request-turn', status: 'completed' }
+    });
+
+    const requested = await host.submitAcceptanceChatContentTool({
+      method: 'item/tool/call',
+      params: {
+        threadId,
+        callId: 'authorization-card-call',
+        namespace: 'rambo_chat_ui',
+        tool: 'request_authorization',
+        arguments: { connection_id: connection.id, reason: '需要读取邮件才能完成总结。' }
+      }
+    });
+    assert.equal(requested.result.success, true);
+    assert.match(requested.result.contentItems[0].text, /展示授权卡/u);
+    const card = store.messages(chat.id).find(message => message.content?.kind === 'authorization');
+    assert.ok(card);
+    assert.equal(card.content.state, 'pending');
+    assert.equal(card.content.connectionName, '工作 QQ 邮箱');
+    assert.equal(card.content.providerName, 'QQ 邮箱');
+    assert.equal(card.content.providerId, 'qqmail');
+    assert.equal(card.content.brandColor, '#1296db');
+    assert.equal(card.content.monogram, 'QQ');
+    assert.equal(card.content.reason, '需要读取邮件才能完成总结。');
+
+    const duplicate = await host.submitAcceptanceChatContentTool({
+      method: 'item/tool/call',
+      params: {
+        threadId,
+        callId: 'authorization-card-duplicate',
+        namespace: 'rambo_chat_ui',
+        tool: 'request_authorization',
+        arguments: { connection_id: connection.id }
+      }
+    });
+    assert.match(duplicate.result.contentItems[0].text, /已有一张待处理的授权卡/u);
+    assert.equal(
+      store.messages(chat.id).filter(message => message.content?.kind === 'authorization').length,
+      1
+    );
+
+    const followups = [];
+    host.sendConversation = async (...args) => { followups.push(args); };
+    await host.resolveAuthorization(card.id, 'approve');
+    assert.equal(
+      store.connectorGrants().some(grant => grant.botId === bot.id && grant.connectionId === connection.id),
+      true
+    );
+    const approved = store.messages(chat.id).find(message => message.id === card.id);
+    assert.equal(approved.content.state, 'approved');
+    assert.ok(approved.content.decidedAt);
+    assert.match(followups[0][1], /已授权连接「工作 QQ 邮箱/u);
+    delete host.sendConversation;
+
+    const secondSend = host.send(chat.id, 'Now check my mail again');
+    await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 2);
+    const secondTurn = runtime.requests.filter(request => request.method === 'turn/start')[1];
+    assert.equal(secondTurn.params.additionalContext['rambo.pending-connections'], undefined);
+    assert.match(secondTurn.params.additionalContext['rambo.mail-connections'].value, /owner@qq\.com/u);
+    secondTurn.resolve({ turn: { id: 'authorization-followup-turn' } });
+    await secondSend;
+  });
+});
+
 test('valid execution defaults clear initialization errors and restore readiness', async () => {
   await withHost(async ({ store, host }) => {
     store.setSetting('defaultBotModel', 'recovered-model');
     store.setSetting('defaultBotPermission', 'invalid-mode');
     store.setSetting('modelInitializationError', 'App Server 模型目录不可用');
     assert.equal(host.executionDefaultsReadiness().ready, false);
-    assert.match(host.executionDefaultsReadiness().error, /权限配置无效/u);
+    assert.match(host.executionDefaultsReadiness().error, /模型目录不可用/u);
 
     store.setExecutionDefaults({
-      model: ' recovered-model ',
-      permission: 'workspaceWrite'
+      model: ' recovered-model '
     });
     assert.deepEqual(host.executionDefaultsReadiness(), {
       ready: true,
       model: 'recovered-model',
-      permission: 'workspaceWrite',
+      permission: 'fullAccess',
       error: null
     });
   });
@@ -955,7 +1093,7 @@ test('Plugin-owned MCP is configured by the plugin switch and stays out of the M
     const originalHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), 'rambo-host-plugin-home-'));
     const pluginRoot = join(
-      home, '.codex', 'plugins', 'cache', 'vendor', 'fixture-plugin', '1.0.0'
+      store.directory, 'codex-home', 'plugins', 'cache', 'vendor', 'fixture-plugin', '1.0.0'
     );
     mkdirSync(join(pluginRoot, '.codex-plugin'), { recursive: true });
     writeFileSync(join(pluginRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({
@@ -1014,6 +1152,10 @@ test('Plugin-owned MCP is configured by the plugin switch and stays out of the M
       runtime.requests.find(request => request.method === 'turn/start')
         .resolve({ turn: { id: 'plugin-enabled-turn' } });
       await enabledSend;
+      runtime.emit('notification', 'turn/completed', {
+        threadId: store.chat(enabled.chat.id).threadId,
+        turn: { id: 'plugin-enabled-turn', status: 'completed' }
+      });
 
       store.syncBotResources(['plugin:fixture-plugin'], []);
       const disabled = store.createBot('Plugin disabled', 'b');
@@ -1035,6 +1177,47 @@ test('Plugin-owned MCP is configured by the plugin switch and stays out of the M
       runtime.requests.filter(request => request.method === 'turn/start')[1]
         .resolve({ turn: { id: 'plugin-disabled-turn' } });
       await disabledSend;
+      runtime.emit('notification', 'turn/completed', {
+        threadId: store.chat(disabled.chat.id).threadId,
+        turn: { id: 'plugin-disabled-turn', status: 'completed' }
+      });
+
+      const historical = store.createBot('Historical plugin thread', 'c');
+      store.setBotResource(historical.bot.id, 'plugin:fixture-plugin', false);
+      const firstHistoricalSend = host.send(historical.chat.id, 'start with plugin disabled');
+      await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 3);
+      const historicalThreadId = store.chat(historical.chat.id).threadId;
+      const historicalFirstConfig = runtime.requests.filter(request => request.method === 'thread/start').at(-1);
+      assert.deepEqual(historicalFirstConfig.params.config.plugins['fixture-plugin@vendor'], {
+        enabled: false
+      });
+      const firstHistoricalTurn = runtime.requests.filter(request => request.method === 'turn/start').at(-1);
+      store.setBotResource(historical.bot.id, 'plugin:fixture-plugin', true);
+      assert.equal(runtime.requests.some(request =>
+        request.method === 'thread/resume' && request.params.threadId === historicalThreadId
+      ), false);
+      firstHistoricalTurn.resolve({ turn: { id: 'historical-plugin-before' } });
+      await firstHistoricalSend;
+      runtime.emit('notification', 'turn/completed', {
+        threadId: historicalThreadId,
+        turn: { id: 'historical-plugin-before', status: 'completed' }
+      });
+
+      const nextHistoricalSend = host.send(historical.chat.id, 'continue with plugin enabled');
+      await waitFor(() => runtime.requests.filter(request => request.method === 'turn/start').length === 4);
+      const historicalResume = runtime.requests.filter(request => request.method === 'thread/resume').at(-1);
+      assert.equal(historicalResume.params.threadId, historicalThreadId);
+      assert.deepEqual(historicalResume.params.config.plugins['fixture-plugin@vendor'], {
+        enabled: true
+      });
+      assert.equal(historicalResume.params.config.mcp_servers.fixture_mcp.enabled, true);
+      runtime.requests.filter(request => request.method === 'turn/start').at(-1)
+        .resolve({ turn: { id: 'historical-plugin-after' } });
+      await nextHistoricalSend;
+      runtime.emit('notification', 'turn/completed', {
+        threadId: historicalThreadId,
+        turn: { id: 'historical-plugin-after', status: 'completed' }
+      });
     } finally {
       process.env.HOME = originalHome;
       rmSync(home, { recursive: true, force: true });
@@ -1710,10 +1893,7 @@ test('each turn carries fresh local time context and Routine creation uses the H
     const { chat } = store.createBot('Local clock Bot', 'a');
     store.bindThread(chat.id, 'local-clock-thread', true, true);
     store.updateChat(chat.id, {});
-    store.updateBotExecutionConfig(chat.botId, {
-      model: 'local-clock-model',
-      permission: 'fullAccess'
-    });
+    store.updateBotExecutionConfig(chat.botId, { model: 'local-clock-model' });
     localHost.threadChats.set('local-clock-thread', chat.id);
     localHost.loadedThreads.add('local-clock-thread');
 
@@ -2341,7 +2521,7 @@ test('Bot group message Tool lets the immediate sender reply for multi-turn dial
   });
 });
 
-test('new Bot greeting starts one hidden real turn with autonomy and secret Tools', async () => {
+test('new Bot greeting starts one hidden real turn with dynamic guidance, autonomy, and secret Tools', async () => {
   await withSecretHost(async ({ store, runtime, host }) => {
     const { bot, chat } = store.createBot('Greeting Bot', 'a');
     store.updateBot(bot.id, {
@@ -2349,7 +2529,8 @@ test('new Bot greeting starts one hidden real turn with autonomy and secret Tool
       instructions: '回答简洁，并明确标出仍缺失的信息。'
     });
 
-    const greeting = host.greetNewBot(bot.id);
+    const greetingInstruction = '以研究顾问的口吻开场，点出擅长整理资料，并邀请用户说说当前研究主题。';
+    const greeting = host.greetNewBot(bot.id, greetingInstruction);
     await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
     const threadStart = runtime.requests.find(request => request.method === 'thread/start');
     const turnStart = runtime.requests.find(request => request.method === 'turn/start');
@@ -2362,6 +2543,8 @@ test('new Bot greeting starts one hidden real turn with autonomy and secret Tool
     assert.match(turnStart.params.input[0].text, /隐藏问候 seed/u);
     assert.match(turnStart.params.input[0].text, /Greeting Bot/u);
     assert.match(turnStart.params.input[0].text, /整理研究资料/u);
+    assert.ok(turnStart.params.input[0].text.includes(greetingInstruction));
+    assert.match(turnStart.params.input[0].text, /一次性动态指引/u);
     assert.equal(store.messages(chat.id).length, 0);
     assert.equal(store.turns(chat.id).length, 1);
     assert.equal(store.turns(chat.id)[0].userMessageId, null);
@@ -2406,8 +2589,12 @@ test('new text threads expose the routine tool and persist one queryable definit
     );
     assert.match(routineTool.tools[0].inputSchema.properties.runDate.description, /几分钟后.*换算.*日期/u);
     assert.equal(routineTool.tools[0].inputSchema.properties.triggerTime.pattern, '^(?:[01]\\d|2[0-3]):[0-5]\\d$');
-    assert.deepEqual(botTool.tools.map(tool => tool.name), ['update_profile', 'update_config']);
-    assert.deepEqual(Object.keys(botTool.tools[1].inputSchema.properties), ['model', 'permission']);
+    assert.deepEqual(botTool.tools.map(tool => tool.name), ['update_profile', 'update_config', 'list_bots', 'send_message', 'create_bot']);
+    assert.deepEqual(Object.keys(botTool.tools[1].inputSchema.properties), ['model']);
+    assert.deepEqual(botTool.tools.find(tool => tool.name === 'create_bot').inputSchema.required, ['name', 'role', 'greetingInstruction']);
+    assert.equal(botTool.tools.find(tool => tool.name === 'create_bot').inputSchema.additionalProperties, false);
+    assert.match(botTool.tools.find(tool => tool.name === 'create_bot').description, /不继承当前 Bot 的记忆、连接授权、私有密钥/u);
+    assert.match(botTool.tools.find(tool => tool.name === 'create_bot').inputSchema.properties.greetingInstruction.description, /根据新 Bot 的职责动态编写.*不要写死最终问候句/u);
     assert.deepEqual(memoryTool.tools.map(tool => tool.name), ['save_memory', 'delete_memory']);
     assert.deepEqual(secretTool.tools.map(tool => tool.name), [
       'save_secret', 'list_secrets', 'rotate_secret', 'delete_secret', 'run_with_secret'
@@ -2638,7 +2825,7 @@ test('Bot imports a local Skill folder into the global catalog and leaves existi
     const resource = host.snapshot().botResources.find(item => item.id === resourceId);
     assert.equal(resource?.name, 'Fixture Importer');
     assert.equal(resource?.description, 'Imported through a Bot tool.');
-    assert.equal(resource?.source, 'Rambo Skills');
+    assert.equal(resource?.source, 'Codex Skills');
 
     const notices = store.messages(first.chat.id).filter(message =>
       message.role === 'system' && message.text.includes('Fixture Importer')
@@ -2650,10 +2837,10 @@ test('Bot imports a local Skill folder into the global catalog and leaves existi
     assert.ok(events.some(event => event.type === 'message' && event.message.id === notices[0].id));
 
     await host.threadConfigForBot(host.workspace(first.bot), first.bot.id);
-    assert.deepEqual(runtime.skillsExtraRoots, [join(store.directory, 'skill-library')]);
+    assert.deepEqual(runtime.skillsExtraRoots, [join(store.directory, 'codex-home', 'skills')]);
     assert.equal(runtime.requests.filter(request => request.method === 'skills/extraRoots/set').length, 1);
 
-    const skillPath = join(store.directory, 'skill-library', 'fixture-skill', 'SKILL.md');
+    const skillPath = join(store.directory, 'codex-home', 'skills', 'fixture-skill', 'SKILL.md');
     runtime.skills = [{
       name: 'Fixture Importer',
       description: 'Imported through a Bot tool.',
@@ -3251,7 +3438,7 @@ test('Bot secret tools encrypt references, isolate Bot scope, expose metadata, a
       message.role === 'system' && message.text.includes(replacementSecret)
     ), false);
 
-    store.updateBot(first.bot.id, { permission: 'readOnly' });
+    setStoredBotPermission(store, first.bot.id, 'readOnly');
     const readOnlyRun = await call('secret-a-thread', 'secret-readonly-run', 'run_with_secret', {
       command: process.execPath,
       args: ['-e', 'process.stdout.write("must not run")'],
@@ -3885,12 +4072,148 @@ test('a disabled legacy instruction channel cannot update profile or facts', asy
   });
 });
 
-test('self-managed config changes only the current Bot and not new-Bot defaults', async () => {
+test('self-managed Bot can create a new Bot with responsibility and global defaults', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const creator = store.createBot('Creator', 'agent-robot:v1:100:green');
+    store.updateBot(creator.bot.id, {
+      role: '协调日常工作。', instructions: '只负责创建者自己的工作。'
+    });
+    store.updateBotExecutionConfig(creator.bot.id, { model: 'creator-model' });
+    setStoredBotPermission(store, creator.bot.id, 'workspaceWrite');
+    store.saveMemory({ botId: creator.bot.id, text: 'PRIVATE-CREATOR-MEMORY' });
+    store.setSetting('defaultBotModel', 'new-bot-default-model');
+    store.setSetting('defaultBotPermission', 'readOnly');
+
+    const sending = host.send(creator.chat.id, '创建一个专职日程规划助手。');
+    await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
+    const creatorThreadId = store.chat(creator.chat.id).threadId;
+    const threadStart = runtime.requests.find(request => request.method === 'thread/start');
+    const botTool = threadStart.params.dynamicTools.find(tool => tool.name === 'rambo_bot');
+    assert.ok(botTool.tools.some(tool => tool.name === 'create_bot'));
+    emitTurnStarted(runtime, creatorThreadId, 'create-specialist');
+
+    const emitBotToolCall = async (id, callId, argumentsValue) => {
+      runtime.emit('serverRequest', {
+        id, method: 'item/tool/call',
+        params: {
+          threadId: creatorThreadId,
+          turnId: 'create-specialist',
+          callId,
+          namespace: 'rambo_bot',
+          tool: 'create_bot',
+          arguments: argumentsValue
+        }
+      });
+      await waitFor(() => runtime.responses.length === id - 99);
+      return runtime.responses.at(-1).result;
+    };
+
+    const createdResult = await emitBotToolCall(100, 'create-schedule-bot', {
+      name: '日程规划师',
+      role: '负责拆解并规划用户的日程安排。',
+      greetingInstruction: '用沉稳、清晰的语气开场，说明能帮用户梳理安排，并邀请用户讲讲当前最重要的计划。',
+      instructions: '先检查已有安排，再给出可执行计划。'
+    });
+    assert.equal(createdResult.success, true, createdResult.contentItems?.[0]?.text);
+    assert.match(createdResult.contentItems[0].text, /已创建新 Bot「日程规划师」/u);
+
+    const specialist = store.bots().find(bot => bot.name === '日程规划师');
+    assert.ok(specialist);
+    assert.equal(specialist.avatar, creator.bot.avatar);
+    assert.equal(specialist.role, '负责拆解并规划用户的日程安排。');
+    assert.equal(specialist.instructions, '先检查已有安排，再给出可执行计划。');
+    assert.equal(specialist.model, 'new-bot-default-model');
+    assert.equal(specialist.permission, 'fullAccess');
+    assert.notEqual(specialist.model, store.bot(creator.bot.id).model);
+    assert.deepEqual(store.memories(specialist.id), []);
+    assert.deepEqual(store.connectorGrants().filter(grant => grant.botId === specialist.id), []);
+    assert.deepEqual(store.ownedBotSecrets(specialist.id), []);
+    const specialistChat = store.chats().find(chat => chat.botId === specialist.id);
+    assert.ok(specialistChat);
+    assert.notEqual(specialistChat.id, creator.chat.id);
+    assert.equal(store.chat(creator.chat.id).threadId, creatorThreadId);
+    assert.equal(store.memories(creator.bot.id)[0].text, 'PRIVATE-CREATOR-MEMORY');
+
+    const missingRole = await emitBotToolCall(101, 'create-bot-missing-role', { name: '无职责助手' });
+    assert.equal(missingRole.success, false);
+    assert.match(missingRole.contentItems[0].text, /短职责/u);
+    const missingGreetingInstruction = await emitBotToolCall(102, 'create-bot-missing-greeting-instruction', {
+      name: '缺问候指引助手', role: '负责测试必填参数。'
+    });
+    assert.equal(missingGreetingInstruction.success, false);
+    assert.match(missingGreetingInstruction.contentItems[0].text, /首次问候指引/u);
+    const unauthorizedField = await emitBotToolCall(103, 'create-bot-extra-field', {
+      name: '权限越界助手', role: '越界字段校验。', greetingInstruction: '简要问候。', permission: 'fullAccess'
+    });
+    assert.equal(unauthorizedField.success, false);
+    assert.match(unauthorizedField.contentItems[0].text, /不支持字段：permission/u);
+    assert.equal(store.bots().length, 2);
+
+    const creatorTurn = runtime.requests.find(request =>
+      request.method === 'turn/start' && request.params.threadId === creatorThreadId
+    );
+    creatorTurn.resolve({ turn: { id: 'create-specialist' } });
+    await waitFor(() => runtime.requests.some(request =>
+      request.method === 'turn/start' && request.params.threadId !== creatorThreadId
+    ));
+    const greetingTurn = runtime.requests.find(request =>
+      request.method === 'turn/start' && request.params.threadId !== creatorThreadId
+    );
+    assert.match(greetingTurn.params.input[0].text, /沉稳、清晰的语气开场/u);
+    assert.match(greetingTurn.params.input[0].text, /梳理安排/u);
+    assert.equal(specialist.instructions, '先检查已有安排，再给出可执行计划。');
+    greetingTurn.resolve({ turn: { id: 'specialist-greeting' } });
+    await sending;
+  });
+});
+
+test('create_bot is rejected when self-management is disabled or the thread belongs to a group', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const creator = store.createBot('Scoped creator', 'a');
+    const disabledThread = 'create-bot-disabled-thread';
+    store.bindThread(creator.chat.id, disabledThread, false, false);
+    host.threadChats.set(disabledThread, creator.chat.id);
+    const disabled = await host.submitAcceptanceBotTool({
+      params: {
+        threadId: disabledThread,
+        callId: 'disabled-create-call',
+        namespace: 'rambo_bot',
+        tool: 'create_bot',
+        arguments: { name: 'Disabled child', role: '不得创建。' }
+      }
+    });
+    assert.equal(disabled.result.success, false);
+    assert.match(disabled.result.contentItems[0].text, /未启用 Bot 自管理/u);
+
+    const peer = store.createBot('Scoped peer', 'b');
+    const group = store.createGroup('Scoped room', [creator.bot.id, peer.bot.id]);
+    const groupChat = store.groupMemberChats(group.id).find(chat => chat.botId === creator.bot.id);
+    assert.ok(groupChat);
+    const groupThread = 'create-bot-group-thread';
+    host.threadChats.set(groupThread, groupChat.id);
+    host.groupSessionsByChat.set(groupChat.id, {
+      groupId: group.id, botId: creator.bot.id, purpose: 'member'
+    });
+    const grouped = await host.submitAcceptanceBotTool({
+      params: {
+        threadId: groupThread,
+        callId: 'group-create-call',
+        namespace: 'rambo_bot',
+        tool: 'create_bot',
+        arguments: { name: 'Group child', role: '不得在群聊创建。' }
+      }
+    });
+    assert.equal(grouped.result.success, false);
+    assert.match(grouped.result.contentItems[0].text, /未启用 Bot 自管理/u);
+    assert.deepEqual(store.bots().map(bot => bot.name).sort(), ['Scoped creator', 'Scoped peer']);
+  });
+});
+
+test('self-managed config changes only the current Bot model; permission remains fixed', async () => {
   await withHost(async ({ store, runtime, host }) => {
     const first = store.createBot('Config Bot', 'a');
     const second = store.createBot('Other Bot', 'b');
     const originalDefaultModel = store.settings().defaultBotModel;
-    const originalDefaultPermission = store.settings().defaultBotPermission;
     store.setSetting('defaultBotModel', 'new-bot-default');
     store.setSetting('defaultBotPermission', 'readOnly');
     const threadId = 'self-config-thread';
@@ -3906,21 +4229,35 @@ test('self-managed config changes only the current Bot and not new-Bot defaults'
         threadId, turnId: 'self-config', callId: 'self-config-call',
         namespace: 'rambo_bot', tool: 'update_config',
         arguments: {
-          model: 'self-bot-model', permission: 'workspaceWrite'
+          model: 'self-bot-model'
         }
       }
     });
     await waitFor(() => runtime.responses.length === 1);
     assert.equal(runtime.responses[0].result.success, true, runtime.responses[0].result.contentItems?.[0]?.text);
     assert.equal(store.bot(first.bot.id).model, 'self-bot-model');
-    assert.equal(store.bot(first.bot.id).permission, 'workspaceWrite');
+    assert.equal(store.bot(first.bot.id).permission, 'fullAccess');
     assert.equal(store.chat(first.chat.id).model, null);
     assert.equal(store.chat(first.chat.id).permission, null);
     assert.equal(store.bot(second.bot.id).model, originalDefaultModel);
-    assert.equal(store.bot(second.bot.id).permission, originalDefaultPermission);
+    assert.equal(store.bot(second.bot.id).permission, 'fullAccess');
     assert.equal(store.settings().defaultBotModel, 'new-bot-default');
     assert.equal(store.settings().defaultBotPermission, 'readOnly');
     assert.deepEqual(store.routines(), []);
+
+    runtime.emit('serverRequest', {
+      id: 74, method: 'item/tool/call',
+      params: {
+        threadId, turnId: 'self-config', callId: 'self-permission-call',
+        namespace: 'rambo_bot', tool: 'update_config',
+        arguments: { model: 'should-not-save', permission: 'readOnly' }
+      }
+    });
+    await waitFor(() => runtime.responses.length === 2);
+    assert.equal(runtime.responses[1].result.success, false);
+    assert.match(runtime.responses[1].result.contentItems[0].text, /不支持修改 Bot 执行配置字段：permission/u);
+    assert.equal(store.bot(first.bot.id).model, 'self-bot-model');
+    assert.equal(store.bot(first.bot.id).permission, 'fullAccess');
 
     runtime.requests.find(request => request.method === 'turn/start').resolve({ turn: { id: 'self-config' } });
     await sending;
@@ -3958,12 +4295,12 @@ test('self-managed config rejects legacy and global fields without changing data
       params: {
         threadId, turnId: 'strict-self-config', callId: 'strict-self-extra',
         namespace: 'rambo_bot', tool: 'update_config',
-        arguments: { model: 'bot-model', globalPermission: 'readOnly' }
+        arguments: { model: 'bot-model', permission: 'readOnly' }
       }
     });
     await waitFor(() => runtime.responses.length === 2);
     assert.equal(runtime.responses[1].result.success, false);
-    assert.match(runtime.responses[1].result.contentItems[0].text, /不支持修改 Bot 执行配置字段：globalPermission/u);
+    assert.match(runtime.responses[1].result.contentItems[0].text, /不支持修改 Bot 执行配置字段：permission/u);
     assert.deepEqual(store.bot(bot.id), before.bot);
     const afterChat = store.chat(chat.id);
     assert.equal(afterChat.model, before.chat.model);
@@ -4160,11 +4497,11 @@ test('Routine tools cancel pending runs while keeping running work and cross-Bot
 test('turn notifications can complete before turn/start response without reviving the turn', async () => {
   await withHost(async ({ store, runtime, host, events }) => {
     store.setSetting('defaultBotModel', 'bot-model');
-    store.setSetting('defaultBotPermission', 'readOnly');
     runtime.globalMcpServers = {
       localServer: { description: 'Local only' }
     };
-    const { chat } = store.createBot('Assistant', 'a');
+    const { bot, chat } = store.createBot('Assistant', 'a');
+    setStoredBotPermission(store, bot.id, 'readOnly');
 
     const sending = host.send(chat.id, 'first message');
     await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
@@ -4236,6 +4573,7 @@ test('Rambo app global model takes precedence over the local Codex global model'
     store.setSetting('defaultBotModel', 'rambo-app-default-model');
     store.setSetting('defaultBotPermission', 'workspaceWrite');
     const { bot, chat } = store.createBot('Assistant', 'a');
+    setStoredBotPermission(store, bot.id, 'workspaceWrite');
     store.setSetting('defaultBotModel', 'rambo-app-next-default-model');
     store.setSetting('defaultBotPermission', 'readOnly');
     const sending = host.send(chat.id, 'use the Bot execution snapshot');
@@ -4263,7 +4601,7 @@ test('Bot model and permission remain independent after creation and override le
     store.setSetting('defaultBotModel', 'creation-model');
     store.setSetting('defaultBotPermission', 'workspaceWrite');
     const { bot, chat } = store.createBot('Session override', 'a');
-    store.updateBot(bot.id, { model: 'independent-bot-model', permission: 'fullAccess' });
+    store.updateBot(bot.id, { model: 'independent-bot-model' });
     store.updateChat(chat.id, { model: 'session-model', permission: 'readOnly' });
 
     const sending = host.send(chat.id, 'use the independent Bot configuration');
@@ -4286,6 +4624,7 @@ test('a running turn keeps its model and permission while steering uses the next
     store.setSetting('defaultBotModel', 'global-model-old');
     store.setSetting('defaultBotPermission', 'workspaceWrite');
     const { bot } = store.createBot('Configuration snapshot', 'a');
+    setStoredBotPermission(store, bot.id, 'workspaceWrite');
     const chat = store.ensureBotChat(bot.id);
     const sending = host.send(chat.id, 'start with old configuration');
     await waitFor(() => runtime.requests.some(request => request.method === 'turn/start'));
@@ -4299,10 +4638,8 @@ test('a running turn keeps its model and permission while steering uses the next
     firstStart.resolve({ turn: { id: 'turn-config-old', status: 'inProgress' } });
     await sending;
 
-    store.updateBotExecutionConfig(bot.id, {
-      model: 'bot-model-new',
-      permission: 'readOnly'
-    });
+    store.updateBotExecutionConfig(bot.id, { model: 'bot-model-new' });
+    setStoredBotPermission(store, bot.id, 'readOnly');
     const steering = host.send(chat.id, 'change direction while running');
     await waitFor(() => runtime.requests.some(request => request.method === 'turn/steer'));
     const steer = runtime.requests.find(request => request.method === 'turn/steer');
@@ -4337,6 +4674,7 @@ test('Routine execution is isolated from the Bot private chat and hands the full
     store.setSetting('defaultBotModel', 'routine-creation-model');
     store.setSetting('defaultBotPermission', 'workspaceWrite');
     const { bot, chat } = store.createBot('Routine isolation', 'a');
+    setStoredBotPermission(store, bot.id, 'workspaceWrite');
     store.setSetting('defaultBotModel', 'routine-next-default-model');
     store.setSetting('defaultBotPermission', 'readOnly');
     const routine = store.createRoutine({
@@ -6750,6 +7088,7 @@ test('explicit group mention sends through that Bot group thread and streams its
     store.setSetting('defaultBotPermission', 'workspaceWrite');
     const first = store.createBot('Researcher', 'a');
     const second = store.createBot('Writer', 'b');
+    setStoredBotPermission(store, second.bot.id, 'workspaceWrite');
     const group = store.createGroup('Project room', [first.bot.id, second.bot.id]);
     store.addMessage(second.chat.id, 'user', 'private-only marker');
     store.addGroupMessage(group.id, 'assistant', 'shared group context marker', { senderBot: first.bot });
@@ -7680,5 +8019,156 @@ test('an @everyone member setup failure stays out of the system timeline', async
 
     assert.equal(store.groupMessages(group.id).some(message => message.role === 'system'), false);
     assert.equal(warning.mock.callCount(), 1);
+  });
+});
+
+
+test('direct Bot delegation preserves worker thread, queues behind active turn, attributes messages and reports exactly once', async () => {
+  await withHost(async ({ store, runtime, host }) => {
+    const manager = store.createBot('Manager', 'a');
+    const worker = store.createBot('Worker', 'b');
+    await host.send(manager.chat.id, 'coordinate');
+    await host.send(worker.chat.id, 'existing work');
+    await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length === 2);
+    const starts = runtime.requests.filter(r => r.method === 'turn/start');
+    for (const [i, request] of starts.entries()) {
+      request.resolve({ turn: { id: `initial-${i}`, status: 'inProgress' } });
+      emitTurnStarted(runtime, request.params.threadId, `initial-${i}`);
+    }
+    await waitFor(() => store.turns(worker.chat.id)[0]?.turnId === 'initial-1');
+    const workerThread = store.chat(worker.chat.id).threadId;
+    const params = { threadId: store.chat(manager.chat.id).threadId, callId: 'assign-1', namespace: 'rambo_bot',
+      tool: 'send_message', arguments: { botId: worker.bot.id, text: 'Find evidence and report sources.' } };
+    const first = await host.submitAcceptanceBotTool({ method: 'item/tool/call', params });
+    assert.equal(first.result.success, true);
+    const duplicate = await host.submitAcceptanceBotTool({ method: 'item/tool/call', params });
+    assert.equal(duplicate.result.success, true);
+    assert.equal(store.delegations().length, 1);
+    assert.equal(runtime.requests.filter(r => r.method === 'turn/start').length, 2);
+    assert.equal(runtime.requests.filter(r => r.method === 'turn/steer').length, 0);
+    const queued = store.messagesPage(worker.chat.id).messages.find(m => m.delegation);
+    assert.equal(queued.delegation.senderBotId, manager.bot.id);
+    assert.equal(queued.delegation.kind, 'assignment');
+    assert.equal(queued.text, params.arguments.text);
+    runtime.emit('notification', 'turn/completed', { threadId: workerThread, turn: { id: 'initial-1', status: 'completed' } });
+    await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length === 3);
+    const child = runtime.requests.filter(r => r.method === 'turn/start')[2];
+    assert.equal(child.params.threadId, workerThread);
+    child.resolve({ turn: { id: 'child', status: 'inProgress' } });
+    emitTurnStarted(runtime, workerThread, 'child');
+    await waitFor(() => store.delegations()[0].status === 'running');
+    runtime.emit('notification', 'item/completed', { threadId: workerThread, turnId: 'child',
+      item: { id: 'evidence', type: 'agentMessage', text: 'Evidence with sources.', phase: 'final_answer' } });
+    const completed = { threadId: workerThread, turn: { id: 'child', status: 'completed' } };
+    runtime.emit('notification', 'turn/completed', completed);
+    runtime.emit('notification', 'turn/completed', completed);
+    await waitFor(() => !!store.delegations()[0].reportMessageId);
+    assert.equal(store.delegations()[0].status, 'completed');
+    assert.equal(store.messages(manager.chat.id).filter(m => m.delegation?.kind === 'report').length, 1);
+    assert.equal(runtime.requests.filter(r => r.method === 'turn/start').length, 3);
+    runtime.emit('notification', 'turn/completed', { threadId: starts[0].params.threadId, turn: { id: 'initial-0', status: 'completed' } });
+    await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length === 4);
+    const report = runtime.requests.filter(r => r.method === 'turn/start')[3];
+    assert.equal(report.params.threadId, starts[0].params.threadId);
+    assert.match(report.params.input[0].text, /Evidence with sources/);
+    report.resolve({ turn: { id: 'report', status: 'inProgress' } });
+    const directory = await host.submitAcceptanceBotTool({ method: 'item/tool/call', params: {
+      ...params, callId: 'list', tool: 'list_bots', arguments: {} } });
+    assert.equal(directory.result.success, true);
+    assert.deepEqual(Object.keys(JSON.parse(directory.result.contentItems[0].text)[0]).sort(), ['id', 'name', 'role']);
+  });
+});
+
+
+test('Bot delegation persists provenance and queue and rejects invalid targets without partial writes', async () => {
+  await withHost(async ({ store, host, runtime, Store }) => {
+    const manager = store.createBot('Manager', 'a');
+    const worker = store.createBot('Worker', 'b');
+    await host.send(manager.chat.id, 'coordinate');
+    await waitFor(() => runtime.requests.some(r => r.method === 'turn/start'));
+    const threadId = store.chat(manager.chat.id).threadId;
+    const request = (callId, argumentsValue) => host.submitAcceptanceBotTool({ method: 'item/tool/call', params: {
+      threadId, callId, namespace: 'rambo_bot', tool: 'send_message', arguments: argumentsValue } });
+    assert.equal((await request('self', { botId: manager.bot.id, text: 'self' })).result.success, false);
+    assert.equal((await request('unknown', { botId: 'missing', text: 'unknown' })).result.success, false);
+    assert.equal((await request('invalid', { botId: worker.bot.id, text: '' })).result.success, false);
+    assert.equal(store.delegations().length, 0);
+    const message = store.createDelegation({ id: 'durable-task', callKey: 'durable-call', sourceChatId: manager.chat.id,
+      workerChatId: worker.chat.id, senderBotId: manager.bot.id, senderName: 'Manager', workerBotId: worker.bot.id,
+      workerName: 'Worker', messageId: '', reportMessageId: null, status: 'queued', turnId: null,
+      result: null, error: null, parentId: null, createdAt: new Date().toISOString() }, 'durable instruction');
+    const reopened = new Store(store.directory);
+    try {
+      assert.equal(reopened.delegations()[0].messageId, message.id);
+      assert.equal(reopened.queuedChatMessages(worker.chat.id)[0].delegation.senderName, 'Manager');
+      assert.equal(reopened.messagesPage(worker.chat.id).messages[0].delegation.taskId, 'durable-task');
+    } finally { reopened.close(); }
+    assert.throws(() => store.createDelegation({ ...store.delegations()[0], id: 'duplicate-id' }, 'must rollback'));
+    assert.equal(store.queuedChatMessages(worker.chat.id).length, 1);
+  });
+});
+
+test('failed worker delegation returns an honest failure report once', async () => {
+  await withHost(async ({ store, host, runtime }) => {
+    const manager = store.createBot('Manager', 'a');
+    const worker = store.createBot('Worker', 'b');
+    await host.send(manager.chat.id, 'coordinate');
+    await waitFor(() => runtime.requests.some(r => r.method === 'turn/start'));
+    const response = await host.submitAcceptanceBotTool({ method: 'item/tool/call', params: {
+      threadId: store.chat(manager.chat.id).threadId, callId: 'failure', namespace: 'rambo_bot', tool: 'send_message',
+      arguments: { botId: worker.bot.id, text: 'run task' } } });
+    assert.equal(response.result.success, true);
+    await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length === 2);
+    const child = runtime.requests.filter(r => r.method === 'turn/start')[1];
+    child.resolve({ turn: { id: 'failed-child', status: 'inProgress' } });
+    emitTurnStarted(runtime, child.params.threadId, 'failed-child');
+    await waitFor(() => store.delegations()[0].turnId === 'failed-child');
+    runtime.emit('notification', 'turn/completed', { threadId: child.params.threadId,
+      turn: { id: 'failed-child', status: 'failed', error: { message: 'fixture task failure' } } });
+    assert.equal(store.delegations()[0].status, 'failed');
+    const report = store.messages(manager.chat.id).find(m => m.delegation?.kind === 'report');
+    assert.match(report.text, /fixture task failure/);
+    assert.match(report.text, /failed/);
+  });
+});
+
+
+test('Bot messaging returns each conversational turn without waiting for unrelated outgoing messages', async () => {
+  await withHost(async ({ store, host, runtime }) => {
+    const root = store.createBot('Root', 'a');
+    const worker = store.createBot('Worker', 'b');
+    const specialist = store.createBot('Specialist', 'c');
+    await host.send(root.chat.id, 'coordinate');
+    await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length === 1);
+    const start = async (index, id) => {
+      await waitFor(() => runtime.requests.filter(r => r.method === 'turn/start').length > index);
+      const request = runtime.requests.filter(r => r.method === 'turn/start')[index];
+      request.resolve({ turn: { id, status: 'inProgress' } });
+      emitTurnStarted(runtime, request.params.threadId, id);
+      await waitFor(() => store.turns(store.chats().find(c => c.threadId === request.params.threadId).id).some(t => t.turnId === id));
+      return request.params.threadId;
+    };
+    const delegate = (threadId, callId, botId) => host.submitAcceptanceBotTool({ method: 'item/tool/call', params: {
+      threadId, callId, namespace: 'rambo_bot', tool: 'send_message', arguments: { botId, text: 'find evidence' } } });
+    const finish = (threadId, id, text) => {
+      runtime.emit('notification', 'item/completed', { threadId, turnId: id,
+        item: { id: id + '-answer', type: 'agentMessage', text, phase: 'final_answer' } });
+      runtime.emit('notification', 'turn/completed', { threadId, turn: { id, status: 'completed' } });
+    };
+    const rootThread = await start(0, 'root');
+    assert.equal((await delegate(rootThread, 'root-child', worker.bot.id)).result.success, true);
+    const workerThread = await start(1, 'worker');
+    assert.equal((await delegate(workerThread, 'worker-child', specialist.bot.id)).result.success, true);
+    const specialistThread = await start(2, 'specialist');
+    finish(workerThread, 'worker', 'waiting for specialist');
+    assert.equal(store.delegations()[0].status, 'completed');
+    assert.ok(store.delegations()[0].reportMessageId);
+    finish(specialistThread, 'specialist', 'specialist evidence');
+    await start(3, 'worker-summary');
+    finish(workerThread, 'worker-summary', 'final aggregated evidence');
+    assert.equal(store.delegations()[0].status, 'completed');
+    const report = store.messages(root.chat.id).find(m => m.delegation?.kind === 'report');
+    assert.match(report.text, /waiting for specialist/);
+    assert.doesNotMatch(report.text, /final aggregated evidence/);
   });
 });

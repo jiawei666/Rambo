@@ -56,6 +56,16 @@ test('Voice preflight rejects a third-party manual API with an actionable messag
   );
 });
 
+test('Voice preflight rejects a non-OpenAI standard provider without inspecting vendor state', () => {
+  const message = module.voiceModelPreflightError({
+    kind: 'local',
+    manual: { serviceName: '', baseUrl: '', model: '' },
+    standardProviderConfigured: true
+  });
+  assert.match(message ?? '', /^语音模型不支持：当前标准外部 Provider/u);
+  assert.doesNotMatch(message ?? '', /Magpie/u);
+});
+
 test('Voice preflight rejects malformed or non-OpenAI manual endpoints', () => {
   for (const baseUrl of ['', 'not-a-url', 'http://api.openai.com/v1', 'https://api.openai.com.evil.test/v1']) {
     assert.match(module.voiceModelPreflightError({

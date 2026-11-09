@@ -3,8 +3,13 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { extname, isAbsolute, join, sep } from 'node:path';
 import { isMessageContent } from '../shared/contracts';
+import type { RuntimeProxyScope } from '../shared/contracts';
+import {
+  migrateRuntimeProxyScopes,
+  serializeRuntimeProxyScopes
+} from '../shared/proxy-settings';
 import type {
-  ActivityKind, ActivityStatus, Bot, Chat, GroupChat, GroupMessage, Memory, Message, MessageContent,
+  ActivityKind, ActivityStatus, AuthorizationMessageContent, BotDelegation, Bot, Chat, GroupChat, GroupMessage, Memory, Message, MessageContent, MessagePage,
   ConnectionStatus, ConnectorAuthKind, ConnectorConnection, ConnectorGrant, MessageStatus, PermissionMode, QuestionMessageContent,
   ResultCardMessageContent, RoutineListItem,
   RoutineDefinition, RoutineExecutionMode, RoutineRun, RoutineRunStatus, ThreadModelSource, TurnModelSource,
@@ -43,12 +48,6 @@ function generatedImageContent(path: string): MessageContent {
 }
 
 const permissionModes = new Set<PermissionMode>(['fullAccess', 'workspaceWrite', 'readOnly']);
-function resolvedDefaultPermission(value: string | undefined): PermissionMode {
-  if (value === undefined || value === '') return 'fullAccess';
-  if (permissionModes.has(value as PermissionMode)) return value as PermissionMode;
-  throw new Error('新建 Bot 的全局权限配置无效，请在系统设置中重新选择一个权限。');
-}
-
 export const DEFAULT_BOT_RESOURCE_IDS = [
   'skill:documents',
   'skill:pdf',
@@ -200,6 +199,7 @@ const messageFrom = (row: Row): Message => ({
     ? row.phase
     : null,
   source: row.source === 'voice' ? 'voice' : 'text',
+  delegation: typeof row.delegationJson === 'string' ? JSON.parse(row.delegationJson) : null,
   content: messageContentFrom(row)
 });
 const groupMessageFrom = (row: Row): GroupMessage => ({
@@ -659,7 +659,9 @@ export class Store {
     if (!turnColumns.some(column => column.name === 'userMessageId')) this.db.exec('ALTER TABLE turns ADD COLUMN userMessageId TEXT');
     if (!turnColumns.some(column => column.name === 'dispatchStatus')) this.db.exec("ALTER TABLE turns ADD COLUMN dispatchStatus TEXT NOT NULL DEFAULT 'dispatched'");
     if (!turnColumns.some(column => column.name === 'dispatchError')) this.db.exec('ALTER TABLE turns ADD COLUMN dispatchError TEXT');
+    this.db.exec('CREATE TABLE IF NOT EXISTS bot_delegations (id TEXT PRIMARY KEY, callKey TEXT NOT NULL UNIQUE, data TEXT NOT NULL)');
     const messageColumns = this.db.prepare('PRAGMA table_info(messages)').all() as Row[];
+    if (!messageColumns.some(column => column.name === 'delegationJson')) this.db.exec('ALTER TABLE messages ADD COLUMN delegationJson TEXT');
     if (!messageColumns.some(column => column.name === 'turnId')) this.db.exec('ALTER TABLE messages ADD COLUMN turnId TEXT');
     if (!messageColumns.some(column => column.name === 'phase')) this.db.exec('ALTER TABLE messages ADD COLUMN phase TEXT');
     if (!messageColumns.some(column => column.name === 'contentJson')) this.db.exec('ALTER TABLE messages ADD COLUMN contentJson TEXT');
@@ -818,6 +820,13 @@ export class Store {
         try { this.db.exec('ROLLBACK'); } catch { /* migration may already have closed */ }
         throw error;
       }
+    }
+    const proxySettings = this.settings();
+    if (!Object.hasOwn(proxySettings, 'runtimeProxyScopes')) {
+      this.setRuntimeProxySettings(
+        proxySettings.runtimeProxy?.trim() ?? '',
+        migrateRuntimeProxyScopes(proxySettings.runtimeProxy, undefined)
+      );
     }
   }
   bots(): Bot[] {
@@ -1453,12 +1462,16 @@ export class Store {
     if (!r) throw new Error('聊天不存在');
     return chatFrom(r);
   }
-  createBot(name: string, avatar: string): { bot: Bot; chat: Chat } {
+  createBot(
+    name: string,
+    avatar: string,
+    profile: { role?: string; instructions?: string } = {}
+  ): { bot: Bot; chat: Chat } {
     const id = randomUUID();
     const settings = this.settings();
     const model = typeof settings.defaultBotModel === 'string' ? settings.defaultBotModel.trim() : '';
     if (!model) throw new Error('模型配置尚未就绪，暂时不能新建 Bot');
-    const permission = resolvedDefaultPermission(settings.defaultBotPermission);
+    const permission: PermissionMode = 'fullAccess';
     const enabledResources = canonicalResourceIds(settings.globalDefaultResourceIds);
     const visibleResources = canonicalResourceIds(settings.globalResourceIds);
     const resourceIds = [...new Set(enabledResources.filter(id => visibleResources.includes(id)))];
@@ -1468,9 +1481,13 @@ export class Store {
     }));
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare(`INSERT INTO bots(id,name,avatar,model,permission,resourceIdsJson,createdAt)
-        VALUES(?,?,?,?,?,?,?)`)
-        .run(id, name, avatar, model, permission, JSON.stringify(resourceIds), now());
+      this.db.prepare(`INSERT INTO bots(
+        id,name,avatar,role,instructions,model,permission,resourceIdsJson,createdAt
+      ) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(
+          id, name, avatar, profile.role ?? '', profile.instructions ?? '',
+          model, permission, JSON.stringify(resourceIds), now()
+        );
       const insertResource = this.db.prepare(
         'INSERT INTO bot_resources(botId,resourceId,enabled) VALUES(?,?,?)'
       );
@@ -1535,7 +1552,7 @@ export class Store {
       ) VALUES(?,?,?,?,?,?,?,0,?,NULL,?,?)`)
         .run(
           targetBotId, name, source.avatar, source.role, source.instructions,
-          source.model, source.permission, Number(source.notificationsEnabled),
+          source.model, 'fullAccess', Number(source.notificationsEnabled),
           JSON.stringify(source.resourceIds), createdAt
         );
 
@@ -1579,25 +1596,19 @@ export class Store {
       throw error;
     }
   }
-  materializeBotExecutionDefaults(
-    model: string,
-    permission: PermissionMode,
-    previousPermission?: PermissionMode
-  ): number {
+  materializeBotExecutionDefaults(model: string): number {
     const normalizedModel = model.trim();
-    if (!normalizedModel || normalizedModel.length > 500 || !permissionModes.has(permission)) {
+    if (!normalizedModel || normalizedModel.length > 500) {
       throw new Error('Bot 执行初值无效');
     }
     const marker = 'botExecutionDefaultsMigratedV1';
     const alreadyMigrated = this.db.prepare('SELECT value FROM settings WHERE key=?')
       .get(marker) as Row | undefined;
     if (alreadyMigrated?.value === '1') return 0;
-    const rows = this.db.prepare(`SELECT b.id,b.model,b.permission,c.model AS chatModel,
-      c.permission AS chatPermission, s.value AS previousGlobalPermission
+    const rows = this.db.prepare(`SELECT b.id,b.model,c.model AS chatModel
       FROM bots b LEFT JOIN chats c ON c.botId=b.id AND c.groupChatId IS NULL
-        AND c.routineRunId IS NULL AND c.archived=0
-      LEFT JOIN settings s ON s.key='defaultBotPermission'`).all() as Row[];
-    const update = this.db.prepare('UPDATE bots SET model=?,permission=? WHERE id=?');
+        AND c.routineRunId IS NULL AND c.archived=0`).all() as Row[];
+    const update = this.db.prepare('UPDATE bots SET model=? WHERE id=?');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const row of rows) {
@@ -1606,18 +1617,7 @@ export class Store {
           : typeof row.chatModel === 'string' && row.chatModel.trim()
             ? row.chatModel.trim()
             : normalizedModel;
-        const globalPermission = previousPermission ?? (typeof row.previousGlobalPermission === 'string' &&
-          permissionModes.has(row.previousGlobalPermission as PermissionMode)
-          ? row.previousGlobalPermission as PermissionMode
-          : permission);
-        const chatPermission = typeof row.chatPermission === 'string' &&
-          permissionModes.has(row.chatPermission as PermissionMode)
-          ? row.chatPermission as PermissionMode
-          : null;
-        // The settings default existed before per-Bot defaults and captured the
-        // permission that legacy Bots inherited. Chat override still wins.
-        const existingPermission = chatPermission ?? globalPermission ?? permission;
-        update.run(existingModel, existingPermission, String(row.id));
+        update.run(existingModel, String(row.id));
       }
       this.db.prepare(`INSERT INTO settings(key,value) VALUES(?, '1')
         ON CONFLICT(key) DO UPDATE SET value='1'`).run(marker);
@@ -1630,7 +1630,7 @@ export class Store {
   }
   updateBot(id: string, patch: Record<string, unknown>): Bot {
     this.bot(id);
-    const columns = new Set(['name', 'avatar', 'role', 'instructions', 'model', 'permission', 'notificationsEnabled']);
+    const columns = new Set(['name', 'avatar', 'role', 'instructions', 'model', 'notificationsEnabled']);
     for (const [key, value] of Object.entries(patch)) {
       if (!columns.has(key)) throw new Error('不支持的机器人字段');
       this.db.prepare(`UPDATE bots SET ${key}=? WHERE id=?`).run(typeof value === 'boolean' ? Number(value) : value as string | null, id);
@@ -1639,14 +1639,15 @@ export class Store {
   }
   updateBotExecutionConfig(
     id: string,
-    patch: { model: string; permission: PermissionMode }
+    patch: { model: string }
   ): Bot {
+    if (Object.keys(patch).some(key => key !== 'model')) {
+      throw new Error('Bot 权限不支持修改');
+    }
     this.bot(id);
     const model = patch.model.trim();
     if (!model || model.length > 500) throw new Error('Bot 模型无效');
-    if (!permissionModes.has(patch.permission)) throw new Error('无效的权限模式');
-    this.db.prepare('UPDATE bots SET model=?,permission=? WHERE id=?')
-      .run(model, patch.permission, id);
+    this.db.prepare('UPDATE bots SET model=? WHERE id=?').run(model, id);
     return this.bot(id);
   }
   setBotResource(botId: string, resourceId: string, enabled: boolean): Bot {
@@ -2298,17 +2299,43 @@ export class Store {
   }
   messages(chatId: string): Message[] {
     this.chat(chatId);
+    return this.messageRows(
+      chatId,
+      this.db.prepare('SELECT * FROM messages WHERE chatId=? ORDER BY createdAt, rowid').all(chatId) as Row[]
+    );
+  }
+  messagesPage(chatId: string, beforeMessageId?: string | null, limit = 80): MessagePage {
+    this.chat(chatId);
+    const pageSize = Math.max(1, Math.min(200, Math.trunc(limit) || 80));
+    let rows: Row[];
+    if (beforeMessageId) {
+      const cursor = this.db.prepare('SELECT rowid AS rowId, createdAt FROM messages WHERE id=? AND chatId=?')
+        .get(beforeMessageId, chatId) as Row | undefined;
+      if (!cursor) return { messages: [], hasMore: false };
+      rows = this.db.prepare(`SELECT * FROM messages
+        WHERE chatId=? AND (createdAt < ? OR (createdAt = ? AND rowid < ?))
+        ORDER BY createdAt DESC, rowid DESC LIMIT ?`).all(
+        chatId, String(cursor.createdAt), String(cursor.createdAt), Number(cursor.rowId), pageSize + 1
+      ) as Row[];
+    } else {
+      rows = this.db.prepare('SELECT * FROM messages WHERE chatId=? ORDER BY createdAt DESC, rowid DESC LIMIT ?')
+        .all(chatId, pageSize + 1) as Row[];
+    }
+    const hasMore = rows.length > pageSize;
+    const pageRows = rows.slice(0, pageSize).reverse();
+    return { messages: this.messageRows(chatId, pageRows), hasMore };
+  }
+  private messageRows(chatId: string, rows: Row[]): Message[] {
     const generatedByTurn = this.generatedImagePathsByTurn(chatId);
-    return (this.db.prepare('SELECT * FROM messages WHERE chatId=? ORDER BY createdAt, rowid').all(chatId) as Row[])
-      .map(row => {
-        const message = messageFrom(row);
-        const paths = message.role === 'assistant' && message.turnId
-          ? generatedByTurn.get(message.turnId) ?? []
-          : [];
-        return message.content || !paths.length
-          ? message
-          : { ...message, content: generatedImageContent(paths[0]) };
-      });
+    return rows.map(row => {
+      const message = messageFrom(row);
+      const paths = message.role === 'assistant' && message.turnId
+        ? generatedByTurn.get(message.turnId) ?? []
+        : [];
+      return message.content || !paths.length
+        ? message
+        : { ...message, content: generatedImageContent(paths[0]) };
+    });
   }
   composerAttachmentReferenced(path: string): boolean {
     if (!isAbsolute(path) || path.includes('\0')) return false;
@@ -2318,13 +2345,53 @@ export class Store {
       SELECT text FROM group_messages WHERE instr(text, ?) > 0
     ) LIMIT 1`).get(path, path));
   }
+  delegations(): BotDelegation[] {
+    return (this.db.prepare(`SELECT data FROM bot_delegations WHERE EXISTS (SELECT 1 FROM chats WHERE id=json_extract(data, '$.sourceChatId')) AND EXISTS (SELECT 1 FROM chats WHERE id=json_extract(data, '$.workerChatId')) ORDER BY rowid`).all() as Row[])
+      .map(row => JSON.parse(String(row.data)) as BotDelegation);
+  }
+  saveDelegation(task: BotDelegation): void {
+    this.db.prepare('INSERT INTO bot_delegations(id,callKey,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
+      .run(task.id, task.callKey, JSON.stringify(task));
+  }
+  createDelegation(task: BotDelegation, text: string): Message {
+    this.db.exec('SAVEPOINT delegation_create');
+    try {
+      const message = this.enqueueChatMessage(task.workerChatId, text);
+      task.messageId = message.id;
+      message.delegation = { taskId: task.id, senderBotId: task.senderBotId, senderName: task.senderName, kind: 'assignment' };
+      this.db.prepare('UPDATE messages SET delegationJson=? WHERE id=?').run(JSON.stringify(message.delegation), message.id);
+      this.saveDelegation(task);
+      this.db.exec('RELEASE delegation_create');
+      return message;
+    } catch (error) {
+      this.db.exec('ROLLBACK TO delegation_create; RELEASE delegation_create');
+      throw error;
+    }
+  }
+  queueDelegationReport(task: BotDelegation): Message | null {
+    if (task.reportMessageId) return null;
+    this.db.exec('SAVEPOINT delegation_report');
+    try {
+      const text = `Bot「${task.workerName}」的回复（消息 ${task.id}，本轮状态：${task.status}）：\n${task.result || '本轮未产生文字回复。'}${task.error ? `\n错误或未确认原因：${task.error}` : ''}\n请结合此前消息自然继续处理；本轮结束不代表讨论结束或任务完成。`;
+      const message = this.enqueueChatMessage(task.sourceChatId, text);
+      message.delegation = { taskId: task.id, senderBotId: task.workerBotId, senderName: task.workerName, kind: 'report' };
+      this.db.prepare('UPDATE messages SET delegationJson=? WHERE id=?').run(JSON.stringify(message.delegation), message.id);
+      task.reportMessageId = message.id;
+      this.saveDelegation(task);
+      this.db.exec('RELEASE delegation_report');
+      return message;
+    } catch (error) {
+      this.db.exec('ROLLBACK TO delegation_report; RELEASE delegation_report');
+      throw error;
+    }
+  }
   enqueueChatMessage(chatId: string, text: string): Message {
     this.chat(chatId);
     const message: Message = {
       id: randomUUID(), chatId, role: 'user', text, status: 'complete', itemId: null,
       createdAt: now(), turnId: null, phase: null, source: 'text', dispatchStatus: 'queued'
     };
-    this.db.exec('BEGIN IMMEDIATE');
+    this.db.exec('SAVEPOINT enqueue_message');
     try {
       this.db.prepare(`INSERT INTO messages(
         id,chatId,role,text,status,itemId,createdAt,turnId,phase,source,dispatchStatus)
@@ -2335,9 +2402,9 @@ export class Store {
         .run(message.id, chatId, message.createdAt, message.createdAt);
       this.db.prepare('UPDATE chats SET updatedAt=?,title=CASE WHEN title=\'新对话\' THEN ? ELSE title END WHERE id=?')
         .run(message.createdAt, text.slice(0, 40), chatId);
-      this.db.exec('COMMIT');
+      this.db.exec('RELEASE enqueue_message');
     } catch (error) {
-      this.db.exec('ROLLBACK');
+      this.db.exec('ROLLBACK TO enqueue_message; RELEASE enqueue_message');
       throw error;
     }
     return message;
@@ -2506,6 +2573,33 @@ export class Store {
         !(message.content?.kind === 'question' && message.content.state === 'pending' ||
           message.content?.kind === 'card' && message.content.state === 'pending')) return null;
     return { scope: 'group', groupId: message.groupId, botId: message.senderBotId, message, content: message.content };
+  }
+  authorizationTarget(messageId: string): {
+    chatId: string; botId: string; message: Message; content: AuthorizationMessageContent;
+  } | null {
+    const row = this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId) as Row | undefined;
+    if (!row) return null;
+    const message = messageFrom(row);
+    if (message.role !== 'assistant' || message.content?.kind !== 'authorization' ||
+        message.content.state !== 'pending') return null;
+    const chat = this.chat(message.chatId);
+    if (chat.groupChatId) return null;
+    return { chatId: chat.id, botId: chat.botId, message, content: message.content };
+  }
+  pendingAuthorization(chatId: string, connectionId: string): Message | null {
+    return this.messages(chatId).reverse().find(candidate =>
+      candidate.role === 'assistant' &&
+      candidate.content?.kind === 'authorization' &&
+      candidate.content.state === 'pending' &&
+      candidate.content.connectionId === connectionId
+    ) ?? null;
+  }
+  saveAuthorizationContent(messageId: string, content: AuthorizationMessageContent): Message {
+    const serialized = JSON.stringify(content);
+    const row = this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId) as Row | undefined;
+    if (!row) throw new Error('授权卡不存在');
+    this.db.prepare('UPDATE messages SET contentJson=? WHERE id=?').run(serialized, messageId);
+    return messageFrom({ ...row, contentJson: serialized });
   }
   messageAssetBotId(messageId: string): string | null {
     const row = this.db.prepare(`SELECT c.botId AS botId FROM messages m
@@ -2889,6 +2983,17 @@ export class Store {
     return { globalPermission: 'fullAccess', ...persisted };
   }
   setSetting(key: string, value: string): void { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  setRuntimeProxySettings(proxy: string, scopes: readonly RuntimeProxyScope[]): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.setSetting('runtimeProxy', proxy);
+      this.setSetting('runtimeProxyScopes', serializeRuntimeProxyScopes(scopes));
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* transaction may already be closed */ }
+      throw error;
+    }
+  }
   private normalizedExecutionModelCatalog(
     models: ModelOption[],
     defaultModel: string,
@@ -2996,7 +3101,8 @@ export class Store {
   }
   applyExecutionModelCatalogAndRefreshBots(
     models: ModelOption[],
-    defaultModel: string
+    defaultModel: string,
+    manualModelCatalog?: { models: ModelOption[]; defaultModel: string }
   ): {
     models: ModelOption[];
     defaultModel: string;
@@ -3004,6 +3110,13 @@ export class Store {
   } {
     const normalizedDefault = defaultModel.trim();
     const normalizedModels = this.normalizedExecutionModelCatalog(models, normalizedDefault);
+    const normalizedManualCatalog = manualModelCatalog
+      ? this.normalizedExecutionModelCatalog(
+        manualModelCatalog.models,
+        manualModelCatalog.defaultModel,
+        '手动 API 当前模型必须保留在可用模型列表中'
+      )
+      : null;
     const staleBots = this.staleBotModelsForCatalog(normalizedModels);
     const update = this.db.prepare('UPDATE bots SET model=? WHERE id=?');
     this.db.exec('BEGIN IMMEDIATE');
@@ -3011,6 +3124,9 @@ export class Store {
       this.setSetting('defaultBotModels', JSON.stringify(normalizedModels));
       this.setSetting('defaultBotModel', normalizedDefault);
       this.setSetting('modelInitializationError', '');
+      if (normalizedManualCatalog) {
+        this.setSetting('manualModelCatalog', JSON.stringify(normalizedManualCatalog));
+      }
       for (const bot of staleBots) update.run(normalizedDefault, bot.id);
       this.db.exec('COMMIT');
     } catch (error) {
@@ -3023,15 +3139,13 @@ export class Store {
       refreshedBots: staleBots.map(bot => ({ ...bot, model: normalizedDefault }))
     };
   }
-  setExecutionDefaults(input: { model: string; permission: PermissionMode }): void {
+  setExecutionDefaults(input: { model: string }): void {
     const model = input.model.trim();
     if (!model) throw new Error('新建 Bot 的模型不能为空');
-    if (!permissionModes.has(input.permission)) throw new Error('无效的全局权限模式');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.setSetting('defaultBotModel', model);
       this.syncExecutionModelCatalogDefault(model);
-      this.setSetting('defaultBotPermission', input.permission);
       this.setSetting('modelInitializationError', '');
       this.db.exec('COMMIT');
     } catch (error) {

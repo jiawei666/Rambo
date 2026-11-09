@@ -44,7 +44,10 @@ export interface SidebarPrimaryAction {
 export function sidebarPrimaryAction(input: {
   runtimeStatus: 'stopped' | 'starting' | 'ready' | 'error';
   executionDefaultsReady: boolean;
-  modelSource: Pick<ModelSourceState, 'kind' | 'manual' | 'hasApiKey'>;
+  modelSource: Pick<
+    ModelSourceState,
+    'kind' | 'manual' | 'hasApiKey' | 'standardProviderConfigured'
+  >;
   accountReady: boolean | null;
 }): SidebarPrimaryAction {
   const manualReady = input.modelSource.kind === 'manualApi' &&
@@ -53,7 +56,8 @@ export function sidebarPrimaryAction(input: {
       input.modelSource.manual.model.trim() &&
       input.modelSource.hasApiKey
     );
-  const requiresAccount = input.modelSource.kind !== 'manualApi';
+  const requiresAccount = input.modelSource.kind !== 'manualApi' &&
+    !(input.modelSource.kind === 'local' && input.modelSource.standardProviderConfigured);
   if (input.runtimeStatus !== 'ready' || !input.executionDefaultsReady) {
     return {
       kind: 'configure',

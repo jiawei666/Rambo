@@ -236,6 +236,12 @@ test('initial setup opens only when both runtime and selected model source are u
     accountReady: false
   })), true);
   assert.equal(module.needsInitialSetup(state({
+    runtimeReady: true,
+    executionDefaultsReady: true,
+    accountReady: false,
+    standardProviderConfigured: true
+  })), false);
+  assert.equal(module.needsInitialSetup(state({
     kind: 'chatgpt',
     runtimeReady: true,
     executionDefaultsReady: true,

@@ -216,21 +216,15 @@ async function openSystemSettings(page, tabName) {
 }
 
 async function openManualApiEditor(page) {
-  const independent = page.getByRole('radio', { name: /独立配置/ });
-  if (await independent.getAttribute('aria-checked') !== 'true') {
-    await independent.click();
-  }
-  await expect(independent).toHaveAttribute('aria-checked', 'true');
-
-  const manualSource = page.getByRole('radio', { name: /手动配置 API/ });
+  const manualSource = page.getByRole('button', { name: /配置或更换 API 服务/ });
   if (!(await manualSource.isVisible().catch(() => false))) {
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
+    const changeSource = page.getByRole('button', { name: '更改', exact: true });
+    if (await changeSource.isVisible().catch(() => false)) {
+      await changeSource.click();
+    }
   }
   if (await manualSource.isVisible().catch(() => false)) {
     await manualSource.click();
-  }
-  if (!(await page.getByLabel('服务名称').isVisible().catch(() => false))) {
-    await page.getByRole('button', { name: '编辑配置', exact: true }).click();
   }
   await expect(page.getByLabel('服务名称')).toBeEditable();
 }
@@ -338,7 +332,7 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
     await expect(page.getByRole('button', { name: '打开 E2E Pilot 设置' })).toBeVisible();
     await page.getByRole('button', { name: '打开 E2E Pilot 设置' }).click();
     await expect(page.getByRole('tab', { name: '基础资料' })).toHaveAttribute('aria-selected', 'true');
-    for (const tab of ['模型与权限', '长期记忆', '定时任务', 'Bot 管理']) {
+    for (const tab of ['模型', '长期记忆', '定时任务', 'Bot 管理']) {
       await page.getByRole('tab', { name: tab }).click();
       await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
     }
@@ -376,7 +370,7 @@ test('真实 Electron 从空白状态创建 Bot 并直接进入唯一私聊', as
     await expect(restartedPage.getByLabel('会话列表').getByText('E2E Pilot')).toBeVisible();
 });
 
-test('真实 Electron 系统设置保存全局默认配置且不改已有 Bot', async ({ electron }) => {
+test('真实 Electron 系统设置保存新建 Bot 默认模型且不改已有 Bot', async ({ electron }) => {
   const page = electron.page;
   const footer = page.locator('.sidebar-footer');
   const footerButtons = footer.locator(':scope > button');
@@ -415,34 +409,39 @@ test('真实 Electron 系统设置保存全局默认配置且不改已有 Bot', 
   const initialModel = initialBot.model;
   const initialPermission = initialBot.permission;
   const models = await page.evaluate(() => window.rambo.models());
-  expect(models.length, '真实模型目录为空，无法验证全局默认配置').toBeGreaterThan(0);
+  expect(models.length, '真实模型目录为空，无法验证新建 Bot 默认模型设置').toBeGreaterThan(0);
   const globalModelValue = models.find(option => option.isDefault) ?? models[0];
   const sessionModelValue = models.find(option => option.id !== globalModelValue.id) ?? globalModelValue;
   await openSystemSettings(page, '模型配置');
   await expect(page.getByRole('tab', { name: '连接应用', exact: true })).toHaveCount(0);
-  const globalModel = page.getByLabel('全局默认模型');
+  await expect(page.locator('.current-source-title strong')).toHaveText('Rambo 配置');
+  await expect(page.locator('.current-source-details')).toContainText('新 Bot 默认模型');
+  await expect(page.locator('.current-source-details')).not.toContainText(/Codex 配置已导入|已导入/);
+  const globalModel = page.getByLabel('新建 Bot 默认模型');
   const settingsLayout = await page.evaluate(() => {
-    const modelCard = document.querySelector('.global-model-card');
-    const modelSelect = modelCard.querySelector('select');
-    const modelChevron = modelCard.querySelector('.select-input-chevron');
-    const permissionCard = document.querySelector('.global-permission-card');
-    const permissionHeading = permissionCard.querySelector('.global-default-card-heading');
+    const modelCard = document.querySelector('.current-source-card');
+    const modelControl = modelCard.querySelector('.current-source-model-control');
+    const modelSelect = modelControl.querySelector('select');
+    const modelChevron = modelControl.querySelector('.select-input-chevron');
     const selectRect = modelSelect.getBoundingClientRect();
     const chevronRect = modelChevron.getBoundingClientRect();
     return {
-      modelWidthRatio: selectRect.width / modelCard.clientWidth,
+      modelWidthRatio: selectRect.width / modelControl.clientWidth,
       modelChevronInset: selectRect.right - chevronRect.right,
-      permissionHeadingInset: permissionHeading.getBoundingClientRect().top - permissionCard.getBoundingClientRect().top,
-      cardGap: permissionCard.getBoundingClientRect().top - modelCard.getBoundingClientRect().bottom
+      permissionCardCount: document.querySelectorAll('.global-permission-card').length,
+      defaultModelInsideCurrentCard: Boolean(modelCard.querySelector('[aria-label="新建 Bot 默认模型"]')),
+      refreshButtonInsideCurrentCard: Boolean(modelCard.querySelector('.current-source-model-refresh'))
     };
   });
-  expect(settingsLayout.modelWidthRatio).toBeGreaterThan(0.9);
-  expect(settingsLayout.modelChevronInset).toBeGreaterThan(20);
-  expect(settingsLayout.permissionHeadingInset).toBeGreaterThan(10);
-  expect(settingsLayout.cardGap).toBeGreaterThanOrEqual(14);
-  await expect(page.getByRole('heading', { name: '默认权限', exact: true })).toBeVisible();
+  expect(settingsLayout.modelWidthRatio).toBeGreaterThan(0.65);
+  expect(settingsLayout.modelChevronInset).toBeGreaterThan(4);
+  expect(settingsLayout.permissionCardCount).toBe(0);
+  expect(settingsLayout.defaultModelInsideCurrentCard).toBe(true);
+  expect(settingsLayout.refreshButtonInsideCurrentCard).toBe(true);
+  await expect(page.locator('.global-defaults-section')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '默认权限', exact: true })).toHaveCount(0);
   await expect(page.getByText('更改会自动保存', { exact: true })).toHaveCount(0);
-  await expect(page.locator('.global-default-save-status')).toHaveCount(0);
+  await expect(page.locator('.current-source-model-save-status')).toHaveCount(0);
   const currentModelId = await globalModel.inputValue();
   const availableModelIds = await globalModel.locator('option').evaluateAll(options =>
     options.map(option => option.value).filter(Boolean)
@@ -452,16 +451,14 @@ test('真实 Electron 系统设置保存全局默认配置且不改已有 Bot', 
   expect(nextGlobalModel, '模型目录至少需要两个不同选项才能验证自动保存').toBeDefined();
   expect(nextGlobalModel.id).not.toBe(currentModelId);
   await globalModel.selectOption(nextGlobalModel.id);
-  await expect(page.locator('.global-default-save-status')).toBeVisible();
-  await expect(page.locator('.global-default-save-status .autosave-indicator'))
+  await expect(page.locator('.current-source-model-save-status')).toBeVisible();
+  await expect(page.locator('.current-source-model-save-status .autosave-indicator'))
     .toHaveText(/正在自动保存…|已自动保存/);
   await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot())).settings.defaultBotModel)
     .toBe(nextGlobalModel.id);
-  await page.getByRole('radio', { name: /只读/ }).click();
-  await expect.poll(async () => (await page.evaluate(() => window.rambo.snapshot())).settings.defaultBotPermission)
-    .toBe('readOnly');
-  await expect(page.locator('.global-default-save-status'))
-    .toHaveCount(0, { timeout: 3_000 });
+  await expect(page.getByRole('radio', { name: /只读|工作区写入/ })).toHaveCount(0);
+  await expect(page.evaluate(() => window.rambo.setSetting('defaultBotPermission', 'readOnly')))
+    .rejects.toThrow(/不支持的应用设置/u);
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.bots.find(item => item.id === initialBot.id)).toMatchObject({
     model: initialModel,
@@ -479,21 +476,20 @@ test('真实 Electron 系统设置保存全局默认配置且不改已有 Bot', 
   const bot = snapshot.bots.find(item => item.name === 'Autosave Pilot');
   expect(bot?.role).toBe(role);
 
-  await page.getByRole('tab', { name: '模型与权限' }).click();
+  await page.getByRole('tab', { name: '模型' }).click();
   await expect(page.locator('.autosave-indicator')).toHaveCount(0);
-  await expect(page.getByText('继承全局', { exact: false })).toHaveCount(0);
+  await expect(page.locator('.permission-fieldset, .conversation-permission-fieldset')).toHaveCount(0);
   const sessionModel = page.getByLabel('Bot 模型');
   await sessionModel.selectOption(sessionModelValue.id);
-  await page.getByRole('radio', { name: /工作区写入/ }).click();
   await expect(page.locator('.autosave-indicator').filter({ hasText: '已自动保存' })).toBeVisible();
   const current = await page.evaluate(() => window.rambo.snapshot());
   const autosaveBot = current.bots.find(item => item.name === 'Autosave Pilot');
   const autosaveChat = current.chats.find(item => item.botId === autosaveBot.id);
   expect(current.settings.defaultBotModel).toBe(nextGlobalModel.id);
-  expect(current.settings.defaultBotPermission).toBe('readOnly');
+  expect(current.settings).not.toHaveProperty('defaultBotPermission');
   expect(autosaveBot).toMatchObject({
     model: sessionModelValue.id,
-    permission: 'workspaceWrite'
+    permission: 'fullAccess'
   });
   expect(autosaveChat).toMatchObject({ model: null, permission: null });
   await openConnectors(page);
@@ -734,8 +730,9 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
         count: tabs.length,
         minHeight: Math.min(...tabs.map(tab =>
           tab.getBoundingClientRect().height)),
+        selectedUnderline: selected ? getComputedStyle(selected, '::after').backgroundColor : '',
+        selectedUnderlineHeight: selected ? getComputedStyle(selected, '::after').height : '',
         selectedBackground: selected ? getComputedStyle(selected).backgroundColor : '',
-        selectedBackgroundImage: selected ? getComputedStyle(selected).backgroundImage : '',
         selectedColor: selected ? getComputedStyle(selected).color : '',
         badgeBackground: badge ? getComputedStyle(badge).backgroundColor : '',
         badgeColor: badge ? getComputedStyle(badge).color : ''
@@ -745,12 +742,10 @@ test('全局资源目录增删同步，Bot 开关在创建后独立', async ({ e
   for (const colorScheme of ['light', 'dark']) {
     const presentation = await subtabPresentation(colorScheme);
     expect(presentation.count).toBe(3);
-    expect(presentation.minHeight).toBeGreaterThanOrEqual(40);
-    expect(
-      presentation.selectedBackgroundImage !== 'none' ||
-      !/rgba?\([^)]*,\s*0\)/u.test(presentation.selectedBackground),
-      `${colorScheme} selected resource subtab has no visible background`
-    ).toBe(true);
+    expect(presentation.minHeight).toBeGreaterThanOrEqual(37);
+    expect(presentation.selectedUnderlineHeight).toBe('2px');
+    expect(presentation.selectedUnderline).not.toMatch(/rgba?\([^)]*,\s*0\)/u);
+    expect(presentation.selectedBackground).toMatch(/rgba?\([^)]*,\s*0\)/u);
     for (const color of [
       presentation.selectedColor,
       presentation.badgeBackground,
@@ -1105,7 +1100,7 @@ test('真实 Electron 侧栏 Bot 私聊和群聊右键可复制 ID、复制 Bot�
     expect(copiedBot.instructions).toBe('复制时保留这段长期指令。');
     expect(copiedBot.avatar).toBe(bot.avatar);
     expect(copiedBot.model).toBe(bot.model);
-    expect(copiedBot.permission).toBe(bot.permission);
+    expect(copiedBot.permission).toBe('fullAccess');
     expect(copiedBot.resourceIds).toEqual(bot.resourceIds);
     expect(copiedChat.id).not.toBe(chat.id);
     expect(
@@ -1237,6 +1232,27 @@ test('真实 Electron 会话置顶按创建时间混排并重启保持', async (
     .toEqual(['Pin Group', 'Pin Second', 'Pin First', 'Pin Third']);
   await expect(page.getByLabel('拖到这里置顶')).toHaveCount(0);
   await expect(conversationRow('Pin First')).not.toHaveAttribute('draggable');
+
+  // Pinning and selection must remain independently visible in both themes.
+  await page.addStyleTag({ content: '.bot-list-row { transition: none !important; }' });
+  for (const colorScheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme });
+    await conversationRow('Pin Third').click();
+    await page.mouse.move(800, 500);
+    const pinnedBackground = await conversationRow('Pin First').evaluate(row => getComputedStyle(row).backgroundColor);
+    const selectedBackground = await conversationRow('Pin Third').evaluate(row => getComputedStyle(row).backgroundColor);
+    expect(pinnedBackground).toBe('rgba(0, 0, 0, 0)');
+    expect(selectedBackground).not.toBe(pinnedBackground);
+    const marker = await conversationRow('Pin First').evaluate(row => getComputedStyle(row, '::before').content);
+    expect(marker).not.toBe('none');
+    await conversationRow('Pin First').click();
+    await page.mouse.move(800, 500);
+    expect(await conversationRow('Pin First').evaluate(row => getComputedStyle(row).backgroundColor)).toBe(selectedBackground);
+    await conversationRow('Pin Group').click();
+    await page.mouse.move(800, 500);
+    expect(await conversationRow('Pin Group').evaluate(row => getComputedStyle(row).backgroundColor)).toBe(selectedBackground);
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
 
   const pinnedSnapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(pinnedSnapshot.groups.find(item => item.id === group.id)?.pinnedAt).toBeTruthy();
@@ -1954,6 +1970,20 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
       '.bot-list-row[data-running="true"] .bot-avatar-wrap .robot-avatar'
     ).first();
     await expect(runningAvatar).toHaveCount(1);
+    const sidebarRobot = runningAvatar.locator('agent-robot-avatar');
+    await expect.poll(() => sidebarRobot.evaluate(avatar => ({
+      waiting: Boolean(avatar._waitingFx),
+      pointerFollow: avatar._pointerFollowEnabled,
+      motion: avatar.getAttribute('motion')
+    }))).toEqual({ waiting: false, pointerFollow: false, motion: 'auto' });
+    await expect.poll(() => sidebarRobot.evaluate(avatar =>
+      avatar.shadowRoot?.getElementById('headMotion')?.getAnimations()
+        .some(animation => animation.playState === 'running') ?? false
+    )).toBe(true);
+    // Movement must be visible without hovering the row.
+    const sidebarFrameA = await runningAvatar.screenshot();
+    await page.waitForTimeout(650);
+    expect(sidebarFrameA.equals(await runningAvatar.screenshot())).toBe(false);
     const runningBotRow = page.locator('.bot-list-row').filter({ hasText: 'Activity Pilot' });
     await expect(runningBotRow
       .locator('.bot-avatar-wrap')).toHaveCount(1);
@@ -2011,6 +2041,11 @@ test('真实 Electron 阶段回复覆盖同一气泡并在新用户消息后迁�
       chat.id
     )).toBeNull();
     await expect(runningBotRow).not.toHaveAttribute('data-running', 'true');
+    await page.mouse.move(1700, 850);
+    await expect.poll(() => runningBotRow.locator('agent-robot-avatar').evaluate(avatar => ({
+      waiting: Boolean(avatar._waitingFx),
+      motion: avatar.getAttribute('motion')
+    }))).toEqual({ waiting: false, motion: 'reduce' });
     await expect(runningBotRow.locator('.sidebar-run-activity')).toHaveCount(0);
     await expect(runningBotRow.locator('.sidebar-run-ring')).toHaveCount(0);
     await expect.poll(async () => {
@@ -2859,7 +2894,7 @@ test('真实 Electron 新消息提醒只在当前私聊不可见时触发且遵�
     secondChat.id)).toBeNull();
 });
 
-test('模型配置独立承载运行时、登录、模型来源、连接测试与全局默认配置', async ({ electron }) => {
+test('模型配置按模型服务与运行环境分栏，API 和模型设置保持在一起', async ({ electron }) => {
     const page = electron.page;
     await clearActiveTurns(page);
     await settlePendingWork(page);
@@ -2872,32 +2907,51 @@ test('模型配置独立承载运行时、登录、模型来源、连接测试�
       await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
     }
     await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '模型服务', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '运行环境', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '当前配置', exact: true })).toBeVisible();
+    const servicePanel = page.locator('#model-config-panel-service');
+    await expect(servicePanel.locator('.current-source-section')).toBeVisible();
+    await expect(servicePanel.locator('.current-source-card [aria-label="新建 Bot 默认模型"]')).toBeVisible();
+    await expect(servicePanel.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
+    await expect(servicePanel.locator('.global-defaults-section')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '新建 Bot 初始设置', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: '新建 Bot 初始设置', exact: true })).toHaveCount(0);
+    await page.getByRole('tab', { name: '运行环境', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Codex 运行时', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '当前配置模式', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '当前模型来源', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '全局默认配置', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: '全局默认配置', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '当前配置', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('group', { name: '代理适用范围' })).toBeVisible();
+    await expect(page.getByLabel('大模型')).toHaveCSS('appearance', 'none');
+    await page.getByRole('tab', { name: '模型服务', exact: true }).click();
+    await expect(page.getByText(/当前配置模式|持续跟随本机/u)).toHaveCount(0);
+    expect(await page.evaluate(() => typeof window.rambo.setCodexHomeSyncMode)).toBe('undefined');
+    await expect(page.getByRole('heading', { name: '当前配置', exact: true })).toBeVisible();
+    await expect(page.locator('.current-source-card [aria-label="新建 Bot 默认模型"]')).toBeVisible();
+    await expect(page.getByRole('heading', { name: '全局默认配置', exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '账号状态', exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '模型来源', exact: true })).toHaveCount(0);
     await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
     await expect(page.locator('.current-source-card')).toContainText('fixture@example.com');
-    await expect(page.getByRole('radio', { name: /持续跟随本机/ })).toBeChecked();
-    await page.getByRole('radio', { name: /独立配置/ }).click();
-    await expect(page.getByRole('radio', { name: /独立配置/ })).toBeChecked();
-    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'none');
-    await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeVisible();
-    await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeVisible();
-    await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toHaveCount(0);
-    await page.getByRole('radio', { name: /手动配置 API/ }).click();
+    await page.getByRole('button', { name: '更改', exact: true }).click();
+    const chatgptAction = page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true });
+    const apiAction = page.getByRole('button', { name: '配置或更换 API 服务', exact: true });
+    await expect(chatgptAction).toBeVisible();
+    await expect(apiAction).toBeVisible();
+    await expect(page.getByRole('radio', { name: /ChatGPT 登录|手动配置 API/ })).toHaveCount(0);
+    await expect(page.locator('.current-source-access-control #current-model-source-picker')).toBeVisible();
+    await apiAction.click();
     await expect(page.getByRole('heading', { name: '手动 API 配置' })).toBeVisible();
     await expect(page.getByLabel('Base URL')).toBeVisible();
     await expect(page.getByLabel('自定义模型 ID')).toBeVisible();
     await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeVisible();
+    await expect(servicePanel.locator('.current-source-access-layout > .manual-source-section')).toBeVisible();
+    await expect(servicePanel.locator('.global-defaults-section')).toHaveCount(0);
     await expect(page.getByLabel('API Key')).toHaveAttribute('type', 'password');
     await expect(page.locator('.manual-source-section').getByText(/不承诺第三方服务完整支持/u))
       .toBeVisible();
-    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'none');
-    await expect(page.getByRole('button', { name: '测试连接', exact: true })).toHaveCount(0);
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'local');
+    await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
     await expect(page.getByText(/注册|同步到其他设备|跨设备同步/)).toHaveCount(0);
     const snapshot = await page.evaluate(() => window.rambo.snapshot());
     expect(snapshot.settings).not.toHaveProperty('account');
@@ -2905,6 +2959,41 @@ test('模型配置独立承载运行时、登录、模型来源、连接测试�
     expect(snapshot.modelSource.kind).toBe('local');
     expect(snapshot.modelSource.hasApiKey).toBe(false);
     expect(JSON.stringify(snapshot)).not.toContain('apiKey');
+});
+
+test('切换 ChatGPT 账号必须等待本次授权完成再更新配置', async ({ electron }) => {
+  const page = electron.page;
+  await clearActiveTurns(page);
+  await settlePendingWork(page);
+  await openSystemSettings(page, '模型配置');
+  const before = await page.evaluate(async () => ({
+    snapshot: await window.rambo.snapshot(),
+    account: await window.rambo.account()
+  }));
+  expect(before.snapshot.modelSource.kind).not.toBe('chatgpt');
+  expect(before.account.requiresLogin).toBe(false);
+
+  await page.getByRole('button', { name: '更改', exact: true }).click();
+  await page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true }).click();
+
+  await expect(page.getByRole('link', { name: '重新打开登录页面', exact: true }))
+    .toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: '等待授权…', exact: true })).toBeDisabled();
+  const earlySourceSwitchError = await page.evaluate(async () => {
+    try {
+      await window.rambo.setModelSource('chatgpt');
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  });
+  expect(earlySourceSwitchError).toContain('请先完成 ChatGPT 登录');
+  await expect(page.locator('.current-source-card')).toHaveAttribute(
+    'data-source',
+    before.snapshot.modelSource.kind
+  );
+  await expect(page.getByRole('status').filter({ hasText: '模型配置已更新' })).toHaveCount(0);
+  await electron.restart();
 });
 
 test('模型配置页在任务执行中稳定禁用运行时变更并在任务结束后恢复', async ({ electron }) => {
@@ -2938,17 +3027,11 @@ test('模型配置页在任务执行中稳定禁用运行时变更并在任务�
 
   await openSystemSettings(page, '模型配置');
 
-  const independent = page.getByRole('radio', { name: /独立配置/ });
-  if (await independent.getAttribute('aria-checked') !== 'true') {
-    await independent.click();
-  }
-  await expect(independent).toHaveAttribute('aria-checked', 'true');
-
   const sourceCard = page.locator('.current-source-card');
   if (await sourceCard.getAttribute('data-source') !== 'chatgpt') {
-    const chatgptSource = page.getByRole('radio', { name: /ChatGPT 登录/ });
+    const chatgptSource = page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true });
     if (!(await chatgptSource.isVisible().catch(() => false))) {
-      await page.getByRole('button', { name: '更换配置', exact: true }).click();
+      await page.getByRole('button', { name: '更改', exact: true }).click();
     }
     if (await chatgptSource.isEnabled()) await chatgptSource.click();
   }
@@ -2957,6 +3040,12 @@ test('模型配置页在任务执行中稳定禁用运行时变更并在任务�
   if (await collapseSourcePicker.isVisible().catch(() => false)) {
     await collapseSourcePicker.click();
   }
+
+  await page.getByRole('tab', { name: '运行环境', exact: true }).click();
+  const proxyInput = page.getByLabel('代理地址');
+  await proxyInput.fill('http://127.0.0.1:9/');
+  await expect(page.locator('.runtime-proxy-actions').getByRole('status'))
+    .toContainText('已自动保存', { timeout: 30_000 });
 
   const manualStateBeforeTask = await page.evaluate(() => {
     const snapshot = window.rambo.snapshot();
@@ -2977,34 +3066,47 @@ test('模型配置页在任务执行中稳定禁用运行时变更并在任务�
   const updateRuntime = page.getByRole('button', { name: '更新 App Server', exact: true });
   const restartRuntime = page.getByRole('button', { name: '重启运行时', exact: true });
   const testConnection = page.getByRole('button', { name: '测试连接', exact: true });
-  const follow = page.getByRole('radio', { name: /持续跟随本机/ });
+  await expect(page.getByText(/持续跟随本机|独立配置模式/u)).toHaveCount(0);
   await expect(updateRuntime).toBeDisabled();
   await expect(restartRuntime).toBeDisabled();
-  await expect(testConnection).toBeDisabled();
-  await expect(follow).toBeDisabled();
-  await expect(page.getByLabel('代理地址')).toBeDisabled();
+  await expect(proxyInput).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: '大模型', exact: true })).toBeDisabled();
+  const gmailProxy = page.getByRole('checkbox', { name: 'Gmail', exact: true });
+  await expect(gmailProxy).toBeEnabled();
+  const gmailWasChecked = await gmailProxy.isChecked();
+  await gmailProxy.setChecked(!gmailWasChecked);
+  await expect.poll(() => page.evaluate(() =>
+    window.rambo.snapshot().then(value => value.runtimeProxyScopes.includes('gmail'))
+  )).toBe(!gmailWasChecked);
   await expect(page.locator('#account-task-runtime')).toContainText(
-    '结束当前任务后，才能更新或重启 App Server，或修改代理'
+    '结束当前任务后，才能更新或重启 App Server，或修改代理地址和大模型范围'
   );
-  await expect(page.locator('#account-task-mode')).toContainText(
-    '结束当前任务后，才能切换到“持续跟随本机”'
-  );
+  await page.getByRole('tab', { name: '模型服务', exact: true }).click();
+  await expect(testConnection).toBeDisabled();
   await expect(page.locator('#account-task-source')).toContainText(
-    '结束当前任务后，才能登录 ChatGPT、切换模型来源或测试连接'
+    '结束当前任务后，才能登录 ChatGPT、修改模型配置或测试连接'
   );
 
-  await page.getByRole('button', { name: '更换配置', exact: true }).click();
+  await page.getByRole('button', { name: '更改', exact: true }).click();
   await expect(page.getByRole('radio', { name: /本机 Codex 配置副本/ })).toHaveCount(0);
-  await expect(page.getByRole('radio', { name: /ChatGPT 登录/ })).toBeDisabled();
-  await expect(page.getByRole('radio', { name: /手动配置 API/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '配置或更换 API 服务', exact: true })).toBeDisabled();
 
   const blockedErrors = await page.evaluate(async () => {
     const attempts = {
       login: () => window.rambo.login(),
       setModelSource: () => window.rambo.setModelSource('manualApi'),
-      setCodexHomeSyncMode: () => window.rambo.setCodexHomeSyncMode('follow'),
       restartRuntime: () => window.rambo.restartRuntime(),
       updateRuntime: () => window.rambo.updateRuntime(),
+      setProxySettings: async () => {
+        const current = await window.rambo.snapshot();
+        return window.rambo.setProxySettings({
+          proxy: current.runtimeProxy === 'http://127.0.0.1:10/'
+            ? 'http://127.0.0.1:11/'
+            : 'http://127.0.0.1:10/',
+          scopes: ['model']
+        });
+      },
       testModelConnection: () => window.rambo.testModelConnection(),
       saveManualModelSource: () => window.rambo.saveManualModelSource({
         serviceName: 'Blocked API',
@@ -3052,11 +3154,14 @@ test('模型配置页在任务执行中稳定禁用运行时变更并在任务�
       active: value.activeTurns[chatId] ?? null,
       pending: value.hasPendingWork
     })), chat.id), { timeout: 30_000 }).toEqual({ active: null, pending: false });
+  await page.getByRole('tab', { name: '运行环境', exact: true }).click();
   await expect(updateRuntime).toBeEnabled();
   await expect(restartRuntime).toBeEnabled();
+  await expect(proxyInput).toBeEnabled();
+  await expect(page.getByRole('checkbox', { name: '大模型', exact: true })).toBeEnabled();
+  await expect(gmailProxy).toBeEnabled();
+  await page.getByRole('tab', { name: '模型服务', exact: true }).click();
   await expect(testConnection).toBeEnabled();
-  await expect(follow).toBeEnabled();
-  await expect(page.getByLabel('代理地址')).toBeEnabled();
   await expect(page.locator('.account-task-notice')).toHaveCount(0);
   const closeSourcePicker = page.getByRole('button', { name: '收起选择', exact: true });
   if (await closeSourcePicker.isVisible().catch(() => false)) {
@@ -3064,7 +3169,7 @@ test('模型配置页在任务执行中稳定禁用运行时变更并在任务�
   }
 });
 
-test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可切回持续跟随', async ({
+test('手动 API 来源保存加密凭证、测试真实 Responses 连接并切换到独立来源', async ({
   electron, acceptanceRun
 }) => {
   test.setTimeout(60_000);
@@ -3132,9 +3237,9 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
     await expect(page.getByRole('button', { name: '保存并使用', exact: true })).toBeDisabled();
     await checkManualModel(page, 'fixture-model');
     await checkManualModel(page, 'fixture-model-alt');
-    await page.getByLabel('全局默认模型').selectOption('fixture-model-alt');
-    await expect(page.locator('.global-model-pool')).toContainText('Fixture Model');
-    await expect(page.locator('.global-model-pool')).toContainText('Fixture Model Alt');
+    await page.getByLabel('新建 Bot 默认模型').selectOption('fixture-model-alt');
+    await expect(page.locator('.manual-model-tag-list')).toContainText('Fixture Model');
+    await expect(page.locator('.manual-model-tag-list')).toContainText('Fixture Model Alt');
     await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot()))
       .toMatchObject({
@@ -3154,6 +3259,11 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
       });
     await expect(page.getByRole('heading', { name: '手动 API 配置', exact: true })).toHaveCount(0);
     await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'manualApi');
+    await expect(page.locator('.current-source-details')).toContainText('接入方式');
+    await expect(page.locator('.current-source-details')).toContainText('接口协议');
+    await expect(page.locator('.current-source-details')).toContainText('Responses API');
+    await expect(page.locator('.current-source-details')).toContainText('API Key');
+    await expect(page.locator('.current-source-details')).toContainText('已保存');
     await expect.poll(() => page.evaluate(() =>
       window.rambo.models().then(models => models.map(model => model.id))
     )).toEqual(['fixture-model', 'fixture-model-alt']);
@@ -3217,12 +3327,11 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
     const refreshTarget = botsBeforeSave[0];
     if (refreshTarget) {
       await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
-        model: 'fixture-model',
-        permission: 'workspaceWrite'
+        model: 'fixture-model'
       }), refreshTarget.id);
     }
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    await page.getByRole('radio', { name: /ChatGPT 登录/ }).click();
+    await page.getByRole('button', { name: '更改', exact: true }).click();
+    await page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => ({
       source: value.modelSource.kind,
       defaultModel: value.settings.defaultBotModel
@@ -3237,7 +3346,7 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
         return bot ? { model: bot.model, permission: bot.permission } : null;
       }), refreshTarget.id)).toEqual({
         model: 'local-fixture-model',
-        permission: 'workspaceWrite'
+        permission: refreshTarget.permission
       });
     }
 
@@ -3254,11 +3363,10 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
     }, `http://127.0.0.1:${address.port}/v1`);
     if (refreshTarget) {
       await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
-        model: 'fixture-model',
-        permission: 'workspaceWrite'
+        model: 'fixture-model'
       }), refreshTarget.id);
     }
-    await page.getByRole('radio', { name: /持续跟随本机/ }).click();
+    await page.evaluate(() => window.rambo.setModelSource('local'));
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(value => value.modelSource.kind)))
       .toBe('local');
     await expect.poll(() => page.evaluate(async () => {
@@ -3273,28 +3381,24 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
       models: ['local-fixture-model', 'local-fixture-model-alt'],
       manualModels: ['fixture-model', 'fixture-model-alt']
     });
-    await expect(page.getByRole('status').filter({
-      hasText: '已开启持续跟随本机 Codex'
-    })).toContainText(/已统一刷新 \d+ 个历史 Bot/u);
     if (refreshTarget) {
       await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
         const bot = snapshot.bots.find(item => item.id === botId);
         return bot ? { model: bot.model, permission: bot.permission } : null;
       }), refreshTarget.id)).toEqual({
         model: 'local-fixture-model',
-        permission: 'workspaceWrite'
+        permission: refreshTarget.permission
       });
     }
     await expect.poll(() => {
       try { return readFileSync(runtimeConfigPath, 'utf8'); }
       catch { return ''; }
-    }).toBe('model = "local-fixture-model"\n');
+    }).toBe('model = "local-fixture-model"\nmodel_provider = "openai"\n');
   } finally {
     await page.evaluate(async ({ bots, createdBotId }) => {
       for (const bot of bots) {
         await window.rambo.updateBotExecutionConfig(bot.id, {
-          model: bot.model,
-          permission: bot.permission
+          model: bot.model
         });
       }
       if (createdBotId) await window.rambo.deleteBot(createdBotId).catch(() => {});
@@ -3303,7 +3407,7 @@ test('手动 API 来源保存加密凭证、测试真实 Responses 连接并可�
   }
 });
 
-test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 Bot', async ({
+test('ChatGPT 登录完成后会统一刷新全局模型和失效 Bot', async ({
   electron, acceptanceRun
 }) => {
   test.setTimeout(75_000);
@@ -3312,7 +3416,6 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
   await settlePendingWork(page);
 
   const before = await page.evaluate(() => window.rambo.snapshot().then(snapshot => ({
-    syncMode: snapshot.codexHomeSync.mode,
     modelSourceKind: snapshot.modelSource.kind,
     defaultBotModel: snapshot.settings.defaultBotModel,
     bots: snapshot.bots.map(bot => ({
@@ -3323,9 +3426,6 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
   })));
   let createdBotId = null;
   try {
-    await page.evaluate(async () => {
-      await window.rambo.setCodexHomeSyncMode('independent');
-    });
     await page.evaluate(async () => {
       await window.rambo.saveManualModelSource({
         serviceName: 'Login Refresh API',
@@ -3355,9 +3455,11 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
       await settlePendingWork(page);
     }
     await page.evaluate(botId => window.rambo.updateBotExecutionConfig(botId, {
-      model: 'retired-login-model',
-      permission: 'workspaceWrite'
+      model: 'retired-login-model'
     }), target.id);
+    await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot =>
+      snapshot.bots.find(bot => bot.id === botId)?.model
+    ), target.id)).toBe('retired-login-model');
 
     rmSync(join(acceptanceRun.profile, 'codex-home', 'auth.json'), { force: true });
     writeFileSync(
@@ -3366,15 +3468,21 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
     );
 
     await openSystemSettings(page, '模型配置');
-    await page.getByRole('button', { name: '更换配置', exact: true }).click();
-    const chatgptSource = page.getByRole('radio', { name: /ChatGPT 登录/ });
+    await page.getByRole('button', { name: '更改', exact: true }).click();
+    const chatgptSource = page.getByRole('button', { name: '登录或切换 ChatGPT 账号', exact: true });
     await expect(chatgptSource).toBeEnabled();
     await chatgptSource.click();
+    await expect(page.locator('.current-source-card')).toHaveAttribute('data-source', 'manualApi');
+    await expect(page.getByRole('button', { name: '等待授权…', exact: true })).toBeDisabled();
+    expect(readFileSync(
+      join(acceptanceRun.profile, 'codex-home', 'config.toml'),
+      'utf8'
+    )).toContain('model_provider = "rambo_manual"');
 
     const loginRefresh = page.getByRole('status').filter({
       hasText: 'ChatGPT 登录已完成'
     });
-    await expect(loginRefresh).toContainText('已统一刷新', { timeout: 20_000 });
+    await expect(loginRefresh).toContainText('可用模型列表已更新为 2 个模型', { timeout: 20_000 });
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(snapshot => ({
       source: snapshot.modelSource.kind,
       defaultModel: snapshot.settings.defaultBotModel
@@ -3382,6 +3490,10 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
       source: 'chatgpt',
       defaultModel: 'local-fixture-model'
     });
+    await expect.poll(() => readFileSync(
+      join(acceptanceRun.profile, 'codex-home', 'config.toml'),
+      'utf8'
+    )).toContain('model_provider = "openai"');
     await expect.poll(() => page.evaluate(() =>
       window.rambo.models().then(models => models.map(model => model.id))
     )).toEqual(['local-fixture-model', 'local-fixture-model-alt']);
@@ -3390,7 +3502,7 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
       return bot ? { model: bot.model, permission: bot.permission } : null;
     }), target.id)).toEqual({
       model: 'local-fixture-model',
-      permission: 'workspaceWrite'
+      permission: target.permission
     });
   } finally {
     await page.evaluate(async previous => {
@@ -3399,8 +3511,7 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
         const original = previous.bots.find(item => item.id === bot.id);
         if (original) {
           await window.rambo.updateBotExecutionConfig(bot.id, {
-            model: original.model,
-            permission: original.permission
+            model: original.model
           });
         }
       }
@@ -3409,9 +3520,6 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
       }
       if (previous.defaultBotModel) {
         await window.rambo.setSetting('defaultBotModel', previous.defaultBotModel);
-      }
-      if (previous.syncMode === 'follow') {
-        await window.rambo.setCodexHomeSyncMode('follow').catch(() => {});
       }
     }, before).catch(() => {});
     if (createdBotId) {
@@ -3423,15 +3531,14 @@ test('独立配置完成 ChatGPT 登录后会统一刷新全局模型和失效 B
 test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot', async ({ electron }) => {
   test.setTimeout(75_000);
   const page = electron.page;
+  let availableModels = [
+    { id: 'refresh-model-a', name: 'Refresh Model A' },
+    { id: 'refresh-model-b', name: 'Refresh Model B' }
+  ];
   const server = createServer((request, response) => {
     if (request.method === 'GET' && request.url === '/v1/models') {
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({
-        data: [
-          { id: 'refresh-model-a', name: 'Refresh Model A' },
-          { id: 'refresh-model-b', name: 'Refresh Model B' }
-        ]
-      }));
+      response.end(JSON.stringify({ data: availableModels }));
       return;
     }
     response.writeHead(404, { 'content-type': 'application/json' });
@@ -3471,8 +3578,7 @@ test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot'
       if (!bot) throw new Error('统一刷新目标 Bot 不存在');
       await window.rambo.setBotPinned(botId, true);
       await window.rambo.updateBotExecutionConfig(botId, {
-        model: 'retired-refresh-model',
-        permission: 'workspaceWrite'
+        model: 'retired-refresh-model'
       });
       return bot.name;
     }, target.id);
@@ -3488,7 +3594,7 @@ test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot'
     await expect(page.getByRole('status').filter({ hasText: '已获取 2 个可选模型' })).toBeVisible();
     await checkManualModel(page, 'refresh-model-a');
     await checkManualModel(page, 'refresh-model-b');
-    await page.getByLabel('全局默认模型').selectOption('refresh-model-b');
+    await page.getByLabel('新建 Bot 默认模型').selectOption('refresh-model-b');
 
     const refreshPreview = page.getByRole('status').filter({ hasText: '保存后将统一刷新' });
     await expect(refreshPreview).toBeVisible();
@@ -3497,20 +3603,38 @@ test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot'
 
     await page.getByRole('button', { name: '保存并使用', exact: true }).click();
     await expect(page.getByRole('status').filter({
-      hasText: '手动 API 配置已加密保存，并设为当前来源。'
+      hasText: '手动 API 配置已加密保存，并设为当前模型配置。'
     })).toContainText('已统一刷新');
     await expect(page.getByRole('status').filter({
-      hasText: '手动 API 配置已加密保存，并设为当前来源。'
+      hasText: '手动 API 配置已加密保存，并设为当前模型配置。'
     })).toContainText('Refresh Model B');
     await expect.poll(() => page.evaluate(botId => window.rambo.snapshot().then(snapshot => {
       const bot = snapshot.bots.find(item => item.id === botId);
       return bot ? { model: bot.model, permission: bot.permission } : null;
     }), target.id)).toEqual({
       model: 'refresh-model-b',
-      permission: 'workspaceWrite'
+      permission: target.permission
     });
 
-    await page.getByRole('radio', { name: /持续跟随本机/ }).click();
+    availableModels = [
+      { id: 'refresh-model-a', name: 'Refresh Model A' },
+      { id: 'refresh-model-b', name: 'Refresh Model B' },
+      { id: 'refresh-model-c', name: 'Refresh Model C' }
+    ];
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    const configRefreshNotice = page.getByRole('status').filter({
+      hasText: '已重新读取当前使用的配置文件并重启运行时。'
+    });
+    await expect(configRefreshNotice).toContainText('可用模型列表已更新为 3 个模型');
+    await expect(page.getByLabel('新建 Bot 默认模型').locator('option[value="refresh-model-c"]'))
+      .toHaveText('Refresh Model C');
+    await expect(page.getByLabel('新建 Bot 默认模型')).toHaveValue('refresh-model-b');
+    const refreshedManualCatalog = await page.evaluate(() =>
+      window.rambo.snapshot().then(snapshot => snapshot.modelSource.models.map(option => option.id))
+    );
+    expect(refreshedManualCatalog).toContain('refresh-model-c');
+
+    await page.evaluate(() => window.rambo.setModelSource('local'));
     await expect.poll(() => page.evaluate(() => window.rambo.snapshot().then(snapshot => snapshot.modelSource.kind)))
       .toBe('local');
   } finally {
@@ -3520,8 +3644,7 @@ test('保存新模型池会提示并自动统一刷新失效模型的历史 Bot'
         const original = before.find(item => item.id === bot.id);
         if (original) {
           await window.rambo.updateBotExecutionConfig(bot.id, {
-            model: original.model,
-            permission: original.permission
+            model: original.model
           });
           await window.rambo.setBotPinned(bot.id, Boolean(original.pinnedAt));
         } else if (bot.id === createdBotId) {
@@ -3581,11 +3704,10 @@ test('手动 API 连接测试失败仍保留当前来源', async ({ electron }) 
         const original = previous.bots.find(item => item.id === bot.id);
         if (
           original &&
-          (bot.model !== original.model || bot.permission !== original.permission)
+          bot.model !== original.model
         ) {
           await window.rambo.updateBotExecutionConfig(bot.id, {
-            model: original.model,
-            permission: original.permission
+            model: original.model
           });
         }
       }
@@ -4701,7 +4823,7 @@ test('真实 Electron Bot 自管理写入后界面与重启回读一致', async 
   }, 'b13-profile');
   expect(profileUpdate.result.success, profileUpdate.result.contentItems?.[0]?.text).toBe(true);
   const configUpdate = await callTool(page, threadId, 'rambo_bot', 'update_config', {
-    model: managedModel.id, permission: 'readOnly'
+    model: managedModel.id
   }, 'b13-config');
   expect(configUpdate.result.success, configUpdate.result.contentItems?.[0]?.text).toBe(true);
   const importedResource = await callTool(page, threadId, 'rambo_resources', 'import_local_skill', {
@@ -4778,7 +4900,7 @@ test('真实 Electron Bot 自管理写入后界面与重启回读一致', async 
   expect(selfBot).toMatchObject({
     name: 'Self Managed',
     role: '自主维护资料', instructions: '回答时先给结论。',
-    model: managedModel.id, permission: 'readOnly'
+    model: managedModel.id, permission: 'fullAccess'
   });
   expect(selfBot.resourceIds).toContain(resourceId);
   expect(selfBot?.avatar).toMatch(/^agent-robot:v2:100:blue:(idle|happy|sad|angry|sleepy|sleep|surprise)$/);
@@ -4819,12 +4941,12 @@ test('真实 Electron Bot 自管理写入后界面与重启回读一致', async 
     routineId: routine.id,
     memoryId: memory.id,
     modelId: managedModel.id,
-    permission: 'readOnly',
+    permission: 'fullAccess',
     resourceId
   };
 });
 
-test('真实 Electron 全局默认配置复制后逐 Bot 独立并在重启后保持', async ({ electron, acceptanceRun }) => {
+test('真实 Electron 新建 Bot 模型独立且权限固定 Full Access', async ({ electron, acceptanceRun }) => {
   const page = electron.page;
   for (const name of ['Model Pilot', 'Model Peer']) {
     await page.getByLabel('创建 Bot').click();
@@ -4844,27 +4966,24 @@ test('真实 Electron 全局默认配置复制后逐 Bot 独立并在重启后�
   const globalModel = models.find(option => option.isDefault) ?? models[0];
   const sessionModel = models.find(option => option.id !== globalModel.id) ?? globalModel;
   await openSystemSettings(page, '模型配置');
-  await page.getByLabel('全局默认模型').selectOption(globalModel.id);
-  await page.getByRole('radio', { name: /工作区写入/ }).click();
+  await page.getByLabel('新建 Bot 默认模型').selectOption(globalModel.id);
   await expect(page.locator('.autosave-indicator').filter({ hasText: '已自动保存' })).toBeVisible();
+  await expect(page.locator('.global-permission-card')).toHaveCount(0);
 
   await openBotSettings(page, 'Model Pilot');
-  await page.getByRole('tab', { name: '模型与权限' }).click();
-  await expect(page.getByText('继承全局', { exact: false })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '恢复全局默认', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: '模型' }).click();
+  await expect(page.locator('.permission-fieldset')).toHaveCount(0);
   const botModel = page.getByLabel('Bot 模型');
   await botModel.selectOption(sessionModel.id);
-  await page.getByRole('radio', { name: /只读/ }).click();
   await expect(page.locator('.autosave-indicator').filter({ hasText: '已自动保存' })).toBeVisible();
   await expect(botModel).toHaveValue(sessionModel.id);
 
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.settings).toMatchObject({
-    defaultBotModel: globalModel.id,
-    defaultBotPermission: 'workspaceWrite'
+    defaultBotModel: globalModel.id
   });
   expect(snapshot.bots.find(bot => bot.id === pilot.id)).toMatchObject({
-    model: sessionModel.id, permission: 'readOnly'
+    model: sessionModel.id, permission: 'fullAccess'
   });
   expect(snapshot.chats.find(chat => chat.botId === pilot.id)).toMatchObject({
     model: null, permission: null
@@ -4885,14 +5004,13 @@ test('真实 Electron 全局默认配置复制后逐 Bot 独立并在重启后�
     peerId: peer.id,
     defaultBotModel: globalModel.id,
     pilotModel: sessionModel.id,
-    defaultBotPermission: 'workspaceWrite',
-    pilotPermission: 'readOnly',
+    pilotPermission: 'fullAccess',
     peerModel: peer.model,
     peerPermission: peer.permission
   };
 });
 
-test('真实 Electron 模型与权限初值独立复制且运行时重建后重载模型目录', async ({
+test('真实 Electron 新建 Bot 固定 Full Access 且运行时重建后重载模型目录', async ({
   electron, acceptanceRun
 }) => {
   // Earlier serial cases intentionally leave fake running turns behind. Start
@@ -4915,7 +5033,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   expect(nextModel, '模型目录至少需要两个不同选项').toBeDefined();
 
   await openSystemSettings(page, '模型配置');
-  const defaultModel = page.getByLabel('全局默认模型');
+  const defaultModel = page.getByLabel('新建 Bot 默认模型');
   const defaultModelOptions = await defaultModel.locator('option').evaluateAll(options =>
     options.map(option => ({
       value: option.value,
@@ -4926,14 +5044,13 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   expect(defaultModelOptions.some(option => option.value === '' && option.disabled))
     .toBe(false);
   await defaultModel.selectOption(nextModel.id);
-  await page.getByRole('radio', { name: /只读/ }).click();
   await expect.poll(async () => {
     const current = await page.evaluate(() => window.rambo.snapshot());
     return [
       current.settings.defaultBotModel,
-      current.settings.defaultBotPermission
+      current.bots.find(bot => bot.id === alpha.id)?.permission
     ];
-  }).toEqual([nextModel.id, 'readOnly']);
+  }).toEqual([nextModel.id, 'fullAccess']);
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.bots.find(bot => bot.id === alpha.id)).toMatchObject({
     model: alpha.model,
@@ -4946,7 +5063,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
     .getByRole('button', { name: '创建', exact: true }).click();
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   const beta = snapshot.bots.find(bot => bot.name === 'Readiness Beta');
-  expect(beta).toMatchObject({ model: nextModel.id, permission: 'readOnly' });
+  expect(beta).toMatchObject({ model: nextModel.id, permission: 'fullAccess' });
   expect(snapshot.bots.find(bot => bot.id === alpha.id)).toMatchObject({
     model: alpha.model,
     permission: alpha.permission
@@ -4957,7 +5074,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   });
 
   await openBotSettings(page, 'Readiness Alpha');
-  await page.getByRole('tab', { name: '模型与权限' }).click();
+  await page.getByRole('tab', { name: '模型' }).click();
   const alphaModel = page.getByLabel('Bot 模型');
   const alphaModelOptions = await alphaModel.locator('option').evaluateAll(options =>
     options.map(option => ({ value: option.value, disabled: option.disabled }))
@@ -4965,22 +5082,24 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   expect(alphaModelOptions.some(option => option.value === '' && option.disabled))
     .toBe(false);
   await alphaModel.selectOption(nextModel.id);
-  await page.getByRole('radio', { name: /工作区写入/ }).click();
   await expect.poll(async () => {
     const current = await page.evaluate(() => window.rambo.snapshot());
     const bot = current.bots.find(item => item.id === alpha.id);
     return [bot.model, bot.permission];
-  }).toEqual([nextModel.id, 'workspaceWrite']);
+  }).toEqual([nextModel.id, 'fullAccess']);
   snapshot = await page.evaluate(() => window.rambo.snapshot());
   expect(snapshot.settings).toMatchObject({
-    defaultBotModel: nextModel.id,
-    defaultBotPermission: 'readOnly'
+    defaultBotModel: nextModel.id
   });
-  acceptanceRun.evidence.model.defaultBotModel = nextModel.id;
-  acceptanceRun.evidence.model.defaultBotPermission = 'readOnly';
+  acceptanceRun.evidence.model = {
+    ...(acceptanceRun.evidence.model ?? {}),
+    defaultBotModel: nextModel.id,
+    alphaId: alpha.id,
+    betaId: beta.id
+  };
   expect(snapshot.bots.find(bot => bot.id === beta.id)).toMatchObject({
     model: nextModel.id,
-    permission: 'readOnly'
+    permission: 'fullAccess'
   });
 
   await clearActiveTurns(page);
@@ -4988,6 +5107,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
   await page.getByRole('button', { name: /返回聊天/ }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+  await page.getByRole('tab', { name: '运行环境', exact: true }).click();
   const restart = page.getByRole('button', { name: '重启运行时', exact: true });
   await expect(restart).toBeEnabled();
   await restart.click();
@@ -4997,6 +5117,7 @@ test('真实 Electron 模型与权限初值独立复制且运行时重建后重�
     .runtime.status, { timeout: 30_000 }).toBe('ready');
 
   await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+  await page.getByRole('tab', { name: '模型服务', exact: true }).click();
   await expect(defaultModel).toBeEnabled();
   await expect.poll(() => defaultModel.locator('option').count()).toBeGreaterThan(0);
   await expect(defaultModel).toHaveValue(nextModel.id);
@@ -5109,8 +5230,7 @@ test('真实 Electron 集中重启后全部写入与主动切换相同私聊状�
 
   const model = evidence.model;
   expect(reopened.settings).toMatchObject({
-    defaultBotModel: model.defaultBotModel,
-    defaultBotPermission: model.defaultBotPermission
+    defaultBotModel: model.defaultBotModel
   });
   expect(reopened.bots.find(bot => bot.id === model.pilotId)).toMatchObject({
     model: model.pilotModel,
@@ -5126,7 +5246,7 @@ test('真实 Electron 集中重启后全部写入与主动切换相同私聊状�
   });
   await page.getByRole('button', { name: /Model Pilot/ }).first().click();
   await page.getByRole('button', { name: '打开 Model Pilot 设置' }).click();
-  await page.getByRole('tab', { name: '模型与权限' }).click();
+  await page.getByRole('tab', { name: '模型' }).click();
   await expect(page.getByLabel('Bot 模型')).toHaveValue(model.pilotModel);
 });
 
@@ -5270,4 +5390,163 @@ test('真实 Electron 关窗后后台服务继续且显式退出停止本机运�
 
     await electron.close();
     await expect.poll(() => processExists(runtimePid)).toBe(false);
+});
+
+test('真实 Electron 在聊天内展示连接授权卡并直接授权或拒绝', async ({ electron }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('聊天授权测试');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 聊天授权测试')).toBeVisible();
+  const chatId = await page.evaluate(async () => {
+    const snapshot = await window.rambo.snapshot();
+    const bot = snapshot.bots.find(item => item.name === '聊天授权测试');
+    return snapshot.chats.find(item => item.botId === bot.id && !item.groupChatId && !item.archived).id;
+  });
+
+  const connection = {
+    id: 'e2e-in-chat-authorization',
+    providerId: 'qqmail',
+    displayName: '工作 QQ 邮箱',
+    accountLabel: 'owner@qq.com',
+    authKind: 'credentials',
+    credentialRef: 'db:e2e-in-chat-authorization',
+    capabilities: { 'mail.search': 'ready' }
+  };
+  await page.evaluate(value => window.rambo.injectAcceptanceEvent({
+    type: 'connectorConnection',
+    connection: value
+  }), connection);
+  const preview = await page.evaluate(async ({ chatId, connection }) => {
+    const snapshot = await window.rambo.snapshot();
+    const saved = await window.rambo.injectAcceptanceEvent({
+      type: 'previewMessage',
+      message: {
+        chatId,
+        text: '需要读取邮件才能完成总结。',
+        content: {
+          kind: 'authorization',
+          connectionId: connection.id,
+          providerId: 'qqmail',
+          providerName: 'QQ 邮箱',
+          brandColor: '#1296db',
+          monogram: 'QQ',
+          connectionName: connection.displayName,
+          account: connection.accountLabel,
+          reason: '需要读取邮件才能完成总结。',
+          state: 'pending'
+        }
+      }
+    });
+    return { id: saved.id, botId: snapshot.chats.find(item => item.id === chatId).botId };
+  }, { chatId, connection });
+
+  const card = page.locator('.transcript-authorization-card').last();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('需要连接授权');
+  await expect(card).toContainText('工作 QQ 邮箱');
+  await expect(card).toContainText('owner@qq.com');
+  const readCardTheme = () => card.evaluate(element => {
+    const [primary, secondary] = element.querySelectorAll('.transcript-authorization-actions button');
+    return {
+      card: getComputedStyle(element).backgroundColor,
+      primary: getComputedStyle(primary).backgroundColor,
+      secondary: getComputedStyle(secondary).backgroundColor
+    };
+  });
+  const lightTheme = await readCardTheme();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(250);
+  const darkTheme = await readCardTheme();
+  expect(darkTheme.card).not.toBe(lightTheme.card);
+  expect(darkTheme.primary).not.toBe(lightTheme.primary);
+  expect(darkTheme.primary).not.toBe(darkTheme.secondary);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await card.getByRole('button', { name: '授权给当前 Bot' }).click();
+  await expect(card.locator('.transcript-question-resolved')).toContainText('已授权');
+  await expect.poll(() => page.evaluate(({ botId, connectionId }) =>
+    window.rambo.snapshot().then(snapshot => snapshot.connectorGrants.some(grant =>
+      grant.botId === botId && grant.connectionId === connectionId
+    )), { botId: preview.botId, connectionId: connection.id })).toBe(true);
+  await expect(page.locator('.message-row.message-user', { hasText: '已授权连接「工作 QQ 邮箱' })).toBeVisible();
+  await page.evaluate(id => window.rambo.interrupt(id), chatId);
+  await expect.poll(() => page.evaluate(id =>
+    window.rambo.snapshot().then(snapshot => snapshot.pendingWork.busyChats)), chatId).toBe(0);
+
+  const secondConnection = {
+    ...connection,
+    id: 'e2e-in-chat-authorization-denied',
+    displayName: '私人 Gmail',
+    accountLabel: 'private@example.com',
+    credentialRef: 'db:e2e-in-chat-authorization-denied'
+  };
+  await page.evaluate(value => window.rambo.injectAcceptanceEvent({
+    type: 'connectorConnection',
+    connection: value
+  }), secondConnection);
+  await page.evaluate(({ chatId, connection }) => window.rambo.injectAcceptanceEvent({
+    type: 'previewMessage',
+    message: {
+      chatId,
+      text: '需要读取私人邮件。',
+      content: {
+        kind: 'authorization',
+        connectionId: connection.id,
+        providerId: 'gmail',
+        providerName: 'Gmail',
+        brandColor: '#ea4335',
+        monogram: 'M',
+        connectionName: connection.displayName,
+        account: connection.accountLabel,
+        reason: '需要读取私人邮件。',
+        state: 'pending'
+      }
+    }
+  }), { chatId, connection: secondConnection });
+  const deniedCard = page.locator('.transcript-authorization-card').last();
+  await expect(deniedCard).toContainText('私人 Gmail');
+  await deniedCard.getByRole('button', { name: '暂不授权' }).click();
+  await expect(deniedCard.locator('.transcript-question-resolved')).toContainText('未授权');
+  expect(await page.evaluate(({ botId, connectionId }) =>
+    window.rambo.snapshot().then(snapshot => snapshot.connectorGrants.some(grant =>
+      grant.botId === botId && grant.connectionId === connectionId
+    )), { botId: preview.botId, connectionId: secondConnection.id })).toBe(false);
+  await page.evaluate(id => window.rambo.interrupt(id), chatId);
+});
+
+test('真实 Electron 私聊先加载最近消息并在向上滚动时分页加载更早消息', async ({ electron }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('分页测试');
+  await page.getByRole('dialog', { name: '创建新 Bot' })
+    .getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 分页测试')).toBeVisible();
+  const chatId = await page.evaluate(async () => {
+    const snapshot = await window.rambo.snapshot();
+    const bot = snapshot.bots.find(item => item.name === '分页测试');
+    return snapshot.chats.find(item => item.botId === bot.id && !item.groupChatId && !item.archived).id;
+  });
+  await page.evaluate(async ({ chatId }) => {
+    for (let index = 0; index < 90; index += 1) {
+      await window.rambo.injectAcceptanceEvent({
+        type: 'previewMessage',
+        message: {
+          chatId,
+          text: `分页消息-${String(index).padStart(3, '0')}`
+        }
+      });
+    }
+  }, { chatId });
+
+  await page.reload();
+  await expect(page.locator('.message-row[data-message-id]')).toHaveCount(80);
+  await expect(page.locator('.message-row[data-message-id]').first()).toContainText('分页消息-010');
+  await expect(page.locator('.message-row[data-message-id]').last()).toContainText('分页消息-089');
+
+  const transcript = page.locator('.transcript-scroll');
+  await transcript.evaluate(element => { element.scrollTop = 0; });
+  await expect(page.locator('.message-row[data-message-id]')).toHaveCount(90);
+  await expect(page.locator('.message-row[data-message-id]').first()).toContainText('分页消息-000');
+  expect(await transcript.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
 });

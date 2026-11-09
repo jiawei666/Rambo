@@ -1,4 +1,7 @@
 import type { DesktopPlatform } from './platform';
+import type { RuntimeProxyScope, RuntimeProxySettings } from './proxy-settings';
+
+export type { RuntimeProxyScope, RuntimeProxySettings } from './proxy-settings';
 
 export type PermissionMode = 'fullAccess' | 'workspaceWrite' | 'readOnly';
 export type MessageStatus = 'complete' | 'streaming' | 'failed' | 'interrupted';
@@ -202,10 +205,19 @@ export interface RoutineRun {
   recoveryCount: number;
   needsUserReason: string | null;
 }
+export interface BotDelegation {
+  id: string; callKey: string; sourceChatId: string; workerChatId: string;
+  senderBotId: string; senderName: string; workerBotId: string; workerName: string;
+  messageId: string; reportMessageId: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'interrupted' | 'needs_user';
+  turnId: string | null; result: string | null; error: string | null;
+  parentId: string | null; sourceTurnId?: string | null; createdAt: string;
+}
 export interface Message {
   id: string; chatId: string; role: 'user' | 'assistant' | 'system'; text: string;
   status: MessageStatus; itemId: string | null; createdAt: string;
   dispatchStatus?: TurnDispatchStatus | null; dispatchError?: string | null;
+  delegation?: { taskId: string; senderBotId: string; senderName: string; kind: 'assignment' | 'report' } | null;
   /** Codex turn that produced this assistant message; null for legacy and user/system rows. */
   turnId: string | null;
   /** Null preserves compatibility for providers that do not classify assistant text. */
@@ -214,6 +226,10 @@ export interface Message {
   source: MessageSource;
   /** Structured chat content emitted by Rambo tools; older rows remain plain Markdown. */
   content?: MessageContent | null;
+}
+export interface MessagePage {
+  messages: Message[];
+  hasMore: boolean;
 }
 export interface MessageOption { label: string; value?: string; description?: string }
 export interface MessageFormField {
@@ -224,6 +240,19 @@ export interface MessageFormField {
 export interface QuestionMessageContent {
   kind: 'question'; prompt: string; options: MessageOption[]; allowMultiple: boolean; allowCustom: boolean;
   customPlaceholder?: string; state: 'pending' | 'answered'; answer?: string;
+}
+export interface AuthorizationMessageContent {
+  kind: 'authorization';
+  connectionId: string;
+  providerId: string;
+  providerName: string;
+  brandColor: string;
+  monogram: string;
+  connectionName: string;
+  account: string;
+  reason?: string;
+  state: 'pending' | 'approved' | 'denied' | 'unavailable';
+  decidedAt?: string;
 }
 export interface ResultCardMessageContent {
   kind: 'card';
@@ -252,7 +281,7 @@ export interface VisualizationMessageContent {
   labels: string[]; series: Array<{ name: string; values: number[] }>; unit?: string;
 }
 export type MessageContent =
-  | QuestionMessageContent | ResultCardMessageContent | MediaMessageContent
+  | QuestionMessageContent | AuthorizationMessageContent | ResultCardMessageContent | MediaMessageContent
   | VoiceMessageContent | McpEmbedMessageContent | VisualizationMessageContent;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -278,6 +307,13 @@ export function isMessageContent(value: unknown): value is MessageContent {
       typeof value.allowMultiple === 'boolean' && typeof value.allowCustom === 'boolean' &&
       isOptionalText(value.customPlaceholder) && (value.state === 'pending' || value.state === 'answered') &&
       isOptionalText(value.answer);
+  }
+  if (value.kind === 'authorization') {
+    return isText(value.connectionId) && isText(value.providerId) && isText(value.providerName) &&
+      isText(value.brandColor) && isText(value.monogram) && isText(value.connectionName) &&
+      isText(value.account) && isOptionalText(value.reason) &&
+      ['pending', 'approved', 'denied', 'unavailable'].includes(String(value.state)) &&
+      isOptionalText(value.decidedAt);
   }
   if (value.kind === 'card') {
     return ['generic', 'weather', 'shopping', 'form', 'approval', 'connector', 'email', 'calendar'].includes(String(value.template)) &&
@@ -339,9 +375,9 @@ export interface RuntimeUpdateResult {
   version: string;
   source: RuntimeSource;
 }
-export type CodexHomeSyncMode = 'follow' | 'independent';
 export interface CodexHomeSyncState {
-  mode: CodexHomeSyncMode;
+  /** The runtime home is always independent after startup. */
+  mode: 'independent';
   sourceDetected: boolean;
   sourcePath: string | null;
   lastSyncedAt: string | null;
@@ -369,6 +405,17 @@ export interface ModelSourceState {
   models: ModelOption[];
   /** Whether an encrypted API key is already available for the manual source. */
   hasApiKey: boolean;
+  /** A non-OpenAI provider already selected by the standard Codex config. */
+  standardProviderConfigured?: boolean;
+}
+export interface RuntimeModelConfigurationDetails {
+  accessMethod: 'chatgptLogin' | 'apiKey' | 'modelProvider' | 'unknown';
+  providerId: string | null;
+  serviceName: string | null;
+  baseUrl: string | null;
+  wireApi: string | null;
+  /** True is reported only when a credential is present; the secret is never returned. */
+  credentialConfigured: boolean | null;
 }
 export interface RefreshedBotModel {
   id: string;
@@ -383,9 +430,6 @@ export interface ModelCatalogRefresh {
 }
 export interface ModelSourceChangeResult extends ModelSourceState {
   /** Null while ChatGPT login is still required before the model catalog can be read. */
-  catalogRefresh: ModelCatalogRefresh | null;
-}
-export interface CodexHomeSyncChangeResult extends CodexHomeSyncState {
   catalogRefresh: ModelCatalogRefresh | null;
 }
 export interface ModelConnectionTestResult {
@@ -456,6 +500,8 @@ export interface Snapshot {
   codexHomeSync: CodexHomeSyncState;
   /** Manual proxy applied to the Rambo-owned Codex App Server process. */
   runtimeProxy: string;
+  /** Explicit application-proxy scopes selected by the user. */
+  runtimeProxyScopes: RuntimeProxyScope[];
   /** Application-level model service selection. It never contains secrets. */
   modelSource: ModelSourceState;
   bots: Bot[]; chats: Chat[]; groups: GroupChat[]; archivedGroups: GroupChat[];
@@ -514,7 +560,6 @@ export type AppEvent =
   | { type: 'connectorAuthProgress'; connectionId: string; phase: string; message: string; canFinishCapture?: boolean; canContinueCapture?: boolean }
   | { type: 'playwrightVerificationProgress'; phase: string; message: string }
   | { type: 'runtime'; state: RuntimeState }
-  | { type: 'codexHomeSync'; state: CodexHomeSyncState }
   | { type: 'message'; message: Message }
   | { type: 'botReplyNotification'; chatId: string; botId: string; preview: string; notificationId?: string; visibleAndFocused?: boolean }
   | { type: 'routineRunFinished'; runId: string }
@@ -595,7 +640,7 @@ export interface RamboAPI {
   createBot(input: { name: string; avatar: string }): Promise<{ bot: Bot; chat: Chat }>;
   copyBot(id: string): Promise<{ bot: Bot; chat: Chat }>;
   updateBot(id: string, patch: Partial<Pick<Bot, 'name' | 'avatar' | 'role' | 'instructions' | 'notificationsEnabled'>>): Promise<Bot>;
-  updateBotExecutionConfig(id: string, patch: { model: string; permission: PermissionMode }): Promise<Bot>;
+  updateBotExecutionConfig(id: string, patch: { model: string }): Promise<Bot>;
   setBotArchived(id: string, archived: boolean): Promise<Bot>;
   setBotPinned(id: string, pinned: boolean): Promise<Bot>;
   deleteBot(id: string): Promise<void>;
@@ -617,8 +662,10 @@ export interface RamboAPI {
   runRoutineNow(id: string): Promise<RoutineRun>;
   stopRoutineRun(id: string): Promise<RoutineRun>;
   messages(chatId: string): Promise<Message[]>;
+  messagesPage(chatId: string, beforeMessageId?: string | null, limit?: number): Promise<MessagePage>;
   copyText(text: string): Promise<void>;
   answerCard(messageId: string, answer: string): Promise<void>;
+  resolveAuthorization(messageId: string, decision: 'approve' | 'deny'): Promise<void>;
   resolveMessageAsset(messageId: string, source: string): Promise<string | null>;
   openMessageAsset(messageId: string, source: string): Promise<void>;
   revealMessageAsset(messageId: string, source: string): Promise<void>;
@@ -632,11 +679,14 @@ export interface RamboAPI {
   saveMemory(input: { id?: string; botId: string | null; text: string }): Promise<Memory>;
   deleteMemory(id: string): Promise<void>;
   setSetting(key: string, value: string): Promise<void>;
+  setProxySettings(settings: RuntimeProxySettings): Promise<void>;
   setLaunchAtLogin(enabled: boolean): Promise<void>;
   loginItemSystemChangesAllowed(): Promise<boolean>;
   injectAcceptanceEvent(event: unknown): Promise<void>;
   account(): Promise<AccountState>;
+  modelConfigurationDetails(): Promise<RuntimeModelConfigurationDetails>;
   login(): Promise<AccountLoginStart>;
+  cancelChatGptLogin(): Promise<void>;
   models(): Promise<ModelOption[]>;
   manualModels(input: Pick<ManualApiConfig, 'serviceName' | 'baseUrl'> & {
     apiKey?: string;
@@ -644,8 +694,8 @@ export interface RamboAPI {
   setModelSource(kind: ModelSourceKind): Promise<ModelSourceChangeResult>;
   saveManualModelSource(input: ManualApiSaveInput): Promise<ModelSourceChangeResult>;
   syncModelCatalogForCurrentSource(): Promise<ModelCatalogRefresh>;
+  refreshCurrentModelConfiguration(): Promise<ModelCatalogRefresh>;
   testModelConnection(source?: ModelSourceKind): Promise<ModelConnectionTestResult>;
-  setCodexHomeSyncMode(mode: CodexHomeSyncMode): Promise<CodexHomeSyncChangeResult>;
   startVoice(
     chatId: string,
     offerSdp: string

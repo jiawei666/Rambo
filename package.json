@@ -1,6 +1,6 @@
 {
   "name": "rambo",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "Rambo — 本机个人 Bot 助手",
   "main": "./out/main/index.js",
@@ -64,6 +64,7 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "out/**/*",
+      "resources/prompts/**",
       "assets/branding/tray-frames/brand.png",
       "assets/branding/tray-frames/brand@2x.png",
       "assets/branding/tray-frames/brand-dark.png",

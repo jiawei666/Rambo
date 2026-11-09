@@ -7,14 +7,14 @@
 - 应用和项目名称：**Rambo**，保留用户输入大小写。
 - 唤醒称呼：**Rambo**；此前支持问候语前缀的规则对应为“你好，Rambo”。实际口头识别效果待验证。
 - 项目位置：`/Users/yuanjiawei/ai-coding/Rambo`。
-- 应用 Logo：[项目原图](../assets/branding/app-logo-source.png)。当前图为用户最新指定的《霓虹落日下的战士凝视》：黑发红头带战士侧脸，蓝紫、粉橙至黄色渐变背景；替换早先的卡通头像，按原图使用。
+- 应用 Logo：[圆角派生图](../assets/branding/app-logo-rounded.png)，由 [项目原图](../assets/branding/app-logo-source.png) 等比生成，使用透明圆角遮罩，不重绘原图内容。当前图为用户最新指定的《霓虹落日下的战士凝视》：黑发红头带战士侧脸，蓝紫、粉橙至黄色渐变背景；替换早先的卡通头像。
 - 原始来源：`/Users/yuanjiawei/Downloads/霓虹落日下的战士凝视.png`。
 - 项目素材相对路径：`assets/branding/app-logo-source.png`。
 - 图片规格：PNG，1254 × 1254 像素。
 - SHA-256：`fc527b8ebc1ae67cce4fb673ef49bc5613b2efb7d70e308d564e1240053ad37e`。
-- 托盘/菜单栏 Logo：用户于 2026-10-31 最终确认使用红头带战士单色轮廓，并明确 Windows 也使用该图，均不播放动态效果，见 [Q220](decision-followups.md#q220)。唯一源图保存为 `assets/branding/tray-logo-source.png`，SHA-256 为 `f3323d77b7ad610a4ec75c7ba25e7ca6e49e626ebc741e80aecd33a5de96a2b7`。Windows 使用 `brand.png` / `brand@2x.png` 和 `brand-dark.png` / `brand-dark@2x.png` 两套静态黑/白轮廓，随系统浅色/深色主题切换；macOS 使用 `brand.png` / `brand@2x.png` 作为 template 蒙版，由系统自动着色。Dock 与应用包图标仍使用 `app-logo-source.png`。
+- 托盘/菜单栏 Logo：用户于 2026-10-31 最终确认使用红头带战士单色轮廓，并明确 Windows 也使用该图，均不播放动态效果，见 [Q220](decision-followups.md#q220)。唯一源图保存为 `assets/branding/tray-logo-source.png`，SHA-256 为 `f3323d77b7ad610a4ec75c7ba25e7ca6e49e626ebc741e80aecd33a5de96a2b7`。Windows 使用 `brand.png` / `brand@2x.png` 和 `brand-dark.png` / `brand-dark@2x.png` 两套静态黑/白轮廓，随系统浅色/深色主题切换；macOS 使用 `brand.png` / `brand@2x.png` 作为 template 蒙版，由系统自动着色。Dock 与应用包图标使用 `app-logo-rounded.png`；原始图保留为唯一未编辑源图。
 
-该素材是原始文件的字节一致副本，不是重新生成或编辑后的图。Downloads 原件保持原位。具体 macOS 图标尺寸资源和应用包图标接入在实现阶段处理，最终视觉按 P02/全量验收矩阵复核；本轮没有编写应用代码或声称已完成打包。
+`app-logo-source.png` 是原始文件的字节一致副本，Downloads 原件保持原位。2026-11-06 起按 [Q247](decision-followups.md#q247) 从原图生成 `app-logo-rounded.png`，仅处理透明圆角边缘；macOS `.icns` 和 Windows `.ico` 由该派生图生成。
 
 托盘图是独立品牌素材，不替换上面的应用 Logo。旧机器人 SVG、眨眼/瞟视帧和 `working*` 已按用户要求清理，不再保留在当前项目中；历史决定仅记录在 [Q80](decision-followups.md#q80)。
 

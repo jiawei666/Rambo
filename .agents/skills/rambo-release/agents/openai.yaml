@@ -1,6 +1,6 @@
 interface:
   display_name: "打包并发布 Rambo"
-  short_description: "双平台 Actions 原生构建、Draft Release 直传并发布 Rambo"
-  default_prompt: "使用 $rambo-release，提交并推送最新代码，创建 annotated tag 和 Draft Release；等待 macOS ARM64 与 Windows x64 原生 Actions 工作流分别构建并直接上传正式资产。本机不执行发布构建、不下载 Windows 产物，只核对 Release 资产清单和 API digest，临时下载 macOS 资产更新 /Applications/Rambo.app，最后公开 Draft Release。"
+  short_description: "双平台 Actions 原生构建、发布 Rambo 并清理本机旧产物"
+  default_prompt: "使用 $rambo-release，提交并推送最新代码，创建 annotated tag 和 Draft Release；等待 macOS ARM64 与 Windows x64 原生 Actions 工作流分别构建并直接上传正式资产。本机不执行发布构建、不下载 Windows 产物，只核对 Release 资产清单和 API digest，临时下载 macOS 资产更新 /Applications/Rambo.app，最后公开 Draft Release。全部验证成功后，用受控脚本清理本机当前及旧版本构建产物，不保留任何应用备份。"
 policy:
   allow_implicit_invocation: false

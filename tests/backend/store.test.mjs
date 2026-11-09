@@ -10,11 +10,15 @@ import ts from 'typescript';
 const storeSourcePath = new URL('../../src/main/store.ts', import.meta.url);
 const scheduleSourcePath = new URL('../../src/main/routine-schedule.ts', import.meta.url);
 const robotAvatarSourcePath = new URL('../../src/shared/robot-avatar.ts', import.meta.url);
+const proxySettingsSourcePath = new URL('../../src/shared/proxy-settings.ts', import.meta.url);
 const contractsSourcePath = new URL('../../src/shared/contracts.ts', import.meta.url);
 const compiledSchedule = ts.transpileModule(readFileSync(scheduleSourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText;
 const compiledRobotAvatar = ts.transpileModule(readFileSync(robotAvatarSourcePath, 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText;
+const compiledProxySettings = ts.transpileModule(readFileSync(proxySettingsSourcePath, 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
 }).outputText;
 const compiledContracts = ts.transpileModule(readFileSync(contractsSourcePath, 'utf8'), {
@@ -25,6 +29,7 @@ const compiledStore = ts.transpileModule(readFileSync(storeSourcePath, 'utf8'), 
 }).outputText
   .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
   .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'")
+  .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'")
   .replaceAll("from '../shared/contracts'", "from './contracts.mjs'");
 const groupActionsSourcePath = new URL('../../src/renderer/group-create-actions.ts', import.meta.url);
 const compiledGroupActions = ts.transpileModule(readFileSync(groupActionsSourcePath, 'utf8'), {
@@ -36,6 +41,7 @@ async function withDirectory(run) {
   const modulePath = join(directory, 'store.mjs');
   writeFileSync(join(directory, 'routine-schedule.mjs'), compiledSchedule, { mode: 0o600 });
   writeFileSync(join(directory, 'robot-avatar.mjs'), compiledRobotAvatar, { mode: 0o600 });
+  writeFileSync(join(directory, 'proxy-settings.mjs'), compiledProxySettings, { mode: 0o600 });
   writeFileSync(join(directory, 'contracts.mjs'), compiledContracts, { mode: 0o600 });
   writeFileSync(modulePath, compiledStore, { mode: 0o600 });
   try {
@@ -53,6 +59,35 @@ async function withDirectory(run) {
     await run(initializedStore, directory);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
+
+function setStoredBotPermission(store, botId, permission) {
+  store.db.prepare('UPDATE bots SET permission=? WHERE id=?').run(permission, botId);
+}
+
+test('旧版运行时代理设置会迁移为大模型与 Gmail 两个范围', async () => {
+  await withDirectory(async (Store, directory) => {
+    const nonEmptyDirectory = join(directory, 'non-empty');
+    const legacy = new Store(nonEmptyDirectory);
+    legacy.setSetting('runtimeProxy', 'http://127.0.0.1:10808');
+    legacy.db.prepare("DELETE FROM settings WHERE key='runtimeProxyScopes'").run();
+    legacy.close();
+
+    const migrated = new Store(nonEmptyDirectory);
+    try {
+      assert.equal(migrated.settings().runtimeProxyScopes, 'model,gmail');
+    } finally { migrated.close(); }
+
+    const emptyDirectory = join(directory, 'empty');
+    const emptyLegacy = new Store(emptyDirectory);
+    emptyLegacy.db.prepare("DELETE FROM settings WHERE key='runtimeProxyScopes'").run();
+    emptyLegacy.close();
+
+    const emptyMigrated = new Store(emptyDirectory);
+    try {
+      assert.equal(emptyMigrated.settings().runtimeProxyScopes, '');
+    } finally { emptyMigrated.close(); }
+  });
+});
 
 test('randomizes legacy Bot eye poses once while preserving robot appearance settings', async () => {
   await withDirectory(async (Store, directory) => {
@@ -402,7 +437,7 @@ test('two Bots keep chats, settings, routines, memories, and global settings iso
   });
 });
 
-test('new Bots copy explicit execution defaults and independent resource switches', async () => {
+test('new Bots copy the selected model and resource switches with fixed Full Access', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
     try {
@@ -419,7 +454,7 @@ test('new Bots copy explicit execution defaults and independent resource switche
       const first = store.createBot('Default permissions', 'default-avatar');
       const { bot, chat } = first;
       assert.equal(bot.model, 'model-a');
-      assert.equal(bot.permission, 'readOnly');
+      assert.equal(bot.permission, 'fullAccess');
       assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), true);
       assert.equal(store.botResourceEnabled(bot.id, 'skill:pdf'), false);
       assert.equal(store.botResourceEnabled(bot.id, 'mcp:playwright'), true);
@@ -440,14 +475,22 @@ test('new Bots copy explicit execution defaults and independent resource switche
         .run('2026-10-02T00:00:00.000Z', second.bot.id);
       assert.deepEqual(store.bots().map(item => item.id), [second.bot.id, bot.id]);
       assert.equal(store.bot(bot.id).model, 'model-a');
-      assert.equal(store.bot(bot.id).permission, 'readOnly');
+      assert.equal(store.bot(bot.id).permission, 'fullAccess');
       assert.equal(store.bot(bot.id).notificationsEnabled, true);
       store.updateBot(bot.id, { notificationsEnabled: false });
       assert.equal(store.bot(bot.id).notificationsEnabled, false);
       assert.equal(store.bot(second.bot.id).notificationsEnabled, true);
       assert.equal(store.botResourceEnabled(bot.id, 'skill:documents'), false);
       assert.equal(second.bot.model, 'model-b');
-      assert.equal(second.bot.permission, 'workspaceWrite');
+      assert.equal(second.bot.permission, 'fullAccess');
+      assert.throws(
+        () => store.updateBotExecutionConfig(bot.id, { model: 'next-model', permission: 'readOnly' }),
+        /Bot 权限不支持修改/u
+      );
+      assert.throws(
+        () => store.updateBot(bot.id, { permission: 'readOnly' }),
+        /不支持的机器人字段/u
+      );
       assert.equal(store.botResourceEnabled(second.bot.id, 'skill:documents'), true);
 
       store.syncBotResources(['skill:pdf', 'mcp:playwright'], ['skill:pdf']);
@@ -462,7 +505,7 @@ test('new Bots copy explicit execution defaults and independent resource switche
     try {
       const bots = reopened.bots();
       assert.deepEqual(bots.map(bot => [bot.model, bot.permission]), [
-        ['model-b', 'workspaceWrite'], ['model-a', 'readOnly']
+        ['model-b', 'fullAccess'], ['model-a', 'fullAccess']
       ]);
       assert.equal(reopened.botResourceEnabled(bots[0].id, 'mcp:playwright'), true);
       assert.equal(reopened.botResourceEnabled(bots[1].id, 'mcp:playwright'), true);
@@ -487,9 +530,9 @@ test('copying a Bot preserves profile, execution config, grants, resources, memo
         notificationsEnabled: false
       });
       store.updateBotExecutionConfig(source.id, {
-        model: 'copy-model',
-        permission: 'workspaceWrite'
+        model: 'copy-model'
       });
+      setStoredBotPermission(store, source.id, 'workspaceWrite');
       store.setBotResource(source.id, 'skill:documents', false);
       store.setBotResource(source.id, 'mcp:playwright', true);
       const connection = store.createConnectorConnection({
@@ -530,7 +573,8 @@ test('copying a Bot preserves profile, execution config, grants, resources, memo
       assert.equal(copied.bot.role, '负责研究和整理资料');
       assert.equal(copied.bot.instructions, '先核对来源，再给出结论。');
       assert.equal(copied.bot.model, 'copy-model');
-      assert.equal(copied.bot.permission, 'workspaceWrite');
+      assert.equal(copied.bot.permission, 'fullAccess');
+      assert.equal(store.bot(source.id).permission, 'workspaceWrite');
       assert.equal(copied.bot.notificationsEnabled, false);
       assert.equal(copied.bot.archived, false);
       assert.equal(copied.bot.pinnedAt, null);
@@ -590,26 +634,44 @@ test('copying a Bot preserves profile, execution config, grants, resources, memo
   });
 });
 
-test('invalid or empty global permission never silently becomes Full Access', async () => {
+test('legacy global permission cannot change new Bot defaults or block their creation', async () => {
   await withDirectory(async (Store, directory) => {
     const store = new Store(directory);
     try {
       store.setSetting('defaultBotModel', 'model-a');
       store.setSetting('defaultBotPermission', 'not-a-permission');
-      const beforeBots = store.bots().length;
-      const beforeChats = store.chats().length;
+      const createdWithInvalidLegacySetting = store.createBot('Invalid legacy setting', 'a');
+      assert.equal(createdWithInvalidLegacySetting.bot.permission, 'fullAccess');
 
-      assert.throws(
-        () => store.createBot('Invalid permission', 'a'),
-        /新建 Bot 的全局权限配置无效/u
-      );
-      assert.equal(store.bots().length, beforeBots);
-      assert.equal(store.chats().length, beforeChats);
-
-      store.setSetting('defaultBotPermission', '');
       const created = store.createBot('Legacy default', 'b');
       assert.equal(created.bot.permission, 'fullAccess');
       assert.equal(created.bot.model, 'model-a');
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test('pending model migration preserves every existing Bot and chat permission value', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const first = store.createBot('Existing one', 'a');
+      const second = store.createBot('Existing two', 'b');
+      setStoredBotPermission(store, first.bot.id, 'workspaceWrite');
+      store.updateChat(first.chat.id, { permission: 'readOnly' });
+      store.db.prepare("UPDATE bots SET model='' WHERE id=?").run(first.bot.id);
+      store.db.prepare("UPDATE bots SET model='' WHERE id=?").run(second.bot.id);
+      store.db.prepare("UPDATE chats SET model='chat-model' WHERE id=?").run(first.chat.id);
+
+      assert.equal(store.materializeBotExecutionDefaults('global-model'), 2);
+      assert.equal(store.bot(first.bot.id).model, 'chat-model');
+      assert.equal(store.bot(second.bot.id).model, 'global-model');
+      assert.equal(store.bot(first.bot.id).permission, 'workspaceWrite');
+      assert.equal(store.chat(first.chat.id).permission, 'readOnly');
+      assert.equal(store.bot(second.bot.id).permission, 'fullAccess');
+      assert.equal(store.materializeBotExecutionDefaults('replacement-model'), 0);
+      assert.equal(store.bot(first.bot.id).permission, 'workspaceWrite');
     } finally {
       store.close();
     }
@@ -626,11 +688,11 @@ test('saving valid execution defaults clears a previous initialization error', a
       assert.equal(store.settings().modelInitializationError, '');
 
       store.setSetting('modelInitializationError', '第二次初始化失败');
+      store.setSetting('defaultBotPermission', 'readOnly');
       store.setExecutionDefaults({
-        model: ' model-with-explicit-permission ',
-        permission: 'readOnly'
+        model: ' model-without-permission-setting '
       });
-      assert.equal(store.settings().defaultBotModel, 'model-with-explicit-permission');
+      assert.equal(store.settings().defaultBotModel, 'model-without-permission-setting');
       assert.equal(store.settings().defaultBotPermission, 'readOnly');
       assert.equal(store.settings().modelInitializationError, '');
     } finally {
@@ -681,16 +743,12 @@ test('new manual model catalog refreshes only Bots whose saved model disappeared
         { id: 'model-a', label: 'Model A', isDefault: true }
       ], 'model-a');
       const stale = store.createBot('Legacy researcher', 'brand-a');
-      store.updateBotExecutionConfig(stale.bot.id, {
-        model: 'retired-model',
-        permission: 'workspaceWrite'
-      });
+      store.updateBotExecutionConfig(stale.bot.id, { model: 'retired-model' });
+      setStoredBotPermission(store, stale.bot.id, 'workspaceWrite');
       const valid = store.createBot('Current writer', 'brand-b');
       const archived = store.createBot('Archived operator', 'brand-c');
-      store.updateBotExecutionConfig(archived.bot.id, {
-        model: 'archived-retired-model',
-        permission: 'readOnly'
-      });
+      store.updateBotExecutionConfig(archived.bot.id, { model: 'archived-retired-model' });
+      setStoredBotPermission(store, archived.bot.id, 'readOnly');
       store.setBotArchived(archived.bot.id, true);
 
       const refreshed = store.refreshBotModelsForCatalog([
@@ -745,15 +803,11 @@ test('source model catalog and stale Bot refresh commit atomically', async () =>
         { id: 'api-model', label: 'API Model', isDefault: true }
       ], 'api-model');
       const stale = store.createBot('API user', 'brand-a');
-      store.updateBotExecutionConfig(stale.bot.id, {
-        model: 'api-model',
-        permission: 'workspaceWrite'
-      });
+      store.updateBotExecutionConfig(stale.bot.id, { model: 'api-model' });
+      setStoredBotPermission(store, stale.bot.id, 'workspaceWrite');
       const valid = store.createBot('Local user', 'brand-b');
-      store.updateBotExecutionConfig(valid.bot.id, {
-        model: 'local-model',
-        permission: 'readOnly'
-      });
+      store.updateBotExecutionConfig(valid.bot.id, { model: 'local-model' });
+      setStoredBotPermission(store, valid.bot.id, 'readOnly');
 
       const result = store.applyExecutionModelCatalogAndRefreshBots([
         { id: 'local-model', label: 'Local Model', isDefault: false },
@@ -1446,11 +1500,45 @@ test('reopening a Bot resolves the same private chat and preserves settings, mes
       assert.deepEqual(reopened.memories(bot.id).map(memory => memory.text), ['shared Bot memory']);
       assert.deepEqual(reopened.settings(), {
         globalPermission: 'fullAccess', theme: 'light', wakeEnabled: 'true',
-        defaultBotModel: 'test-model', defaultBotPermission: 'fullAccess'
+        defaultBotModel: 'test-model', defaultBotPermission: 'fullAccess',
+        runtimeProxy: '', runtimeProxyScopes: ''
       });
       assert.equal(reopened.routines()[0].title, 'Persisted routine');
       assert.equal(reopened.routines()[0].botId, bot.id);
     } finally { reopened.close(); }
+  });
+});
+
+test('message pagination returns the latest fixed window and walks older pages by cursor', async () => {
+  await withDirectory(async (Store, directory) => {
+    const store = new Store(directory);
+    try {
+      const { chat } = store.createBot('Pagination owner', 'a');
+      for (let index = 0; index < 205; index += 1) {
+        store.addMessage(chat.id, 'user', `message-${String(index).padStart(3, '0')}`);
+      }
+
+      const newest = store.messagesPage(chat.id, null, 80);
+      assert.equal(newest.messages.length, 80);
+      assert.equal(newest.hasMore, true);
+      assert.equal(newest.messages[0].text, 'message-125');
+      assert.equal(newest.messages.at(-1).text, 'message-204');
+
+      const middle = store.messagesPage(chat.id, newest.messages[0].id, 80);
+      assert.equal(middle.messages.length, 80);
+      assert.equal(middle.hasMore, true);
+      assert.equal(middle.messages[0].text, 'message-045');
+      assert.equal(middle.messages.at(-1).text, 'message-124');
+
+      const oldest = store.messagesPage(chat.id, middle.messages[0].id, 80);
+      assert.equal(oldest.messages.length, 45);
+      assert.equal(oldest.hasMore, false);
+      assert.equal(oldest.messages[0].text, 'message-000');
+      assert.equal(oldest.messages.at(-1).text, 'message-044');
+
+      const all = [...oldest.messages, ...middle.messages, ...newest.messages];
+      assert.equal(new Set(all.map(message => message.id)).size, 205);
+    } finally { store.close(); }
   });
 });
 
@@ -1702,7 +1790,8 @@ test('turn metadata is atomic, immutable across default changes, and honest abou
     });
 
     // Later edits affect future turns, not the snapshot sent with this request.
-    store.updateBot(bot.id, { model: 'gpt-6-luna', permission: 'fullAccess' });
+    store.updateBot(bot.id, { model: 'gpt-6-luna' });
+    setStoredBotPermission(store, bot.id, 'fullAccess');
     store.updateChat(chat.id, { model: 'gpt-6-luna', permission: 'fullAccess' });
     assert.deepEqual(store.turn(begun.turn.id).permissionSnapshot, permissionSnapshot);
     assert.equal(store.turn(begun.turn.id).requestedModel, 'gpt-5.6-luna');

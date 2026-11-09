@@ -1,3 +1,5 @@
+import { normalizeRuntimeProxyAddress } from '../shared/proxy-settings';
+
 export type MailProxyResolver = (host: string, port: number) => Promise<string | null>;
 
 /**
@@ -29,10 +31,33 @@ export function mailProxyUrlFromResolution(value: string): string | null {
   return null;
 }
 
+/** Validates the app-level HTTP(S) proxy before using it for an enabled scope. */
+export function mailProxyUrlFromSetting(value: string | null | undefined): string | null {
+  try {
+    return normalizeRuntimeProxyAddress(value) || null;
+  } catch {
+    // Invalid persisted settings must not prevent direct mail connections.
+  }
+  return null;
+}
+
 export async function mailProxyUrlForHost(
   host: string,
   port: number,
-  resolveProxy: (url: string) => Promise<string>
+  resolveProxy: (url: string) => Promise<string>,
+  appProxy?: {
+    enabled: boolean;
+    value: string | null | undefined;
+    label?: string;
+  }
 ): Promise<string | null> {
-  return mailProxyUrlFromResolution(await resolveProxy(`https://${host}:${port}`));
+  if (appProxy?.enabled) {
+    const proxy = mailProxyUrlFromSetting(appProxy.value);
+    if (!proxy) {
+      throw new Error(`${appProxy.label ?? '邮件'}已启用应用代理，但代理地址为空或格式无效`);
+    }
+    return proxy;
+  }
+  const systemProxy = mailProxyUrlFromResolution(await resolveProxy(`https://${host}:${port}`));
+  return systemProxy;
 }

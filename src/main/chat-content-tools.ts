@@ -1,4 +1,5 @@
 import type {
+  AuthorizationMessageContent,
   MediaMessageContent,
   MessageContent,
   MessageFormField,
@@ -14,8 +15,20 @@ export const CHAT_UI_TOOL_NAMESPACE = 'rambo_chat_ui';
 export const CHAT_UI_TOOLS = {
   type: 'namespace',
   name: CHAT_UI_TOOL_NAMESPACE,
-  description: '在用户可见的 Rambo Bot 聊天中展示结构化内容。普通文字继续自由回复；只有需要用户选择时才用问题卡。',
+  description: '在用户可见的 Rambo Bot 聊天中展示结构化内容。普通文字继续自由回复；只有需要用户选择时才用问题卡；需要用户授权某个已连接应用时用授权卡。',
   tools: [{
+    type: 'function',
+    name: 'request_authorization',
+    description: '当前 Bot 缺少某个本机已连接应用的访问授权，但完成用户任务确实需要它时调用。聊天中会出现授权卡，用户点击后立即为当前 Bot 授权，不需要用户再打开应用设置。只能使用上下文提供的待授权连接目录中的 connection_id；用户拒绝后不要重复发起同一请求。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        connection_id: { type: 'string', description: '待授权连接目录中的稳定 connection_id。' },
+        reason: { type: 'string', maxLength: 1_000, description: '向用户说明为什么当前任务需要这个连接，使用简短自然的中文。' }
+      },
+      required: ['connection_id'], additionalProperties: false
+    }
+  }, {
     type: 'function',
     name: 'ask_question',
     description: '当用户需要选择、确认或填写自定义答案时展示可交互问题卡。选项会作为按钮展示；可选允许多选或自定义答案。卡片会保留到用户回答，回答自动回到当前 Bot。不要用普通 Markdown 列表代替需要交互的问题。',
@@ -175,6 +188,29 @@ export function buildQuestionContent(input: unknown): { content: QuestionMessage
     state: 'pending'
   };
   return { content, text: prompt };
+}
+
+export function buildAuthorizationContent(
+  input: unknown,
+  connection: { id: string; displayName: string; accountLabel: string },
+  provider: { id: string; name: string; brandColor: string; monogram: string }
+): { content: AuthorizationMessageContent; text: string } {
+  const value = asRecord(input);
+  if (value.connection_id !== connection.id) throw new Error('授权连接与待授权目录不一致');
+  const reason = asText(value.reason, '授权原因', 1_000);
+  const content: AuthorizationMessageContent = {
+    kind: 'authorization',
+    connectionId: connection.id,
+    providerId: provider.id,
+    providerName: provider.name,
+    brandColor: provider.brandColor,
+    monogram: provider.monogram,
+    connectionName: connection.displayName,
+    account: connection.accountLabel,
+    ...(reason ? { reason } : {}),
+    state: 'pending'
+  };
+  return { content, text: `需要授权：${connection.displayName}（${provider.name}）` };
 }
 
 export function buildDisplayContent(input: unknown): { content: MessageContent; text: string } {

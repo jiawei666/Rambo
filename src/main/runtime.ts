@@ -26,7 +26,6 @@ import {
   type RuntimeTarget
 } from './platform/runtime-target';
 import type {
-  CodexHomeSyncMode,
   CodexHomeSyncState,
   RuntimeProgress,
   RuntimeSource,
@@ -403,10 +402,7 @@ export class CodexRuntime extends EventEmitter {
     this.homeManager = new RuntimeHomeManager(
       nativeHome,
       workingDirectory,
-      () => resolverDeps.ownedThreadIds?.() ?? [],
-      {
-        onState: state => this.emit('homeSync', state)
-      }
+      () => resolverDeps.ownedThreadIds?.() ?? []
     );
     this.realtimeAudioBridge = new RealtimeAudioBridge({
       proxyUrl: resolverDeps.proxyUrl
@@ -417,27 +413,8 @@ export class CodexRuntime extends EventEmitter {
     return this.homeManager.snapshot();
   }
 
-  async setHomeSyncMode(
-    mode: CodexHomeSyncMode,
-    restart = true
-  ): Promise<CodexHomeSyncState> {
-    const state = await this.homeManager.setMode(mode);
-    if (restart && mode === 'follow' && this.state.status === 'ready') {
-      await this.stop();
-      await this.start();
-    }
-    return state;
-  }
-
-  async applyPendingHomeSync(): Promise<CodexHomeSyncState> {
-    const before = this.homeManager.snapshot();
-    if (before.mode !== 'follow' || !before.pending) return before;
-    await this.homeManager.applyPending();
-    if (this.state.status === 'ready') {
-      await this.stop();
-      await this.start();
-    }
-    return this.homeManager.snapshot();
+  async prepareCodexHome(): Promise<string> {
+    return this.homeManager.prepare();
   }
 
   dispose(): void {
@@ -618,7 +595,7 @@ export class CodexRuntime extends EventEmitter {
     }
     let codexHome: string;
     try {
-      codexHome = await this.homeManager.prepare();
+      codexHome = await this.prepareCodexHome();
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error));
       throw error;

@@ -1,6 +1,6 @@
 ---
 name: rambo-release
-description: 通过 GitHub Actions 的 macOS ARM64 与 Windows x64 原生 runner 构建 Rambo，两个工作流分别把正式产物直接上传到 Draft Release；本机不执行发布构建、不下载 Windows 产物，只创建 draft、核对资产清单与 API digest、临时下载 macOS 产物更新 /Applications/Rambo.app，最后发布 draft。用于用户明确要求打包、双平台构建、发布或创建 GitHub Release；不用于普通开发构建或仅本地预览。
+description: 通过 GitHub Actions 的 macOS ARM64 与 Windows x64 原生 runner 构建 Rambo，两个工作流分别把正式产物直接上传到 Draft Release；本机不执行发布构建、不下载 Windows 产物，只创建 draft、核对资产清单与 API digest、临时下载 macOS 产物更新 /Applications/Rambo.app，最后发布 draft，并在全部发布验证成功后清理本机旧版本与构建产物。用于用户明确要求打包、双平台构建、发布或创建 GitHub Release；不用于普通开发构建或仅本地预览。
 ---
 
 # 打包并发布 Rambo
@@ -156,6 +156,44 @@ codesign --verify --deep --strict /Applications/Rambo.app
 
 确认 tag 指向本次发布 commit、Release 非 draft、六个资产均存在，并且本机安装版本匹配。最终回复给出 Release URL、tag、commit、三个分发文件名、三个 SHA-256 和本机安装路径；Windows 只报告原生 CI 构建结果和上传结果，不宣称真机验收通过。
 
+### 6. 发布成功后的本机清理
+
+只有在以下条件全部满足后才能执行销毁性清理：
+
+- macOS 与 Windows workflow 均成功，且都对应本次目标 commit。
+- Draft Release 六个正式资产齐全，名称、大小与 GitHub API digest/size 已核对。
+- macOS Release ZIP 已临时下载并校验 SHA-256，`/Applications/Rambo.app` 已安装，版本、Bundle ID 和签名验证通过。
+- `gh release edit v<version> --draft=false` 已完成，最终 Release、tag、六个资产和本机安装版本均已回查。
+- 最终回复所需的 Release URL、commit、资产名和 SHA-256 已先记录下来。
+
+确认成功后，使用受控脚本清理仓库 `dist/` 下已知的本机发版构建产物；不要直接使用 `rm -rf`：
+
+```sh
+node .agents/skills/rambo-release/scripts/cleanup-release.mjs \
+  --release v<version> \
+  --dry-run
+node .agents/skills/rambo-release/scripts/cleanup-release.mjs \
+  --release v<version>
+```
+
+脚本只删除仓库 `dist/` 的固定 allowlist：
+
+- `dist/release/` 中当前版本和全部旧版本目录。
+- `dist/mac`、`dist/mac-arm64`、`dist/mac-x64`、`dist/mac-universal`、`dist/win-unpacked`、`dist/win-arm64-unpacked`。
+- `dist/` 根目录下匹配正式命名规则的 Rambo Windows 安装包、portable ZIP、macOS ZIP、SHA-256 和 blockmap。
+- `dist/` 根目录的 `.DS_Store`、`builder-debug.yml`、`builder-effective-config.yaml`、`latest*.yml`。
+
+未知文件保留并在脚本输出中列出。清理后不得保留当前版本或旧版本的 `.app`、安装包、ZIP、解压目录或临时副本，也不创建任何备份。
+
+以下内容不属于清理范围，任何情况下都不能删除或覆盖：
+
+- 活动的 `/Applications/Rambo.app`。
+- `~/Library/Application Support/Rambo`、用户数据、日志、记忆、附件和 Bot/Routine 数据。
+- `acceptance-runs/`、验收证据、Git commit/tag 和 GitHub Releases。
+- 仓库 `dist/` 之外的用户文件。
+
+发布失败、安装失败、最终回查失败或任一 workflow/资产不完整时，不执行上述清理；保留失败现场供诊断。临时下载目录仍按前面的 `trap` 规则清理。清理完成后检查 `/Applications/Rambo.app` 仍存在且版本与已发布版本一致，再报告清理结果。
+
 ## 发布说明
 
 Release notes 至少包含：
@@ -179,3 +217,4 @@ Release notes 至少包含：
 - macOS 安装失败：停止公开 Draft Release，报告构建、安装和 draft 的实际状态。
 - 推送或上传失败：保留本地提交和远端真实状态；不要重复创建公开 Release，不要移动已发布 tag。
 - 已公开后才发现单平台缺失：明确报告发布不完整并等待用户决定，不得补写成完整成功。
+- 发布成功后的清理失败：报告实际未删除或已删除的路径，不创建应用备份；修复路径或权限问题后可重新运行同一受控脚本，不得改用宽泛删除命令。

@@ -69,6 +69,47 @@ async function expectGrokAttachmentCard(row) {
   expect(style).toEqual({ borderRadius: '22px', padding: '16px', display: 'grid' });
 }
 
+test('F06 HTTPS Markdown document links remain clickable external links', async ({ electron, acceptanceRun }) => {
+  const page = electron.page;
+  await page.getByLabel('创建 Bot').click();
+  await page.getByLabel('Bot 名称').fill('External Markdown Link Lab');
+  await page.getByRole('dialog', { name: '创建新 Bot' }).getByRole('button', { name: '创建', exact: true }).click();
+  await expect(page.getByPlaceholder('发消息给 External Markdown Link Lab')).toBeVisible();
+
+  const { botId, chatId } = await page.evaluate(async name => {
+    const snapshot = await window.rambo.snapshot();
+    const bot = snapshot.bots.find(item => item.name === name);
+    const chat = snapshot.chats.find(item => item.botId === bot?.id && !item.groupChatId && !item.archived);
+    if (!bot || !chat) throw new Error('验收 Bot 或私聊未创建');
+    return { botId: bot.id, chatId: chat.id };
+  }, 'External Markdown Link Lab');
+
+  const externalMarkdownUrl = 'https://github.com/can4hou6joeng4/boss-agent-cli/blob/master/docs/platform-risk.md';
+  let externalMarkdownFetches = 0;
+  await page.route(externalMarkdownUrl, async route => {
+    externalMarkdownFetches += 1;
+    await route.abort();
+  });
+  const externalMarkdown = await injectMarkdown(page, chatId, `[平台风险说明](${externalMarkdownUrl})`);
+  const externalMarkdownRow = page.locator(`[data-message-id="${externalMarkdown.id}"]`);
+  const externalMarkdownLink = externalMarkdownRow.getByRole('link', { name: '平台风险说明' });
+  await expect(externalMarkdownLink).toHaveAttribute('href', externalMarkdownUrl);
+  await expect(externalMarkdownLink).toHaveAttribute('target', '_blank');
+  await expect(externalMarkdownRow.locator('[data-attachment-card]')).toHaveCount(0);
+  expect(externalMarkdownFetches).toBe(0);
+
+  const workspace = join(acceptanceRun.profile, 'bots', botId, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(join(workspace, 'local-doc.md'), '# 本机 Markdown\n\n本机文件仍能预览。', 'utf8');
+  const localMarkdown = await injectMarkdown(page, chatId, `[本机文档](${join(workspace, 'local-doc.md')})`);
+  const localMarkdownRow = page.locator(`[data-message-id="${localMarkdown.id}"]`);
+  await expect(localMarkdownRow.locator('[data-attachment-card]')).toBeVisible();
+  await localMarkdownRow.getByRole('button', { name: '预览' }).click();
+  const localMarkdownViewer = page.getByRole('dialog', { name: 'local-doc.md预览' });
+  await expect(localMarkdownViewer.locator('.transcript-markdown h1')).toHaveText('本机 Markdown');
+  await localMarkdownViewer.getByRole('button', { name: '关闭文件预览' }).click();
+});
+
 test('F05/F06 Electron displays local files inside and outside the workspace', async ({ electron, acceptanceRun }) => {
   test.setTimeout(90_000);
   const page = electron.page;

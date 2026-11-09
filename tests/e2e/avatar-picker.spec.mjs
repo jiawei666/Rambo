@@ -9,6 +9,7 @@ async function headFollowTransform(avatar) {
 }
 
 async function expectFollowsPointer(page, avatar, region) {
+  await region.scrollIntoViewIfNeeded();
   const box = await region.boundingBox();
   if (!box) throw new Error('找不到头像跟随区域');
   await page.mouse.move(box.x + 4, box.y + box.height / 2, { steps: 4 });

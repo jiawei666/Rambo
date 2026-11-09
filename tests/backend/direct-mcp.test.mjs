@@ -11,6 +11,7 @@ const sourceRoot = new URL('../../src/', import.meta.url);
 const directMcpSource = readFileSync(new URL('main/direct-mcp.ts', sourceRoot), 'utf8');
 const storeSource = readFileSync(new URL('main/store.ts', sourceRoot), 'utf8');
 const contractsSource = readFileSync(new URL('shared/contracts.ts', sourceRoot), 'utf8');
+const proxySettingsSource = readFileSync(new URL('shared/proxy-settings.ts', sourceRoot), 'utf8');
 const robotAvatarSource = readFileSync(new URL('shared/robot-avatar.ts', sourceRoot), 'utf8');
 const scheduleSource = readFileSync(new URL('main/routine-schedule.ts', sourceRoot), 'utf8');
 
@@ -25,8 +26,10 @@ const files = {
   'store.mjs': compiled(storeSource)
     .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
     .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
+    .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'")
     .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'"),
   'contracts.mjs': compiled(contractsSource),
+  'proxy-settings.mjs': compiled(proxySettingsSource),
   'robot-avatar.mjs': compiled(robotAvatarSource),
   'routine-schedule.mjs': compiled(scheduleSource)
 };

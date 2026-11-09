@@ -245,6 +245,12 @@ test('sidebar primary action guides setup until the runtime, account and model a
     assert.equal(sidebarPrimaryAction({
       runtimeStatus: 'ready',
       executionDefaultsReady: true,
+      modelSource: { ...localSource, standardProviderConfigured: true },
+      accountReady: false
+    }).kind, 'create');
+    assert.equal(sidebarPrimaryAction({
+      runtimeStatus: 'ready',
+      executionDefaultsReady: true,
       modelSource: {
         kind: 'manualApi',
         manual: { serviceName: 'Local', baseUrl: 'http://127.0.0.1:3000', model: 'gpt-5' },

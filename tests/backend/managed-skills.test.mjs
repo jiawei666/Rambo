@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -67,5 +67,46 @@ test('managed skills reject a missing root SKILL.md and symbolic links', async (
     await assert.rejects(library.import(missing), /SKILL\.md/u);
     await assert.rejects(library.import(linked), /符号链接/u);
     assert.deepEqual(await library.list(), []);
+  });
+});
+
+test('legacy Skill migration keeps the old resource ID when a Codex Skill has the same folder name', async () => {
+  await withLibrary(async ({ ManagedSkillLibrary }, directory) => {
+    const userData = join(directory, 'profile');
+    const legacy = join(userData, 'skill-library', 'shared');
+    const codex = join(userData, 'codex-home', 'skills', 'shared');
+    createSkill(legacy, 'Legacy Shared Skill', 'The existing Rambo library version.');
+    createSkill(codex, 'Codex Shared Skill', 'The imported Codex version.');
+
+    const library = new ManagedSkillLibrary(userData);
+    await library.migrateLegacyRoot();
+
+    const skills = await library.list();
+    assert.deepEqual(skills.map(skill => skill.id).sort(), ['shared', 'shared--codex']);
+    assert.equal(readFileSync(join(library.root, 'shared', 'SKILL.md'), 'utf8')
+      .includes('The existing Rambo library version.'), true);
+    assert.equal(readFileSync(join(library.root, 'shared--codex', 'SKILL.md'), 'utf8')
+      .includes('The imported Codex version.'), true);
+    assert.equal(existsSync(join(userData, 'skill-library')), false);
+  });
+});
+
+test('initial Codex Skill import retains existing resource IDs and keeps distinct contents', async () => {
+  await withLibrary(async ({ ManagedSkillLibrary }, directory) => {
+    const userData = join(directory, 'profile');
+    const legacy = join(userData, 'skill-library', 'shared');
+    const codex = join(directory, 'native', 'skills', 'shared');
+    createSkill(legacy, 'Existing Rambo Skill', 'Existing Rambo authorized Skill.');
+    createSkill(codex, 'Native Codex Skill', 'Imported Codex Skill.');
+    const library = new ManagedSkillLibrary(userData);
+
+    await library.migrateLegacyRoot();
+    const imported = await library.importNativeRoots([{ path: join(directory, 'native', 'skills'), source: 'codex' }]);
+
+    assert.equal(imported.length, 1);
+    assert.equal(readFileSync(join(library.root, 'shared', 'SKILL.md'), 'utf8')
+      .includes('Existing Rambo authorized Skill.'), true);
+    assert.equal(readFileSync(join(library.root, 'shared--codex', 'SKILL.md'), 'utf8')
+      .includes('Imported Codex Skill.'), true);
   });
 });

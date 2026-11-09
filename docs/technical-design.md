@@ -46,7 +46,7 @@ flowchart TD
 
 ## 2. 打包、启动与退出
 
-2026-10-29 当前方案按 [Q196](decision-followups.md#q196)：Rambo 使用自己的运行时管理/下载组件和独立 `codex-home`，不再软链接本机 Codex 二进制、认证或配置。首次检测到本机 Codex Home 且 Rambo 尚未形成独立配置时，默认复制白名单快照（配置、文件认证、Skills、Plugins、rules 等），不复制会话、归档、SQLite 状态库、日志或缓存；随后默认“持续跟随本机”，也可切换“保持独立”。持续跟随只做本机 Codex → Rambo 的单向复制，执行中轮次结束后再原子替换并重启运行时。显式覆盖 `CODEX_HOME`、`CODEX_SQLITE_HOME` 与 `sqlite_home`，避免状态写回本机目录。Keychain/auto 认证没有可复制文件时明确报错并要求独立登录；旧会话仍只按 Store 登记的 thread ID 迁移，保留源文件作回退。
+当前方案按 [Q243](decision-followups.md#q243) 与 [Q251](decision-followups.md#q251)：Rambo 使用自己的运行时管理/下载组件和独立 `codex-home`，不软链接本机 Codex 二进制、认证或配置。首次检测到本机 Codex Home 且 Rambo 尚未形成独立配置时，一次性复制白名单快照（配置、文件认证、Skills、Plugins、rules 等），不复制会话、归档、SQLite 状态库、日志或缓存；此后不监听、轮询或持续跟随本机。显式覆盖 `CODEX_HOME`、`CODEX_SQLITE_HOME` 与 `sqlite_home`，避免状态写回本机目录。Keychain/auto 认证没有可复制文件时明确报错并要求独立登录；旧会话仍只按 Store 登记的 thread ID 迁移，保留源文件作回退。
 
 ### 包中是什么
 
@@ -73,11 +73,12 @@ Rambo 的内置运行时位于 `<Resources>/runtime/codex/<version>/`，用户�
 
 ### 复用与覆盖
 
-- 按 A03 使用 Rambo 自己的 `codex-home`。首次检测到本机 Codex Home 时复制白名单快照；默认“持续跟随本机”只单向复制配置、文件认证和资源，不复制会话或状态数据库。
+- 按 A03 使用 Rambo 自己的 `codex-home`。首次检测到本机 Codex Home 时复制一次白名单快照；之后 Rambo 与该目录完全独立，不复制本机后续变化。
 - 只把 Rambo 自身的设置写入产品数据库。Bot 模型、当前线程权限和可用工具集合以线程参数/进程参数覆盖，不为了一个 Bot 改写全局配置。
 - 用户在应用里明确新增的共享 MCP 或导入的共享 Skill 属于已批准的资源管理动作；其写入范围需在资源适配层集中处理。
-- 独立副本意味着 Rambo 登录/配置变化默认不影响本机 Codex；持续跟随模式下本机是白名单资源来源，Rambo 内修改可能被下一次同步覆盖，切换“保持独立”后才停止跟随。
-- 手动 API 只把非敏感的顶层 `model`、`model_provider` 与 `[model_providers.rambo_manual]` 写入 Rambo 自己的 `codex-home/config.toml`；写入前保存基础配置，切回本机配置时恢复，原文件不存在时记录标记并在切回时删除临时配置。API Key 不进入 TOML、SQLite 设置快照或日志，只通过子进程环境变量注入。账号页先选择“持续跟随本机 / 独立配置”：持续跟随只使用本机副本；独立配置内再选择本机副本、ChatGPT 或手动 API，同一时间只有一个来源生效。账号身份绑定当前来源，只有来源真实可用时才标记“当前生效”，空的本机配置显示“尚未可用”；连接测试只作用于当前来源，失败不自动切换。
+- 独立副本意味着 Rambo 登录/配置变化不影响本机 Codex，本机后续变化也不会覆盖 Rambo。
+- 手动 API 只把非敏感的顶层 `model`、`model_provider` 与 `[model_providers.rambo_manual]` 写入 Rambo 自己的 `codex-home/config.toml`；写入前保存基础配置，切回其他标准配置时恢复，原文件不存在时记录标记并在切回时删除临时配置。API Key 不进入 TOML、SQLite 设置快照或日志，只通过子进程环境变量注入。
+- Rambo 启动时只读取标准 TOML 的顶层 `model_provider`。Rambo 自有手动 Provider 按保存配置协调；其他现有标准 Provider 原样保留，不能被 Rambo 的旧设置覆盖。外部 Provider 的专属 bridge、状态、写入和恢复都留在对应工具中；Rambo 不读取 Magpie `magpie.json` 或任何同类专属文件。Command-backed auth 由 Provider 配置从工具私有文件读取秘密，Rambo 的通用配置详情只读取并展示脱敏后的 `config/read` 结果。模型配置变化后重启 Rambo 生效。
 
 ### 三层身份
 
@@ -165,7 +166,7 @@ Codex 自带记忆与本产品记忆的衔接需核实，确保真实写入可�
 
 默认成果写 Bot 工作区，明确指定外部路径则按指令使用原路径，不复制整项目。只回收无引用且符合清理规则的应用托管内容；永久删除 Bot 不扫外部目录。图片/PDF/文本/CSV/音视频预览和其他格式交系统应用按 F05 验收。
 
-应用 Logo 使用 `assets/branding/app-logo-source.png`；派生系统图标只做尺寸与容器适配。Bot 头像仍独立，生图能力列入后面的阻塞项，不以占位图片冒充模型生图通过。
+应用 Logo 使用由 `assets/branding/app-logo-source.png` 生成的 `assets/branding/app-logo-rounded.png`；仅加透明圆角遮罩，Dock、应用界面与 macOS/Windows 安装图标保持一致。Bot 头像仍独立，生图能力列入后面的阻塞项，不以占位图片冒充模型生图通过。
 
 ## 6. 群聊、协作与调度
 

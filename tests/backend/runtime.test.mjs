@@ -47,6 +47,10 @@ async function withRuntime(run) {
     compileTypeScriptModule(new URL('../../src/main/runtime-home.ts', import.meta.url))
   );
   writeFileSync(
+    join(directory, 'managed-skills.mjs'),
+    compileTypeScriptModule(new URL('../../src/main/managed-skills.ts', import.meta.url))
+  );
+  writeFileSync(
     join(directory, 'realtime-audio-bridge.mjs'),
     compileTypeScriptModule(new URL('../../src/main/realtime-audio-bridge.ts', import.meta.url))
   );
@@ -516,9 +520,10 @@ test('Runtime copies native config into an independent home and keeps the app-se
       assert.ok(call.args.includes(`sqlite_home=${JSON.stringify(join(profile, 'codex-home'))}`));
       assert.equal(readFileSync(join(profile, 'codex-home/config.toml'), 'utf8'), 'model="native-model"');
       assert.equal(readFileSync(join(profile, 'codex-home/auth.json'), 'utf8'), '{"auth_mode":"chatgpt"}');
-      assert.equal(runtime.homeSyncState.mode, 'follow');
+      assert.equal(runtime.homeSyncState.mode, 'independent');
       assert.equal(runtime.homeSyncState.sourceDetected, true);
       assert.ok(runtime.homeSyncState.lastSyncedAt);
+      assert.equal(typeof runtime.setHomeSyncMode, 'undefined');
     } finally {
       await runtime.stop();
       runtime.dispose();

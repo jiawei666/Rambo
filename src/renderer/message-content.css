@@ -169,6 +169,39 @@
 .transcript-voice-body p { margin: 4px 0; }
 .transcript-voice-body audio { width: 100%; min-height: 38px; margin-top: 5px; }
 .transcript-question-card, .transcript-result-card { width: min(100%, 670px); padding: 18px; border: 1px solid var(--border-subtle); border-radius: 20px; background: var(--bg-elevated); box-shadow: 0 2px 8px var(--shadow-soft); }
+.transcript-authorization-card { --auth-accent: #0f8c7c; width: min(100%, 670px); padding: 18px; border: 1px solid var(--border-subtle); border-radius: 20px; background: var(--bg-elevated); box-shadow: 0 2px 8px var(--shadow-soft); }
+@media (prefers-color-scheme: dark) { .transcript-authorization-card { --auth-accent: #6bd8c7; } }
+.transcript-authorization-card header { display: flex; align-items: center; gap: 11px; }
+.transcript-authorization-card header div { min-width: 0; }
+.transcript-authorization-card h3 { margin: 2px 0 0; font-size: 17px; font-weight: 650; line-height: 1.35; }
+.transcript-authorization-card header p { margin: 0; color: var(--text-tertiary); font-size: 11px; }
+.transcript-authorization-icon { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 13px; font-size: 14px; }
+.transcript-authorization-icon:not(.connector-icon-has-logo) {
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background:
+    radial-gradient(circle at 30% 20%, #ffffff42, transparent 44%),
+    var(--connector-brand, #555);
+  box-shadow: inset 0 0 0 .5px #ffffff38, 0 3px 9px color-mix(in srgb, var(--connector-brand, #555) 24%, transparent);
+  font-weight: 650;
+}
+.transcript-authorization-icon.connector-icon-has-logo { flex-basis: 44px; width: 44px; height: 44px; }
+.transcript-authorization-icon .connector-provider-logo { width: 40px; height: 40px; }
+.transcript-authorization-details { display: grid; gap: 0; margin: 14px 0 0; }
+.transcript-authorization-details > div { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.transcript-authorization-details dt { color: var(--text-tertiary); }
+.transcript-authorization-details dd { margin: 0; font-weight: 550; text-align: right; overflow-wrap: anywhere; }
+.transcript-authorization-reason { margin: 12px 0 0; color: var(--text-secondary); }
+.transcript-authorization-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.transcript-authorization-actions button { display: inline-flex; min-height: 32px; align-items: center; justify-content: center; padding: 0 13px; border: 1px solid var(--border-primary); border-radius: 8px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; transition: background .14s ease, border-color .14s ease, opacity .14s ease; }
+.transcript-authorization-actions button.is-primary { border-color: transparent; background: var(--bg-primary); color: var(--text-inverted); }
+.transcript-authorization-actions button.is-primary:hover:not(:disabled) { background: var(--bg-primary-hover); }
+.transcript-authorization-actions button:not(.is-primary):hover:not(:disabled) { background: var(--bg-hover); }
+.transcript-authorization-actions button:disabled { opacity: .48; cursor: default; }
+.transcript-authorization-actions small { flex-basis: 100%; color: var(--text-tertiary); font-size: 11px; }
+.transcript-authorization-card .transcript-question-resolved { margin-top: 14px; background: color-mix(in srgb, var(--auth-accent) 9%, var(--bg-elevated)); }
+.transcript-authorization-card .transcript-question-resolved > span { color: var(--auth-accent); }
 .transcript-question-card h3, .transcript-result-card h3, .transcript-visualization h3 { margin: 0 0 13px; font-size: 16px; font-weight: 650; line-height: 1.4; }
 .transcript-question-options { display: grid; gap: 7px; }
 .transcript-question-option { display: flex; width: 100%; min-height: 56px; align-items: center; gap: 11px; padding: 8px 12px; border: 1px solid transparent; border-radius: 16px; background: var(--bg-secondary); color: var(--text-primary); text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease; }

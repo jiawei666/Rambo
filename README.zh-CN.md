@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/jiawei666/Rambo/releases/latest">
-    <img src="assets/branding/app-logo-source.png" width="168" height="168" alt="Rambo Logo" style="border-radius: 36px;" />
+    <img src="assets/branding/app-logo-rounded.png" width="168" height="168" alt="Rambo Logo" />
   </a>
 </p>
 
@@ -213,7 +213,7 @@ Rambo 使用独立的 Codex Home 保存自己的配置、认证、会话和状�
 
 ## 项目状态
 
-当前版本为 **v0.1.12**。验收目录包含 **159 条产品规则**、**291 个局部测试案例**、**163 个可执行案例**和 **128 个明确缺口**。
+当前版本为 **v0.1.13**。验收目录包含 **164 条产品规则**、**302 个局部测试案例**、**170 个可执行案例**和 **132 个明确缺口**。
 
 当前 Release 同时提供 macOS arm64 和 Windows x64。微信消息读取已在两个平台实测稳定；其他 Windows 专属流程仍需分别完成对应平台的验收证据。
 

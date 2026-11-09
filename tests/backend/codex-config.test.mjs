@@ -91,6 +91,56 @@ test('manual provider config can be removed without changing unrelated config', 
   ].join('\n'));
 });
 
+test('standard provider detection reads only the top-level selector', () => {
+  const source = [
+    '# standard Codex config',
+    'model = "external-model"',
+    "model_provider = 'external-provider'",
+    '',
+    '[projects."/tmp/project"]',
+    'model_provider = "ignored-project-value"'
+  ].join('\n');
+
+  assert.equal(module.configuredModelProviderId(source), 'external-provider');
+  assert.equal(module.configuredModelProviderId('model = "openai-default"'), null);
+  assert.equal(
+    module.configuredModelProviderId('model_provider = "rambo_manual"\n'),
+    module.RAMBO_MANUAL_PROVIDER_ID
+  );
+});
+
+test('selecting a standard provider preserves provider definitions and unrelated TOML', () => {
+  const source = [
+    '# user config',
+    'model = "external-model"',
+    'model_provider = "external-provider" # plugin-owned selector',
+    '',
+    '[model_providers.external-provider]',
+    'name = "External Provider"',
+    '',
+    '[projects."/tmp/project"]',
+    'model_provider = "project-value"',
+    'trust_level = "trusted"'
+  ].join('\n');
+
+  const selected = module.selectConfiguredModelProvider(source, 'openai');
+  assert.match(selected, /^# user config\nmodel = "external-model"\nmodel_provider = "openai"/u);
+  assert.match(selected, /\[model_providers\.external-provider\]\nname = "External Provider"/u);
+  assert.match(selected, /\[projects\."\/tmp\/project"\]\nmodel_provider = "project-value"\ntrust_level = "trusted"/u);
+  assert.equal(module.selectConfiguredModelProvider(selected, null), [
+    '# user config',
+    'model = "external-model"',
+    '',
+    '[model_providers.external-provider]',
+    'name = "External Provider"',
+    '',
+    '[projects."/tmp/project"]',
+    'model_provider = "project-value"',
+    'trust_level = "trusted"',
+    ''
+  ].join('\n'));
+});
+
 test('file operations preserve the base config and restore it on clear', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rambo-codex-config-test-'));
   const configPath = join(root, 'codex-home', 'config.toml');

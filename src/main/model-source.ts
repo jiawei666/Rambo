@@ -67,7 +67,7 @@ export function modelSourceStateFrom(
 }
 
 export function needsInitialSetup(
-  snapshot: Pick<ModelSourceState, 'kind' | 'manual' | 'hasApiKey'> & {
+  snapshot: Pick<ModelSourceState, 'kind' | 'manual' | 'hasApiKey' | 'standardProviderConfigured'> & {
     runtimeReady: boolean;
     executionDefaultsReady: boolean;
     accountReady?: boolean | null;
@@ -76,6 +76,9 @@ export function needsInitialSetup(
   if (!snapshot.runtimeReady) return true;
   if (snapshot.kind === 'manualApi') {
     return !(snapshot.manual.baseUrl && snapshot.manual.model && snapshot.hasApiKey);
+  }
+  if (snapshot.kind === 'local' && snapshot.standardProviderConfigured) {
+    return !snapshot.executionDefaultsReady;
   }
   if (snapshot.accountReady === false) return true;
   return !snapshot.executionDefaultsReady;

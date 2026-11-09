@@ -10,6 +10,7 @@ const storeSource = readFileSync(new URL('../../src/main/store.ts', import.meta.
 const scheduleSource = readFileSync(new URL('../../src/main/routine-schedule.ts', import.meta.url), 'utf8');
 const contractsSource = readFileSync(new URL('../../src/shared/contracts.ts', import.meta.url), 'utf8');
 const robotAvatarSource = readFileSync(new URL('../../src/shared/robot-avatar.ts', import.meta.url), 'utf8');
+const proxySettingsSource = readFileSync(new URL('../../src/shared/proxy-settings.ts', import.meta.url), 'utf8');
 const loginItemSource = readFileSync(new URL('../../src/main/login-item.ts', import.meta.url), 'utf8');
 const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext };
 
@@ -23,10 +24,13 @@ async function withModules(run) {
     ts.transpileModule(contractsSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(join(directory, 'robot-avatar.mjs'),
     ts.transpileModule(robotAvatarSource, { compilerOptions }).outputText, { mode: 0o600 });
+  writeFileSync(join(directory, 'proxy-settings.mjs'),
+    ts.transpileModule(proxySettingsSource, { compilerOptions }).outputText, { mode: 0o600 });
   writeFileSync(storePath, ts.transpileModule(storeSource, { compilerOptions }).outputText
     .replaceAll("from './routine-schedule'", "from './routine-schedule.mjs'")
     .replaceAll("from '../shared/contracts'", "from './contracts.mjs'")
-    .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'"), { mode: 0o600 });
+    .replaceAll("from '../shared/robot-avatar'", "from './robot-avatar.mjs'")
+    .replaceAll("from '../shared/proxy-settings'", "from './proxy-settings.mjs'"), { mode: 0o600 });
   const compiledLoginItem = ts.transpileModule(loginItemSource, { compilerOptions }).outputText
     .replaceAll("from './store'", "from './store.mjs'");
   writeFileSync(loginItemPath, compiledLoginItem, { mode: 0o600 });

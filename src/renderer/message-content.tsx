@@ -18,7 +18,9 @@ import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
 import './message-content.css';
 import { isMessageContent } from '../shared/contracts';
+import { ConnectorProviderIcon } from './connector-brand';
 import type {
+  AuthorizationMessageContent,
   GroupMessage,
   Message,
   MessageContent,
@@ -41,6 +43,7 @@ export function MessageContentView({ message }: { message: TranscriptMessage }) 
   if (!content || !isMessageContent(content)) return <MarkdownBody messageId={message.id} text={message.text} />;
   switch (content.kind) {
     case 'question': return <QuestionCard messageId={message.id} content={content} />;
+    case 'authorization': return <AuthorizationCard messageId={message.id} content={content} />;
     case 'card': return <ResultCard messageId={message.id} content={content} />;
     case 'media': return <>
       {content.generated && message.text.trim() && <MarkdownBody messageId={message.id} text={message.text} />}
@@ -116,7 +119,7 @@ function MarkdownLink({ messageId, href, title, children, ...props }: {
   const type = linkedMediaType(href);
   if (type === 'image') return <ResolvedLinkedImage messageId={messageId} source={href} alt={plainText(children)} title={title} />;
   if (type === 'audio' || type === 'video') return <ResolvedLinkedMedia messageId={messageId} source={href} type={type} title={title || (type === 'audio' ? '音频' : '视频')} />;
-  if (type === 'file' || !safeHttpUrl(href)) return <FilePreview messageId={messageId} url={href} title={title || '附件'} />;
+  if (!safeHttpUrl(href)) return <FilePreview messageId={messageId} url={href} title={title || '附件'} />;
   return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>;
 }
 
@@ -416,6 +419,60 @@ function QuestionCard({ messageId, content }: { messageId: string; content: Ques
       ) : (
         <div className="transcript-question-resolved"><span>已回答</span><p>{content.answer}</p></div>
       )}
+    </section>
+  );
+}
+
+function AuthorizationCard({ messageId, content }: { messageId: string; content: AuthorizationMessageContent }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const pending = content.state === 'pending';
+  const decide = async (decision: 'approve' | 'deny') => {
+    if (!pending || busy) return;
+    setBusy(true); setError('');
+    try { await window.rambo.resolveAuthorization(messageId, decision); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '授权操作失败'); }
+    finally { setBusy(false); }
+  };
+  const resolvedLabel = content.state === 'approved'
+    ? '已授权'
+    : content.state === 'denied'
+      ? '未授权'
+      : '暂不可用';
+  return (
+    <section className={`transcript-authorization-card${pending ? '' : ' is-resolved'}`} aria-label="连接授权请求">
+      <header>
+        <ConnectorProviderIcon
+          provider={{ id: content.providerId, brandColor: content.brandColor, monogram: content.monogram }}
+          className="transcript-authorization-icon"
+        />
+        <div>
+          <p>需要连接授权</p>
+          <h3>{content.providerName}</h3>
+        </div>
+      </header>
+      <dl className="transcript-authorization-details">
+        <div><dt>连接</dt><dd>{content.connectionName}</dd></div>
+        <div><dt>账号</dt><dd>{content.account}</dd></div>
+      </dl>
+      {content.reason && <p className="transcript-authorization-reason">{content.reason}</p>}
+      {pending ? (
+        <div className="transcript-authorization-actions">
+          <button type="button" className="is-primary" disabled={busy} onClick={() => void decide('approve')}>
+            {busy ? '处理中…' : '授权给当前 Bot'}
+          </button>
+          <button type="button" disabled={busy} onClick={() => void decide('deny')}>暂不授权</button>
+          <small>授权只影响当前 Bot，可随时在连接设置中撤销。</small>
+        </div>
+      ) : (
+        <div className="transcript-question-resolved" role="status">
+          <span>{resolvedLabel}</span>
+          <p>{content.state === 'approved'
+            ? `已允许当前 Bot 使用「${content.connectionName}」。`
+            : '当前 Bot 仍无法使用这个连接。'}</p>
+        </div>
+      )}
+      {error && <p className="transcript-card-error" role="alert">{error}</p>}
     </section>
   );
 }
@@ -1009,13 +1066,12 @@ function safeHttpUrl(value: string): string | null {
   } catch { return null; }
 }
 
-function linkedMediaType(href?: string): 'image' | 'audio' | 'video' | 'file' | null {
+function linkedMediaType(href?: string): 'image' | 'audio' | 'video' | null {
   if (!href) return null;
   const path = href.split(/[?#]/u)[0].toLocaleLowerCase();
   if (/\.(png|jpe?g|gif|webp|avif)$/u.test(path)) return 'image';
   if (/\.(mp3|m4a|wav|ogg|aac|flac|opus)$/u.test(path)) return 'audio';
   if (/\.(mp4|webm|mov|m4v|ogv)$/u.test(path)) return 'video';
-  if (/\.(pdf|docx?|xlsx?|pptx?|zip|csv|json|txt|md|markdown)$/u.test(path)) return 'file';
   return null;
 }
 

@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/jiawei666/Rambo/releases/latest">
-    <img src="assets/branding/app-logo-source.png" width="168" height="168" alt="Rambo logo" style="border-radius: 36px;" />
+    <img src="assets/branding/app-logo-rounded.png" width="168" height="168" alt="Rambo logo" />
   </a>
 </p>
 
@@ -215,7 +215,7 @@ Rambo uses an isolated Codex Home for its own configuration, authentication, ses
 
 ## Project status
 
-The current release is **v0.1.12**. The acceptance catalog tracks **159 product rules**, **291 local test cases**, **163 executable cases**, and **128 explicit implementation gaps**.
+The current release is **v0.1.13**. The acceptance catalog tracks **164 product rules**, **302 local test cases**, **170 executable cases**, and **132 explicit implementation gaps**.
 
 The release ships for macOS arm64 and Windows x64. Direct WeChat message reading has been tested for stable use on both platforms; other Windows-specific workflows still require their own platform acceptance evidence.
 

@@ -4,32 +4,58 @@
   "checks": {
     "typecheck": {
       "label": "TypeScript 类型检查",
-      "command": ["npm", "run", "typecheck"],
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
       "cost": 10
     },
     "backend-unit": {
       "label": "相关后端测试",
-      "command": ["node", "--test", "{targets}"],
+      "command": [
+        "node",
+        "--test",
+        "{targets}"
+      ],
       "cost": 20
     },
     "acceptance-structure": {
       "label": "验收目录与台账结构",
-      "command": ["npm", "run", "test:catalog"],
+      "command": [
+        "npm",
+        "run",
+        "test:catalog"
+      ],
       "cost": 15
     },
     "acceptance-tests": {
       "label": "验收流程测试",
-      "command": ["npm", "run", "test:acceptance"],
+      "command": [
+        "npm",
+        "run",
+        "test:acceptance"
+      ],
       "cost": 30
     },
     "electron-e2e": {
       "label": "相关 Electron E2E",
-      "command": ["npm", "run", "test:e2e", "--", "{targets}"],
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "{targets}"
+      ],
       "cost": 100
     },
     "build": {
       "label": "Electron 构建",
-      "command": ["npm", "run", "build"],
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
       "cost": 40
     }
   },
@@ -44,15 +70,28 @@
         ".github/workflows/windows-build.yml",
         "config/runtime-targets.json"
       ],
-      "checks": ["backend-unit", "acceptance-structure"],
-      "backendTargets": ["tests/backend/release-package.test.mjs"],
+      "checks": [
+        "backend-unit",
+        "acceptance-structure"
+      ],
+      "backendTargets": [
+        "tests/backend/release-package.test.mjs"
+      ],
       "reason": "两个平台均由对应原生 Actions runner 构建并直传 Draft Release；本机不执行发布构建，也不下载 Windows 产物"
     },
     {
       "id": "docs-decisions",
       "label": "产品决策、验收文档与证据",
-      "paths": ["AGENTS.md", "README.md", "README.zh-CN.md", "docs/**", ".agents/skills/**"],
-      "checks": ["acceptance-structure"],
+      "paths": [
+        "AGENTS.md",
+        "README.md",
+        "README.zh-CN.md",
+        "docs/**",
+        ".agents/skills/**"
+      ],
+      "checks": [
+        "acceptance-structure"
+      ],
       "reason": "文档或规则结构变化必须保持决策、矩阵、计划和目录一致"
     },
     {
@@ -64,14 +103,21 @@
         "scripts/verify.mjs",
         "scripts/change-checks.mjs"
       ],
-      "checks": ["acceptance-structure", "acceptance-tests"],
+      "checks": [
+        "acceptance-structure",
+        "acceptance-tests"
+      ],
       "reason": "测试编排或规则映射本身变化"
     },
     {
       "id": "electron-test-harness",
       "label": "Electron 测试共享夹具",
-      "paths": ["tests/e2e/fixtures/**"],
-      "checks": ["electron-e2e"],
+      "paths": [
+        "tests/e2e/fixtures/**"
+      ],
+      "checks": [
+        "electron-e2e"
+      ],
       "e2eTargets": [
         "tests/e2e/private-chat.spec.mjs",
         "tests/e2e/group-chat.spec.mjs",
@@ -90,8 +136,13 @@
         "src/renderer/vendor/agent-robot-avatar/UPSTREAM.md",
         "tests/e2e/avatar-picker.spec.mjs"
       ],
-      "checks": ["typecheck", "electron-e2e"],
-      "e2eTargets": ["tests/e2e/avatar-picker.spec.mjs"],
+      "checks": [
+        "typecheck",
+        "electron-e2e"
+      ],
+      "e2eTargets": [
+        "tests/e2e/avatar-picker.spec.mjs"
+      ],
       "reason": "头像眼型首帧和鼠标跟随需要真实 Electron 渲染验证"
     },
     {
@@ -111,7 +162,10 @@
         "tests/backend/login-item.test.mjs",
         "tests/backend/system-indicators.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
       "backendTargets": [
         "tests/backend/platform-helpers.test.mjs",
         "tests/backend/platform-paths.test.mjs",
@@ -134,7 +188,10 @@
         "tests/backend/composer-attachments.test.mjs",
         "tests/backend/composer-attachment-cleanup.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
       "backendTargets": [
         "tests/backend/composer-attachments.test.mjs",
         "tests/backend/composer-attachment-cleanup.test.mjs"
@@ -144,18 +201,68 @@
     {
       "id": "backend-tests",
       "label": "后端测试文件",
-      "paths": ["tests/backend/**/*.test.mjs", "tests/backend/*.test.mjs"],
-      "checks": ["backend-unit"],
-      "backendTargets": ["{path}"],
+      "paths": [
+        "tests/backend/**/*.test.mjs",
+        "tests/backend/*.test.mjs"
+      ],
+      "checks": [
+        "backend-unit"
+      ],
+      "backendTargets": [
+        "{path}"
+      ],
       "reason": "测试文件自身改动只运行该测试，不扩展到全部后端测试"
     },
     {
       "id": "shared-contracts",
       "label": "跨进程契约与 IPC",
-      "paths": ["src/shared/**", "src/preload/**", "src/main/index.ts"],
-      "checks": ["typecheck", "backend-unit"],
-      "backendTargets": ["tests/backend/host.test.mjs"],
+      "paths": [
+        "src/shared/**",
+        "src/preload/**",
+        "src/main/index.ts"
+      ],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
+      "backendTargets": [
+        "tests/backend/host.test.mjs"
+      ],
       "reason": "跨进程边界变化会同时影响宿主和渲染层"
+    },
+    {
+      "id": "proxy-settings",
+      "label": "大模型与 Gmail 分范围代理",
+      "paths": [
+        "src/shared/proxy-settings.ts",
+        "src/main/scoped-proxy-fetch.ts",
+        "src/main/mail-network.ts",
+        "src/main/imap-smtp-mail-adapter.ts",
+        "src/renderer/App.tsx",
+        "src/renderer/styles.css",
+        "tests/backend/proxy-settings.test.mjs",
+        "tests/backend/scoped-proxy-fetch.test.mjs",
+        "tests/backend/mail-network.test.mjs",
+        "tests/backend/gmail-imap-adapter.test.mjs",
+        "tests/e2e/runtime-startup.spec.mjs",
+        "tests/e2e/private-chat.spec.mjs"
+      ],
+      "checks": [
+        "typecheck",
+        "backend-unit",
+        "electron-e2e"
+      ],
+      "backendTargets": [
+        "tests/backend/proxy-settings.test.mjs",
+        "tests/backend/scoped-proxy-fetch.test.mjs",
+        "tests/backend/mail-network.test.mjs",
+        "tests/backend/gmail-imap-adapter.test.mjs"
+      ],
+      "e2eTargets": [
+        "tests/e2e/runtime-startup.spec.mjs",
+        "tests/e2e/private-chat.spec.mjs"
+      ],
+      "reason": "共享地址/范围规则同时影响主进程代理会话、邮件连接、设置界面与真实 Electron 重启行为"
     },
     {
       "id": "connectors",
@@ -171,7 +278,7 @@
         "src/main/qq-mail-adapter.ts",
         "src/main/mail-adapter.ts",
         "src/main/mail-runtime.ts",
-    "src/main/mail-network.ts",
+        "src/main/mail-network.ts",
         "src/main/mail-tools.ts",
         "src/main/bot-credential-tools.ts",
         "src/main/bot-secret-tools.ts",
@@ -181,12 +288,15 @@
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",
         "tests/backend/gmail-imap-adapter.test.mjs",
-    "tests/backend/mail-network.test.mjs",
+        "tests/backend/mail-network.test.mjs",
         "tests/backend/qq-mail-adapter.test.mjs",
         "tests/backend/mail-runtime.test.mjs",
         "tests/backend/mail-tools.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
       "backendTargets": [
         "tests/backend/bot-credential-tools.test.mjs",
         "tests/backend/bot-secret-tools.test.mjs",
@@ -194,7 +304,7 @@
         "tests/backend/gmail-oauth.test.mjs",
         "tests/backend/gmail-adapter.test.mjs",
         "tests/backend/gmail-imap-adapter.test.mjs",
-    "tests/backend/mail-network.test.mjs",
+        "tests/backend/mail-network.test.mjs",
         "tests/backend/qq-mail-adapter.test.mjs",
         "tests/backend/mail-runtime.test.mjs",
         "tests/backend/mail-tools.test.mjs",
@@ -215,7 +325,9 @@
         "tests/e2e/runtime-startup.spec.mjs",
         "tests/e2e/packaged-app.spec.mjs"
       ],
-      "checks": ["electron-e2e"],
+      "checks": [
+        "electron-e2e"
+      ],
       "e2eTargets": [
         "tests/e2e/runtime-startup.spec.mjs",
         "tests/e2e/packaged-app.spec.mjs"
@@ -235,10 +347,18 @@
         "src/main/routine-scheduler.ts",
         "src/main/runtime.ts",
         "src/main/runtime-home.ts",
-        "src/main/store.ts"
+        "src/main/store.ts",
+        "src/main/codex-config.ts",
+        "src/main/model-config-details.ts",
+        "resources/prompts/**"
       ],
-      "checks": ["typecheck", "backend-unit"],
-      "backendTargets": ["tests/backend/{stem}.test.mjs"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
+      "backendTargets": [
+        "tests/backend/{stem}.test.mjs"
+      ],
       "reason": "本机执行、持久化和宿主行为由后端集成测试覆盖"
     },
     {
@@ -254,7 +374,10 @@
         "tests/backend/managed-skills.test.mjs",
         "tests/backend/direct-mcp.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
       "backendTargets": [
         "tests/backend/bot-resources.test.mjs",
         "tests/backend/bot-resource-tools.test.mjs",
@@ -272,8 +395,13 @@
         "src/main/playwright-extension-verifier.ts",
         "tests/backend/playwright-extension-verifier.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
-      "backendTargets": ["tests/backend/playwright-extension-verifier.test.mjs"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
+      "backendTargets": [
+        "tests/backend/playwright-extension-verifier.test.mjs"
+      ],
       "reason": "MCP stdio 握手、Chrome 标签确认、只读快照和取消清理由单独进程模块验证"
     },
     {
@@ -295,7 +423,10 @@
         "tests/backend/wechat-sqlcipher.test.mjs",
         "tests/backend/wechat-tools.test.mjs"
       ],
-      "checks": ["typecheck", "backend-unit"],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
       "backendTargets": [
         "tests/backend/wechat-connector-wizard.test.mjs",
         "tests/backend/wechat-adapter.test.mjs",
@@ -309,9 +440,15 @@
     {
       "id": "electron-private-chat",
       "label": "私聊与连接应用 Electron 流程",
-      "paths": ["tests/e2e/private-chat.spec.mjs"],
-      "checks": ["electron-e2e"],
-      "e2eTargets": ["tests/e2e/private-chat.spec.mjs"],
+      "paths": [
+        "tests/e2e/private-chat.spec.mjs"
+      ],
+      "checks": [
+        "electron-e2e"
+      ],
+      "e2eTargets": [
+        "tests/e2e/private-chat.spec.mjs"
+      ],
       "reason": "私聊、连接应用市场和 Bot 授权属于真实 Electron 用户流程"
     },
     {
@@ -324,7 +461,10 @@
         "tests/backend/voice-waveform-model.test.mjs",
         "tests/e2e/voice-waveform-analysis.spec.mjs"
       ],
-      "checks": ["backend-unit", "electron-e2e"],
+      "checks": [
+        "backend-unit",
+        "electron-e2e"
+      ],
       "backendTargets": [
         "tests/backend/voice-playback.test.mjs",
         "tests/backend/voice-waveform-model.test.mjs"
@@ -351,7 +491,11 @@
         "tests/e2e/voice-wake.spec.mjs",
         "tests/fixtures/voice-wake/**"
       ],
-      "checks": ["typecheck", "backend-unit", "electron-e2e"],
+      "checks": [
+        "typecheck",
+        "backend-unit",
+        "electron-e2e"
+      ],
       "backendTargets": [
         "tests/backend/voice-cue-lifecycle.test.mjs",
         "tests/backend/voice-cues.test.mjs",
@@ -373,15 +517,24 @@
         "src/renderer/message-content.css",
         "tests/e2e/media-preview.spec.mjs"
       ],
-      "checks": ["typecheck", "electron-e2e"],
-      "e2eTargets": ["tests/e2e/media-preview.spec.mjs"],
+      "checks": [
+        "typecheck",
+        "electron-e2e"
+      ],
+      "e2eTargets": [
+        "tests/e2e/media-preview.spec.mjs"
+      ],
       "reason": "资源授权、媒体流、保存和系统文件操作由隔离 Electron 流程验证"
     },
     {
       "id": "renderer",
       "label": "渲染层与样式",
-      "paths": ["src/renderer/**"],
-      "checks": ["typecheck"],
+      "paths": [
+        "src/renderer/**"
+      ],
+      "checks": [
+        "typecheck"
+      ],
       "reason": "优先类型检查；只有改变真实用户交互时才追加对应 Electron E2E"
     },
     {
@@ -400,46 +553,99 @@
         "scripts/prepare-icon.mjs",
         "scripts/prepare-runtime.mjs",
         "scripts/sign-mac.mjs",
+        "assets/branding/app-logo-source.png",
+        "assets/branding/app-logo-rounded.png",
+        "assets/branding/app.icns",
         "assets/branding/app.ico",
         ".github/workflows/**"
       ],
-      "checks": ["typecheck", "build"],
+      "checks": [
+        "typecheck",
+        "build"
+      ],
       "reason": "平台目标、原生工具或打包配置变化必须验证 Electron 产物可生成"
     },
     {
       "id": "package-manifest",
       "label": "package 清单",
-      "paths": ["package.json"],
-      "checks": ["acceptance-structure"],
+      "paths": [
+        "package.json"
+      ],
+      "checks": [
+        "acceptance-structure"
+      ],
       "reason": "先检查清单结构与规则一致性；只有依赖或构建入口变化才额外构建"
     },
     {
       "id": "unregistered-main",
       "label": "尚未登记的新主进程文件",
-      "paths": ["src/main/**"],
-      "checks": ["typecheck", "backend-unit"],
-      "backendTargets": ["tests/backend/{stem}.test.mjs"],
+      "paths": [
+        "src/main/**"
+      ],
+      "checks": [
+        "typecheck",
+        "backend-unit"
+      ],
+      "backendTargets": [
+        "tests/backend/{stem}.test.mjs"
+      ],
       "reason": "新主进程文件需要补充对应测试映射；当前先跑类型检查及已存在的同名测试"
     },
     {
       "id": "unregistered-renderer",
       "label": "尚未登记的新渲染文件",
-      "paths": ["src/renderer/**"],
-      "checks": ["typecheck"],
+      "paths": [
+        "src/renderer/**"
+      ],
+      "checks": [
+        "typecheck"
+      ],
       "reason": "新渲染文件先做类型检查；涉及真实交互时应追加对应 Electron E2E",
       "fallback": true
+    },
+    {
+      "id": "bot-delegation",
+      "label": "群聊之外 Bot 委派",
+      "paths": [
+        "tests/e2e/bot-delegation.spec.mjs"
+      ],
+      "checks": [
+        "typecheck",
+        "backend-unit",
+        "electron-e2e"
+      ],
+      "backendTargets": [
+        "tests/backend/host.test.mjs",
+        "tests/backend/store.test.mjs",
+        "tests/backend/routine-scheduler.test.mjs"
+      ],
+      "e2eTargets": [
+        "tests/e2e/bot-delegation.spec.mjs"
+      ],
+      "reason": "委派 thread/turn 关联、消息持久化与来源气泡需要集成和真实 Electron 检查"
     }
   ],
   "escalation": [
     {
       "when": "修改了真实 Electron 用户流程、窗口导航或关键交互",
-      "add": ["electron-e2e"],
+      "add": [
+        "electron-e2e"
+      ],
       "requiresApproval": false,
-      "targets": ["tests/e2e/private-chat.spec.mjs", "tests/e2e/group-chat.spec.mjs", "tests/e2e/media-preview.spec.mjs"]
+      "targets": [
+        "tests/e2e/private-chat.spec.mjs",
+        "tests/e2e/group-chat.spec.mjs",
+        "tests/e2e/media-preview.spec.mjs"
+      ]
     },
     {
       "when": "用户明确要求完整验收、候选版本或发布验证",
-      "add": ["acceptance-structure", "acceptance-tests", "electron-e2e", "build"],
+      "add": [
+        "acceptance-structure",
+        "acceptance-tests",
+        "electron-e2e",
+        "build"
+      ],
       "requiresApproval": false
     }
   ],

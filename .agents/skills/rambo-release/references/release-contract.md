@@ -51,6 +51,16 @@
 - 本机更新不得清理或覆盖应用数据目录。本地只保留活动应用，不保留 `.app` 备份、`backup`/`replaced` 副本或 `install-backups`。
 - 只有双平台 workflow、六个资产和 macOS 安装均验证通过后，才把 draft 公开；Windows 构建机不执行 macOS 的 `/Applications` 安装步骤。
 
+## 发布成功后的清理
+
+- 必须等双平台 workflow 成功、六个资产齐全、macOS 安装验证通过、Draft Release 已公开，并完成 Release/tag/资产/本机版本最终回查后，才允许清理本机发版产物。
+- 使用 `.agents/skills/rambo-release/scripts/cleanup-release.mjs --release v<version>`，先 `--dry-run` 核对，再执行；不得直接使用 `rm -rf`。
+- 清理范围只限仓库 `dist/` 下脚本固定 allowlist 识别的当前及旧版本产物：`dist/release`、已知 macOS/Windows 构建目录、Rambo 正式分发包及其 `sha256`/`blockmap`、Electron Builder 配置与 `latest*.yml`。
+- 清理目标是发布成功后的当前版本和全部旧版本本机产物；不保留 `.app`、安装包、ZIP、解压目录或临时副本，也不创建任何备份。
+- 不删除或覆盖 `/Applications/Rambo.app`、`~/Library/Application Support/Rambo`、用户数据、日志、记忆、附件、Bot/Routine 数据、`acceptance-runs/`、验收证据、Git commit/tag 或 GitHub Releases。
+- 发布失败、安装失败或最终回查失败时不做销毁性清理，保留失败现场；临时下载目录仍按 `trap` 清理。
+- 清理后复核 `/Applications/Rambo.app` 仍可用且版本匹配，并在最终结果中报告清理路径和保留内容。
+
 ## 签名与安全提示
 
 - macOS 当前不使用 Developer ID、不公证；构建后只做本地 ad-hoc 重封。`codesign --verify` 必须通过，`codesign -dv` 必须为 `Signature=adhoc` 且无 Authority/TeamIdentifier，`spctl` 仍会拒绝。
@@ -59,7 +69,7 @@
 
 ## 产品边界
 
-仓库当前记录 159 条规则；验收目录含 291 个案例，其中 163 个可执行、128 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
+仓库当前记录 164 条规则；验收目录含 302 个案例，其中 170 个可执行、132 个缺口。规则级通过仍为 0 条，尚未完成全量验收。GitHub Release 是分发和版本归档，不等于 P08 完整交付。
 
 发布说明必须明确 Windows 真机安装、登录、Bot/Routine、托盘、音频、微信扫描和 NSIS 卸载等验收是否已经完成；仅有 Windows CI 或交叉编译时不得写“Windows 完整可用”。
 

@@ -26,10 +26,21 @@ export interface RoutineDispatcher {
   deliverResult?(runId: string): Promise<void> | void;
 }
 
+/** Shared turn-to-run association used by Routine and direct Bot delegations. */
+export class RunTurnTracker extends Map<string, string> {
+  attach(chatId: string, turnId: string, runId: string): void { this.set(`${chatId}:${turnId}`, runId); }
+  take(chatId: string, turnId: string): string | undefined {
+    const key = `${chatId}:${turnId}`;
+    const id = this.get(key);
+    this.delete(key);
+    return id;
+  }
+}
+
 export class RoutineScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
-  private readonly runsByTurn = new Map<string, string>();
+  private readonly runsByTurn = new RunTurnTracker();
   private dispatcher: RoutineDispatcher | null = null;
   private readonly now: () => Date;
   private readonly intervalMs: number;
@@ -250,14 +261,13 @@ export class RoutineScheduler {
 
   attachTurn(runId: string, chatId: string, turnId: string): void {
     this.store.updateRoutineRun(runId, { chatId, turnId });
-    this.runsByTurn.set(`${chatId}:${turnId}`, runId);
+    this.runsByTurn.attach(chatId, turnId, runId);
     this.publish({ type: 'changed' });
   }
 
   completeTurn(chatId: string, turnId: string, status: TurnStatus, text?: string, error?: string): void {
-    const runId = this.runsByTurn.get(`${chatId}:${turnId}`);
+    const runId = this.runsByTurn.take(chatId, turnId);
     if (!runId) return;
-    this.runsByTurn.delete(`${chatId}:${turnId}`);
     this.completeRun(runId, status, text, error);
   }
 

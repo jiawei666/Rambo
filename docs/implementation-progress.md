@@ -1,5 +1,39 @@
 # 实施进度
 
+## 2026-11-09 · Q207/Q252 Provider 重启同步与 ChatGPT 授权竞态修复
+
+- 根因：新建 Bot 的模型下拉读取 Store 持久化模型池；App Server 启动时此前只同步 MCP 元数据，没有根据当前标准 `config.toml` 刷新模型目录，因此 Provider 断开并重启后可能继续显示旧模型。
+- App Server 启动成功后，Rambo 现在读取当前来源模型目录并同步模型池、默认模型和失效 Bot。若登录或上游暂不可用，同步失败不会阻塞启动，也保留上次模型池。
+- ChatGPT 的“登录或切换账号”始终启动新授权。授权期间 `account/read` 的旧状态被屏蔽；只有收到 App Server `account/login/completed` 通知（若带登录 ID 则须匹配本次 ID）后，才允许切换模型来源和重启运行时，避免提前结束 OAuth 回调监听。
+- 验证：`npm run typecheck` 通过；`npm run test:e2e` 定向 5/5 通过，其中新增用例覆盖外部 Provider 模型池在断开并重启后刷新、失效 Bot 迁移和 OAuth 等待状态；构建由该命令完成。
+- 验收边界：使用隔离 profile 和模拟 App Server 0.165.0；未使用用户粘贴的 OAuth 回调地址，也未执行真实 ChatGPT 授权、Magpie 插件实际断开或安装版复验。
+
+## 2026-11-07 · Q251 标准 Codex 配置边界与插件侧 Magpie 适配
+
+- Rambo 已删除 `magpie-agent-source.ts`、启动读取 `magpie.json`、专属 managed 状态、专属 IPC/UI 分支和对应后端/E2E 夹具。运行时只读取标准 `<userData>/codex-home/config.toml`。
+- 启动准备 Codex Home 后只解析顶层 `model_provider`。Rambo 自有 `rambo_manual` 按保存配置协调；其他现有标准 Provider 原样保留，不再因为历史手动 API 状态而覆盖。非 OpenAI Provider 作为已配置来源进入侧栏、首次设置判断和当前配置卡，不强制 ChatGPT 登录。
+- 通用配置详情识别 `[model_providers.<id>.auth].command` 为凭证已配置，只返回布尔状态，不返回命令、参数、路径或秘密。外部 Provider 模型目录继续通过标准 Codex `model/list` 刷新。
+- Magpie 插件 0.1.7 改为 Magpie 私有 bridge + command-backed auth；插件 Bun `main` 轮询私有状态，原地写入标准 TOML，断开时只恢复自己拥有的 `model`、`model_provider` 和 `[model_providers.magpie]` 及其子表。Rambo 仓库不包含插件代码或专属状态。
+- 验证：Rambo 类型检查与构建通过；标准 Provider、配置详情、账户状态、侧栏状态、Voice 预检与相关模型状态后端 **33/33** 通过；验收目录 164 条规则／302 个案例和验收流程 **21/21** 通过；隔离 Electron 使用带注释和额外项目的标准 TOML 验证启动字面保真、诱饵 `magpie.json` 不参与、Provider 详情/命令凭证状态、Bot 模型选择，以及非 OpenAI 标准 Provider 在 Live 前被拒绝。Magpie 插件 `npm test` **8/8**、`npm pack --dry-run` 和 `git diff --check` 通过。
+- Magpie 插件已提交并发布 `b8d9e0b` / `v0.1.7`，远端 `main`、tag 解引用和版本化 PNG/入口文件均已回查；本机 `~/.config/magpie/plugins/node_modules/magpie-agent-rambo` 未修改。
+- 验收边界：尚未用真实 Magpie 上游完成 Rambo 模型回合；插件断开后的真实配置恢复与安装版 Rambo 仍待复验。Rambo 应用本轮未提交、未打包、未发布。
+
+## 2026-11-06 · Q243/Q245 独立 Codex Home 与 Magpie 插件桥接
+
+- Rambo 首次启动只在本地存在 Codex Home 且 Rambo 尚无配置或资源时导入一次；沿用 Codex `config.toml` 结构，导入白名单配置和资源。旧持续跟随状态迁移为独立模式，已删除跟随 IPC、监听、轮询及回合完成后的延迟同步。
+- Skills 统一位于 `<userData>/codex-home/skills/`，原 `skill-library` 会迁移；同名冲突保留目标目录副本。历史 thread 在下一回合通过原 thread ID 使用最新资源；正在执行的回合和已连接 Live 不热更新。
+- Magpie 插件独立仓库已公开发布：[magpie-agent-rambo](https://github.com/jiawei666/magpie-agent-rambo)，已设置 `magpie-plugin` topic。初始提交为 `abcf858`，安装检测修正为 `052efb8`；本轮为三个平台的 Agent 行显式设置 Rambo logo，提交 `0c575ae`。当轮历史实现由 Rambo 读取专属 `magpie.json`；该方向已于 2026-11-07 由 Q251 取消。
+- 验证：`npm run typecheck` 通过；相关后端 **164/164**、验收流程 **21/21**、验收目录 **302 个案例**通过；相关 Electron E2E **7/7** 通过；插件仓库 `npm test` **4/4** 通过。Magpie 0.1.3101 隔离 CLI 可识别 Rambo；本机实际 Magpie 窗口已显示 Rambo“已接入”、模型 GPT-6-Luna 与可用模型列表。
+- 验收边界：GitHub 上的 Agent 图标修正尚未更新到本机已安装插件，更新后的头像渲染仍待确认；真实上游模型请求、Rambo 安装版、Keychain/auto-only 首次导入和外部 ChatGPT 登录场景也未完成真实环境验收。
+
+## 2026-11-05 · Q238/Q239 Bot 自主创建与首次问候指引
+
+- 新增 `rambo_bot.create_bot`，仅在启用自管理工具的 Bot 私聊 thread 暴露；Bot 必须提供名称、一句话职责和按职责动态编写的一次性 `greetingInstruction`，可选长期指令及头像。Host 校验调用身份、私聊范围和字段后，由 Store 在同一事务中创建 Bot、职责资料和唯一私聊，并把问候指引传入新 Bot 的隐藏首轮 seed；指引不保存为长期资料或记忆。
+- 新 Bot 采用创建时全局模型、权限和资源初值，不复制创建者的私有记忆、连接授权、私有密钥、资源覆盖、历史、Routine 或工作区；工具结果只在真实创建成功后返回，不切换创建者当前 thread。
+- 用户确认历史 thread 不需要追溯补工具；创建工具在更新后新建的 thread 中生效，不自动迁移旧 thread。
+- `node scripts/change-checks.mjs` 命中 TypeScript 类型检查、验收结构、Host/Store 后端测试和验收流程测试；定向结果：类型检查通过，Host/Store **179/179**，验收目录 **163 条规则 / 301 个案例**，验收流程 **21/21**。
+- 真实模型自主调用、Electron 侧栏/重启与新 Bot 问候内容仍待完整验收，B19 尚未整体通过。
+
 ## 2026-11-01 · Q230 README 更新双平台微信、浏览器自动化与模型接入说明
 
 - 中英文 README 的平台说明、顶部标识和安装步骤同步覆盖 macOS 与 Windows。
@@ -199,7 +233,7 @@
 - macOS 生产路径固定为创建临时微信副本、保留原 entitlements 并加入 `get-task-allow` 后重签，再通过一次管理员授权启动副本和 Frida `CCCrypt` 捕获每个数据库的 raw AES key。密钥只在内存中匹配，验证完成后清理临时副本并恢复原微信；旧重签路径保留为正式 macOS 路径。
 - Windows 不复制、不重签、不修改微信。新增 Rust 扫描器枚举 `Weixin.exe`，仅读取已提交且可读写页面，按 2 MB 分块并保留 99 字节重叠，扫描 `x'<64位hex key><32位hex salt>'`；TypeScript 侧优先按 salt 匹配，再用数据库首页 HMAC 验证 raw key。账号根目录支持 `%APPDATA%\Tencent\xwechat\config\*.ini` 中的 `MyDocument:` 或绝对路径；用户在选择器中返回账号目录、`db_storage` 或其子目录时，会向上归一化到同一个 `xwechat_files` 账号根。
 - 当前验证通过：`tsc --noEmit`；微信连接器定向测试 `17/17`（含 Windows 多账号 `db_storage` 选择、超时解析和完整 capture 超时诊断）；微信相关后端合并测试 `214/214`；验收结构测试 `21/21`；Windows 扫描器 Rust 单元测试 `3/3`；`x86_64-pc-windows-msvc` 交叉 `cargo check`；`git diff --check`。Windows 扫描器尚无真实 Windows 微信环境，macOS 受管副本真实读取仍需按当前微信版本复验。
-- 证据边界：Windows 源码接入、交叉编译检查和合成 SQLCipher 夹具不等于 Windows 真机可用；PC 协议发送、服务器接受、消息入库与收件人送达均未验证。
+- 证据边界：Windows 源码接入、交叉编译检查和合成 SQLCipher 夹具不等于 Windows 真机可用。
 
 ## 2026-10-29 · ChatGPT 登录空提示与完成态同步修复
 
@@ -827,3 +861,51 @@
 - 修复唤醒事件依赖整个 `modelSource` 对象导致的渲染层订阅重挂载与高频刷新循环；`startVoice` 现只依赖语音预检查实际读取的源类型、手动 API Base URL 与服务名，Live 转写侧栏预览回归通过。
 - 验证通过：`npm run typecheck`；相关后端 `voice-wake` + Host 共 **126/126**；`npm run test:catalog`（158 条规则、284 个案例、157 个局部已实现案例）；`npm run test:acceptance` **21/21**；`npm run build`；完整私聊 Electron **40 通过、1 跳过**；唤醒 Electron **1/1**；运行时启动 Electron 定向 **4/4**；`git diff --check`。
 - 证据边界：模拟麦克风不是用户实际耳机麦克风，隔离 Electron 也不等于正式安装版。真实后台持续监听、macOS 系统麦克风授权、外接显示器合盖、真实 Codex Live 双向音频、真实耳机下的口音/音量/误触率、长时间资源占用和系统睡眠边界仍未验收，不能据此宣称 V03/V05/V11/V12 或完整发布已通过。
+
+## 2026-11-02：Q232/Q233 Gmail 超时与分范围代理
+
+- 原始 `Socket timeout` 不是单纯延长超时即可解决：旧安装包会把 ImapFlow 的异步 socket error 逃逸成主进程 `Uncaught Exception`；同时系统代理为 `DIRECT` 时，邮件连接器没有使用用户已配置的应用内代理。现已保持异步错误为正常工具失败，并按 Q233 只把代理用于显式勾选的“大模型”和“Gmail”范围。
+- 设置页只保留“大模型”“Gmail”两个独立复选框，可多选或都不选；地址与范围原子保存，修改地址或大模型范围要求任务结束，仅 Gmail 范围可动态调整。QQ 邮箱始终只遵循系统代理，回环地址始终绕过应用代理。
+- 验证通过：`npm run typecheck`；聚焦 E2E 1/1；`runtime-startup.spec.mjs` + `private-chat.spec.mjs` 44 通过/1 跳过；`packaged-app.spec.mjs` 3/3；ARM64 包构建和签名校验通过。安装版 0.1.12 的候选包与安装包完整文件哈希一致，`app.asar` 哈希为 `052c0a9808d8aad866ebee06cd5c23f1a39f092fba2f76abadf32f01e3d4a7ab`；重启后地址和 `model,gmail` 范围保留，Codex 子进程带大小写 HTTP(S)/ALL 六项及 `NO_PROXY`/`no_proxy`。
+- 真实链路：安装版 Gmail `mail_search` turn `01a19cd7-9160-73a2-976b-abec801c81ee` 完成，同一轮真实模型 turn 完成；日志无 `Uncaught`、`Socket timeout`、`Unhandled` 或 `Exception`，无新 crash report。证据边界：空/非法地址、安装版任务执行中的全部范围组合和启动失败回滚仍未逐项复验；本地 ad-hoc 签名未公证，不能据此宣称正式 Release 或完整 A07 通过。
+
+
+## 2026-11-05：Q240/G17 群聊之外的 Bot 委派
+
+- 新增 `rambo_bot.list_bots`（只返回未归档 Bot 的 ID、名称、职责）和 `rambo_bot.delegate_task`；worker 使用现有私聊 thread 的新 turn，忙时持久化排队，委派不 steer 到其他任务回合。
+- 新增独立 `bot_delegations` 业务记录，与 Routine 共用 `RunTurnTracker`、Host 的完成事件入口和私聊发送链路。委派通过具体 turnId 跟踪结果，同批状态随报告提供给主 Bot；嵌套委派在子任务结束、worker 汇总后交回最终报告。
+- 来源由 Host 写入消息元数据，普通气泡增加“委派 · 来自 XX”及细边线；结果交回气泡显示“任务报告 · 来自 XX”。来源随消息保存，支持历史分页与重启回读。没有创建群聊、Routine 或 worker 新 thread。
+- 委派创建/消息落库和报告入队保持原子性；重复调用与完成通知去重。自委派、未知/归档目标、祖先回派和超过 4 层的转派被拒绝。重连时依据持久化 turn 记录恢复或标记需要检查，不自动重复执行不确定操作。
+- 验证：类型检查、构建、相关后端 **222/222**、验收结构测试 **21/21**、目录校验通过；独立 Electron 验证原 thread、真实消息气泡/回复和重启后来源保留。额外扩大 Electron 回归 **51 通过、2 失败、1 跳过、1 未运行**；其中授权卡及未运行的分页用例独立重跑通过，头像跟随失败在移除本轮气泡改动的对照构建中仍复现。本轮没有修改头像功能或其测试。
+- 边界：以上使用隔离 profile 和 App Server 协议夹具；未验证真实模型自主委派、生产运行时断线恢复、正式安装版或完整发布验收。历史 thread 继续不自动重建注册新增动态 Tools。
+
+
+## 2026-11-05：Q241 Bot 消息互通取代面向任务的接口
+
+- 对外 Tool 改为 `rambo_bot.send_message(botId,text)`，支持先询问、讨论、征求意见，再确定任务；`list_bots` 继续提供目录。
+- 来源气泡统一为“来自 XX Bot”；消息上下文和回复交接说明不要求最终任务报告。turn 结束仅表示接收方本轮结束。
+- 取消通用消息的任务祖先链限制与等待子任务结束的汇总语义；每条接收消息本轮回复自动交回一次，发送者明确调用 Tool 才继续交流，普通回复不再次自动转发。
+- 底层旧表、记录类型和来源元数据字段兼容保留。相关后端 201 项通过；类型检查、构建、验收目录及 Electron 讨论气泡/回复/重启检查单独记录。
+- 真实模型自主多轮交流和正式安装版尚未验收；历史 thread 不自动重建注册新 Tool。
+
+
+## 2026-11-07：Q248/Q249 模型配置展示与权限入口
+
+- 系统模型卡片统一显示为“Rambo 配置”，展示接入方式、服务信息、脱敏 Base URL、接口协议、账号/凭证状态和“新 Bot 默认模型”；新增主进程安全详情读取，不向 Renderer 返回密钥。资源管理与 Bot 资源页共用模型配置的下划线子 Tab 样式，并保留数量标记。
+- 新建及复制 Bot 固定 Full Access；移除系统设置、Bot 设置、Bot 自管理 Tool 和公开配置更新接口中的权限编辑入口。既有 Bot 权限与执行行为、Connector Grant 和 MCP 单次授权保持原值。
+- 通过：类型检查、映射后端测试、验收目录 302 案例、21/21 验收流程和 `git diff --check`。Electron 覆盖资源子 Tab 浅色/暗色下划线与计数、模型配置详情、权限入口及新 Bot 默认；修正流程后 ChatGPT 登录、首次使用和模型目录刷新 3 个目标用例通过。
+- 边界：完整映射 Electron 回归首轮 **46 通过、6 失败、1 跳过、8 未运行**；之后已修正模型页子 Tab 断言，并将两个新 Bot 权限/运行时用例连跑复验 **2/2 通过**。其余失败为头像跟随、群聊阶段文案和 3 个缺少 `dist/mac-arm64/Rambo.app` 的打包验收场景；后续未运行项没有据此标记通过。未做安装版验收或真实模型/凭证请求，不据此宣称完整发布验收通过。
+
+## 2026-11-07：Q250 当前配置卡内管理模型与接入方式
+
+- 移除独立“新建 Bot 初始设置”区域，将新 Bot 默认模型下拉与“刷新模型”按钮放入“当前配置”卡片；刷新通过当前接入的模型服务读取最新目录，更新可选项并保留仍有效的默认值，失败时保留旧目录并给出提示。
+- “更改”按钮紧邻当前接入方式，在同一卡片内展开 ChatGPT/API 选项；手动 API 配置表单也在卡片内展开。新 Bot 默认模型仍只影响之后创建的 Bot。
+- 验证通过：`npm run typecheck`、`npm run build`、Store 定向测试 **52/52**、配置详情后端测试 **4/4**、验收目录 **164 条规则/302 个案例**、验收流程 **21/21**、`git diff --check`；定向 Electron **6/6**，覆盖模型配置布局、模型刷新、默认模型与已有 Bot 隔离、Magpie 刷新、ChatGPT 登录恢复和首次 App Server 配置入口。
+- 边界：未运行完整设置 Electron 回归或安装版验收，未请求真实外部模型服务；工作区存在其他并行改动，本轮只归属 Q250 对应配置界面、模型目录刷新及相关决策/验收记录。
+
+## 2026-11-09：Q252 刷新当前配置文件并刷新模型
+
+- 模型刷新入口文案收敛为“刷新”（Q252 早期曾称“刷新配置”）。点击后重新读取当前使用的配置文件与认证状态、重启 Codex 运行时，再刷新模型目录；外部 Provider 仍由标准 `config.toml` 决定，不读取 Magpie 专属文件或改写 Provider 表。成功提示明确说明配置文件已重读，模型目录同时更新；失败保留旧模型目录。
+- “刷新”按钮从“新 Bot 默认模型”下拉旁移到当前配置卡标题区，卡片说明明确其会重新读取配置文件、重启运行时并同步模型；默认模型行只保留选择、保存状态和模型读取错误。
+- 当前接入方式旁的“更改”在当前配置卡片内展开 ChatGPT 账号/API 服务并列入口，API 表单继续在此区域内展开；未完成授权前保持现有生效配置。
+- 验证：类型检查、构建、验收结构 **21/21**、验收目录 **164 条规则/302 个案例**通过；3 条隔离 Electron 用例覆盖刷新按钮位于当前配置卡标题区且不在默认模型控件内、配置分栏、保存新模型池后的统一刷新和外部 Provider 三项模型下拉。实际界面截图已检查；未验证真实外部模型请求或安装版。

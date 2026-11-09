@@ -30,6 +30,7 @@ import { ConnectorCredentials } from './connector-credentials';
 import { SecureMailAdapterRegistry } from './mail-adapter';
 import { MailRuntime } from './mail-runtime';
 import { mailProxyUrlForHost } from './mail-network';
+import { ScopedProxyFetch } from './scoped-proxy-fetch';
 import { qqMailAdapterFactory } from './qq-mail-adapter';
 import { gmailMailAdapterFactory } from './gmail-adapter';
 import { gmailImapAdapterFactory } from './gmail-imap-adapter';
@@ -58,8 +59,6 @@ import {
   type GroupRuntimePhase,
   type McpElicitationAction,
   type MessageContent,
-  type CodexHomeSyncMode,
-  type CodexHomeSyncState,
   type VoiceState,
   type ManualApiConfig,
   type ManualApiSaveInput,
@@ -68,6 +67,7 @@ import {
   type ModelOption,
   type ModelSourceKind,
   type ModelSourceState,
+  type RuntimeProxySettings,
   type VoiceWakeSettings
 } from '../shared/contracts';
 import {
@@ -81,7 +81,6 @@ import {
   notificationUnavailableMessage,
   type NotificationRuntimeState
 } from '../shared/notifications';
-import type { PermissionMode } from '../shared/contracts';
 import {
   listManualApiModels,
   manualApiConfigFrom,
@@ -94,12 +93,23 @@ import {
   validateManualApiConfig,
   validateManualApiModelCatalog
 } from './model-source';
-import { applyManualProviderConfig, clearManualProviderConfig } from './codex-config';
+import {
+  applyManualProviderConfig,
+  clearManualProviderConfig,
+  RAMBO_MANUAL_PROVIDER_ID,
+  readConfiguredModelProviderId,
+  writeConfiguredModelProviderId
+} from './codex-config';
 import {
   applicationMenuTemplate,
   browserWindowOptions
 } from './platform/desktop-shell';
 import { desktopPlatform, nativeExecutableName } from '../shared/platform';
+import {
+  normalizeRuntimeProxyAddress,
+  runtimeProxyScopesFromInput,
+  runtimeProxyScopesFromSetting
+} from '../shared/proxy-settings';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'rambo-asset',
@@ -110,6 +120,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const desktop = desktopPlatform(process.platform);
 if (desktop === 'win32') app.setAppUserModelId('local.rambo.desktop');
 const startHidden = process.argv.includes('--hidden');
+const MAX_BASE_INSTRUCTIONS_BYTES = 64 * 1024;
 // 验收模式只接受台账创建的目录；出错就拒绝启动，不能回退到日常数据。
 let acceptanceRunId: string | null = null;
 if (process.env.RAMBO_ACCEPTANCE_RUN) {
@@ -144,6 +155,7 @@ let quitting = false;
 let store: Store;
 let host: Host;
 let runtime: CodexRuntime;
+let scopedProxyFetch: ScopedProxyFetch;
 let connectorCredentials: ConnectorCredentials;
 let wechatReader: SqlCipherWechatReader | null = null;
 let wechatConnectorWizard: WechatConnectorWizard | null = null;
@@ -156,15 +168,32 @@ let directMcpRegistry: DirectMcpRegistry;
 let loginItem: LoginItemController;
 let systemIndicators: SystemIndicators<Electron.NativeImage, Electron.Menu> | null = null;
 let manualModelCredentials: ConnectorCredentials;
+let standardModelProviderId: string | null = null;
+let pendingChatGptLogin: {
+  previousKind: ModelSourceKind;
+  previousProviderId: string | null;
+  previousStandardModelProviderId: string | null;
+  loginId: string | null;
+  completedLoginId: string | null;
+  completed: boolean;
+} | null = null;
 let composerAttachmentCleanupTimer: ReturnType<typeof setInterval> | null = null;
 let voiceWakeEngine: VoiceWakeEngine | null = null;
 const messageAssetGrants = new Map<string, { messageId: string; source: string; expiresAt: number }>();
 const composerAttachmentGrants = new Map<string, { path: string; mimeType: string; expiresAt: number }>();
 const composerDraftAttachmentPaths = new Map<string, Set<string>>();
-function resolvedDefaultPermission(value: string | undefined): PermissionMode {
-  if (value === undefined || value === '') return 'fullAccess';
-  if (value === 'fullAccess' || value === 'workspaceWrite' || value === 'readOnly') return value;
-  throw new Error('新建 Bot 的全局权限配置无效，请在系统设置中重新选择一个权限。');
+function currentRuntimeProxySettings(): RuntimeProxySettings {
+  const settings = store.settings();
+  return {
+    proxy: settings.runtimeProxy?.trim() ?? '',
+    scopes: runtimeProxyScopesFromSetting(settings.runtimeProxyScopes)
+  };
+}
+
+function runtimeProxyForModel(settings: RuntimeProxySettings): string | null {
+  return settings.scopes.includes('model')
+    ? normalizeRuntimeProxyAddress(settings.proxy)
+    : null;
 }
 
 function wechatMediaToolPaths(): { ffmpegPath: string | null; silkDecoderPath: string | null } {
@@ -209,7 +238,14 @@ function modelSourceState(): ModelSourceState {
       hasApiKey = false;
     }
   }
-  return modelSourceStateFrom(settings, hasApiKey);
+  const stored = modelSourceStateFrom(settings, hasApiKey);
+  return standardModelProviderId
+    ? {
+        ...stored,
+        kind: 'local',
+        standardProviderConfigured: standardModelProviderId !== 'openai'
+      }
+    : stored;
 }
 
 function manualModelApiKey(): string {
@@ -269,10 +305,11 @@ function chooseModelCatalogDefault(
 
 function applyModelCatalog(
   models: ModelOption[],
-  preferredDefault?: string
+  preferredDefault?: string,
+  manualModelCatalog?: { models: ModelOption[]; defaultModel: string }
 ): ModelCatalogRefresh {
   const defaultModel = chooseModelCatalogDefault(models, preferredDefault);
-  return store.applyExecutionModelCatalogAndRefreshBots(models, defaultModel);
+  return store.applyExecutionModelCatalogAndRefreshBots(models, defaultModel, manualModelCatalog);
 }
 
 async function syncCurrentModelCatalog(): Promise<ModelCatalogRefresh> {
@@ -287,10 +324,33 @@ async function syncCurrentModelCatalog(): Promise<ModelCatalogRefresh> {
   return applyModelCatalog(await host.models());
 }
 
-async function applyModelSourceRuntimeConfig(): Promise<void> {
+async function refreshCurrentModelCatalog(): Promise<ModelCatalogRefresh> {
   const source = modelSourceState();
-  const configPath = join(store.directory, 'codex-home', 'config.toml');
   if (source.kind === 'manualApi') {
+    const liveModels = await listManualApiModels(source.manual, manualModelApiKey(), {
+      fetchImpl: scopedProxyFetch.fetchFor('model')
+    });
+    if (!liveModels.some(option => option.id === source.manual.model)) {
+      throw new Error('当前配置模型不在接口返回的模型列表中，已保留原有可选模型');
+    }
+    const models = liveModels.map(option => ({ ...option, isDefault: false }));
+    const refreshed = applyModelCatalog(
+      models,
+      undefined,
+      { models: liveModels, defaultModel: source.manual.model }
+    );
+    return refreshed;
+  }
+  const liveModels = await host.models();
+  return applyModelCatalog(liveModels.map(option => ({ ...option, isDefault: false })));
+}
+
+async function applyModelSourceRuntimeConfig(): Promise<void> {
+  const kind = modelSourceKindFrom(store.settings().modelSource);
+  const configPath = join(store.directory, 'codex-home', 'config.toml');
+  if (kind === 'manualApi') {
+    standardModelProviderId = null;
+    const source = modelSourceState();
     const config = validateManualApiConfig(source.manual);
     await applyManualProviderConfig(configPath, config);
     runtime.setModelSourceConfig([], {
@@ -299,6 +359,16 @@ async function applyModelSourceRuntimeConfig(): Promise<void> {
     return;
   }
   await clearManualProviderConfig(configPath);
+  if (kind === 'chatgpt') {
+    await writeConfiguredModelProviderId(configPath, 'openai');
+    standardModelProviderId = null;
+  } else {
+    const providerId = await readConfiguredModelProviderId(configPath);
+    standardModelProviderId = providerId &&
+      providerId !== 'openai' && providerId !== RAMBO_MANUAL_PROVIDER_ID
+      ? providerId
+      : null;
+  }
   runtime.setModelSourceConfig([], {});
 }
 
@@ -372,12 +442,87 @@ async function restartRuntimeForModelSource(): Promise<void> {
   }
 }
 
-async function restoreRuntimeForModelSource(kind: ModelSourceKind): Promise<void> {
+async function restoreRuntimeForModelSource(
+  kind: ModelSourceKind,
+  providerId: string | null,
+  previousStandardProviderId: string | null
+): Promise<void> {
   store.setSetting('modelSource', kind);
-  await applyModelSourceRuntimeConfig().catch(() => {});
+  if (kind === 'manualApi') {
+    await applyModelSourceRuntimeConfig().catch(() => {});
+  } else {
+    const configPath = join(store.directory, 'codex-home', 'config.toml');
+    await clearManualProviderConfig(configPath).catch(() => {});
+    await writeConfiguredModelProviderId(configPath, providerId).catch(() => {});
+    standardModelProviderId = previousStandardProviderId;
+    runtime.setModelSourceConfig([], {});
+  }
   await runtime.stop().catch(() => {});
   await runtime.start().catch(() => {});
   await host.syncMcpMetadata().catch(() => {});
+}
+
+async function cancelPendingChatGptLogin(): Promise<void> {
+  const pending = pendingChatGptLogin;
+  if (!pending) return;
+  pendingChatGptLogin = null;
+  const configPath = join(store.directory, 'codex-home', 'config.toml');
+  const currentProviderId = await readConfiguredModelProviderId(configPath).catch(() => null);
+  if (currentProviderId !== 'openai' && currentProviderId !== pending.previousProviderId) {
+    await refreshCurrentModelConfiguration();
+    return;
+  }
+  await restoreRuntimeForModelSource(
+    pending.previousKind,
+    pending.previousProviderId,
+    pending.previousStandardModelProviderId
+  );
+  host.changed();
+}
+
+async function refreshCurrentModelConfiguration(): Promise<ModelCatalogRefresh> {
+  if (host.hasPendingWork()) {
+    throw new Error('有任务执行中，请先停止任务再刷新当前配置');
+  }
+  if (pendingChatGptLogin) {
+    throw new Error('ChatGPT 登录尚未完成，请完成或等待登录结束后再刷新');
+  }
+  const configPath = join(store.directory, 'codex-home', 'config.toml');
+  const providerId = await readConfiguredModelProviderId(configPath);
+  if (providerId === RAMBO_MANUAL_PROVIDER_ID) {
+    store.setSetting('modelSource', 'manualApi');
+    standardModelProviderId = null;
+    runtime.setModelSourceConfig([], {
+      [manualProviderConfig(validateManualApiConfig(modelSourceState().manual)).apiKeyEnv]:
+        manualModelApiKey()
+    });
+  } else if (providerId && providerId !== 'openai') {
+    store.setSetting('modelSource', 'local');
+    standardModelProviderId = providerId;
+    runtime.setModelSourceConfig([], {});
+  } else {
+    if (providerId === 'openai') store.setSetting('modelSource', 'chatgpt');
+    standardModelProviderId = null;
+    if (!providerId && modelSourceKindFrom(store.settings().modelSource) === 'manualApi') {
+      await applyModelSourceRuntimeConfig();
+    } else {
+      runtime.setModelSourceConfig([], {});
+    }
+  }
+  await runtime.stop();
+  await runtime.start();
+  await host.syncMcpMetadata();
+  host.changed();
+  let catalogRefresh: ModelCatalogRefresh;
+  try {
+    catalogRefresh = await refreshCurrentModelCatalog();
+  } catch (error) {
+    throw new Error(`当前配置已重新读取，模型目录刷新失败并保留原有模型列表：${
+      error instanceof Error ? error.message : String(error)
+    }`);
+  }
+  host.changed();
+  return catalogRefresh;
 }
 
 async function testModelConnection(
@@ -404,7 +549,9 @@ async function testModelConnection(
     try {
       const config = validateManualApiConfig(current.manual);
       const apiKey = manualModelApiKey();
-      const result = await testManualModelApi(config, apiKey);
+      const result = await testManualModelApi(config, apiKey, {
+        fetchImpl: scopedProxyFetch.fetchFor('model')
+      });
       return {
         ok: true,
         source: sourceKind,
@@ -846,9 +993,6 @@ function showRoutineFinishedNotification(runId: string): void {
 }
 const emit = (event: AppEvent) => {
   if (event.type === 'turn' || event.type === 'changed') queueSystemIndicators();
-  if ((event.type === 'turn' && !event.turnId) || event.type === 'codexHomeSync') {
-    queueMicrotask(() => { void applyPendingCodexHomeSync(); });
-  }
   if (event.type === 'turn' && !event.turnId) publishBotTurnFinishedNotification(event.chatId);
   if (event.type === 'botReplyNotification') showBotReplyNotification(event);
   if (event.type === 'routineRunFinished') {
@@ -930,32 +1074,6 @@ function voiceWakeSamples(value: unknown): Float32Array {
   }
   if (!samples.length || samples.length > 16_000) throw new Error('无效的唤醒音频长度');
   return samples;
-}
-let codexHomeSyncApplying: Promise<void> | null = null;
-async function applyPendingCodexHomeSync(): Promise<void> {
-  if (!runtime || !host || codexHomeSyncApplying) return;
-  const state = runtime.homeSyncState;
-  if (
-    state.mode !== 'follow' ||
-    !state.pending ||
-    state.syncing ||
-    state.decisionRequired ||
-    host.hasPendingWork()
-  ) return;
-  codexHomeSyncApplying = (async () => {
-    try {
-      await runtime.applyPendingHomeSync();
-      await host.syncMcpMetadata();
-    } catch (error) {
-      emit({
-        type: 'error',
-        message: `Codex 配置同步失败：${error instanceof Error ? error.message : String(error)}`
-      });
-    } finally {
-      codexHomeSyncApplying = null;
-    }
-  })();
-  await codexHomeSyncApplying;
 }
 let indicatorUpdateQueued = false;
 function queueSystemIndicators(): void {
@@ -1625,6 +1743,10 @@ function registerIPC(): void {
     sendGroup: (groupId, content) => host.sendGroup(id(groupId), text(content)),
     interruptGroup: groupId => host.interruptGroup(id(groupId)),
     answerCard: (messageId, answer) => host.answerCard(id(messageId), text(answer, 20_000)),
+    resolveAuthorization: (messageId, decision) => {
+      if (decision !== 'approve' && decision !== 'deny') throw new Error('授权操作无效');
+      return host.resolveAuthorization(id(messageId), decision);
+    },
     resolveMessageAsset: (messageId, source) => issueMessageAssetUrl(id(messageId), text(source, 8_000)),
     openMessageAsset: async (messageId, source) => {
       const path = host.messageAssetPath(id(messageId), text(source, 8_000));
@@ -1687,12 +1809,11 @@ function registerIPC(): void {
     },
     updateBotExecutionConfig: (botId, input) => {
       const patch = object(input);
-      if (!('model' in patch) || !('permission' in patch)) {
-        throw new Error('Bot 模型和权限必须同时更新');
+      if (!('model' in patch) || Object.keys(patch).some(key => key !== 'model')) {
+        throw new Error('Bot 执行配置只支持修改模型');
       }
       const bot = store.updateBotExecutionConfig(id(botId), {
-        model: text(patch.model, 500).trim(),
-        permission: text(patch.permission, 40) as import('../shared/contracts').PermissionMode
+        model: text(patch.model, 500).trim()
       });
       host.changed();
       return bot;
@@ -1723,6 +1844,11 @@ function registerIPC(): void {
     runRoutineNow: routineId => host.runRoutineNow(id(routineId)),
     stopRoutineRun: routineId => host.stopRoutineRun(id(routineId)),
     messages: chatId => store.messages(id(chatId)),
+    messagesPage: (chatId, beforeMessageId, limit) => store.messagesPage(
+      id(chatId),
+      beforeMessageId === undefined || beforeMessageId === null ? null : id(beforeMessageId),
+      typeof limit === 'number' ? limit : 80
+    ),
     copyText: content => {
       const value = text(content, 20_000);
       if (!value) throw new Error('没有可复制的内容');
@@ -1744,47 +1870,16 @@ function registerIPC(): void {
     setSetting: async (keyValue, value) => {
       const key = text(keyValue, 100);
       const settingValue = text(value, 20_000);
-      if (key !== 'defaultBotModel' && key !== 'defaultBotPermission' &&
-          key !== 'runtimeProxy' && key !== 'initialSetupPrompted') {
+      if (key !== 'defaultBotModel' && key !== 'initialSetupPrompted') {
         throw new Error('不支持的应用设置');
       }
       if (key === 'initialSetupPrompted' && settingValue !== 'true' && settingValue !== 'false') {
         throw new Error('无效的首次设置状态');
       }
-      if (key === 'defaultBotPermission' &&
-          !['fullAccess', 'workspaceWrite', 'readOnly'].includes(settingValue)) {
-        throw new Error('无效的全局权限模式');
-      }
       if (key === 'defaultBotModel' && !settingValue.trim()) {
         throw new Error('新建 Bot 的模型不能为空');
       }
-      if (key === 'runtimeProxy') {
-        const proxy = settingValue.trim();
-        if (proxy) {
-          let url: URL;
-          try { url = new URL(proxy); }
-          catch { throw new Error('代理地址格式无效'); }
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-            throw new Error('代理地址必须使用 http:// 或 https://');
-          }
-          if (!url.hostname) throw new Error('代理地址缺少主机名');
-        }
-        if (host.hasPendingWork()) throw new Error('有任务执行中，请先停止任务再修改代理');
-        const previous = store.settings().runtimeProxy?.trim() ?? '';
-        store.setSetting(key, proxy);
-        runtime.setProxyUrl(proxy);
-        await runtime.stop();
-        try {
-          await runtime.start();
-          await host.syncMcpMetadata();
-        } catch (error) {
-          store.setSetting(key, previous);
-          runtime.setProxyUrl(previous);
-          await runtime.stop();
-          await runtime.start().catch(() => {});
-          throw error;
-        }
-      } else if (key === 'defaultBotModel') {
+      if (key === 'defaultBotModel') {
         const source = modelSourceState();
         if (
           source.kind === 'manualApi' &&
@@ -1797,6 +1892,54 @@ function registerIPC(): void {
       }
       else store.setSetting(key, settingValue);
       host.changed();
+    },
+    setProxySettings: async value => {
+      const input = object(value);
+      const proxy = normalizeRuntimeProxyAddress(input.proxy);
+      const scopes = runtimeProxyScopesFromInput(input.scopes);
+      if (scopes.length > 0 && !proxy) {
+        throw new Error('启用大模型或 Gmail 代理时必须填写代理地址');
+      }
+
+      const previous = currentRuntimeProxySettings();
+      let previousProxy = '';
+      try {
+        previousProxy = normalizeRuntimeProxyAddress(previous.proxy);
+      } catch {
+        // A legacy invalid value must remain recoverable through this same UI.
+      }
+      const addressChanged = proxy !== previousProxy;
+      const modelScopeChanged = previous.scopes.includes('model') !== scopes.includes('model');
+      if ((addressChanged || modelScopeChanged) && host.hasPendingWork()) {
+        throw new Error('有任务执行中，请先停止任务再修改代理地址或大模型代理范围');
+      }
+
+      const previousModelProxy = runtimeProxyForModel(previous);
+      const next = { proxy, scopes };
+      const nextModelProxy = runtimeProxyForModel(next);
+      const runtimeProxyChanged = previousModelProxy !== nextModelProxy;
+      store.setRuntimeProxySettings(proxy, scopes);
+      if (!runtimeProxyChanged) {
+        host.changed();
+        return;
+      }
+
+      runtime.setProxyUrl(nextModelProxy);
+      try {
+        await runtime.stop();
+        await runtime.start();
+        await host.syncMcpMetadata();
+        host.changed();
+      } catch (error) {
+        store.setRuntimeProxySettings(previous.proxy, previous.scopes);
+        runtime.setProxyUrl(previousModelProxy);
+        await runtime.stop().catch(() => {});
+        await runtime.start().catch(() => {});
+        host.changed();
+        throw new Error(`代理设置保存失败，已恢复原配置：${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
     },
     setLaunchAtLogin: enabled => {
       if (typeof enabled !== 'boolean') throw new Error('无效的登录启动状态');
@@ -1998,6 +2141,20 @@ function registerIPC(): void {
         emit({ type: 'message', message: saved });
         return saved;
       }
+      if (value.type === 'connectorConnection') {
+        const connection = object(value.connection);
+        return store.createConnectorConnection({
+          id: id(connection.id),
+          providerId: text(connection.providerId, 100),
+          displayName: text(connection.displayName, 200),
+          accountLabel: text(connection.accountLabel, 300),
+          authKind: text(connection.authKind, 100) as any,
+          credentialRef: text(connection.credentialRef, 300),
+          ...(connection.capabilities && typeof connection.capabilities === 'object'
+            ? { capabilities: connection.capabilities as Record<string, 'ready' | 'unavailable'> }
+            : {})
+        });
+      }
       if (value.type === 'activity') {
         const activity = object(value.activity);
         const chatId = id(activity.chatId);
@@ -2027,6 +2184,7 @@ function registerIPC(): void {
         if (namespace === 'rambo_groups') return host.submitAcceptanceGroupManagementTool(request);
         if (namespace === 'rambo_mail') return host.submitAcceptanceMailTool(request);
         if (namespace === 'rambo_wechat') return host.submitAcceptanceWechatTool(request);
+        if (namespace === 'rambo_chat_ui') return host.submitAcceptanceChatContentTool(request);
         throw new Error('验收事件提交了不支持的工具命名空间');
       }
       if (value.type === 'acceptanceNotification') {
@@ -2038,26 +2196,63 @@ function registerIPC(): void {
       if (value.type === 'acceptanceRoutineTick') return host.acceptRoutineTick();
       throw new Error('不支持的验收事件');
     },
-    account: () => host.account(),
+    account: async () => {
+      const account = await host.account();
+      if (pendingChatGptLogin && !pendingChatGptLogin.completed) {
+        return { ...account, requiresLogin: true, localLoginDetected: false };
+      }
+      return account;
+    },
+    modelConfigurationDetails: () => host.modelConfigurationDetails(),
     login: async () => {
       if (host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再登录 ChatGPT');
       }
-      const result = await host.login();
+      if (pendingChatGptLogin) throw new Error('ChatGPT 登录已经在进行中');
+      const configPath = join(store.directory, 'codex-home', 'config.toml');
+      const previousProviderId = await readConfiguredModelProviderId(configPath);
+      const previousKind = modelSourceState().kind;
+      const previousStandardModelProviderId = standardModelProviderId;
+      pendingChatGptLogin = {
+        previousKind,
+        previousProviderId,
+        previousStandardModelProviderId,
+        loginId: null,
+        completedLoginId: null,
+        completed: false
+      };
+      try {
+        if (previousProviderId !== 'openai') {
+          runtime.setModelSourceConfig(['-c', 'model_provider="openai"'], {});
+          await restartRuntimeForModelSource();
+        }
+        const result = await host.login();
+        if (pendingChatGptLogin) {
+          pendingChatGptLogin.loginId = result.loginId;
+          if (
+            pendingChatGptLogin.completedLoginId && result.loginId &&
+            pendingChatGptLogin.completedLoginId !== result.loginId
+          ) pendingChatGptLogin.completed = false;
+        }
       // Automated runs must not open a real system browser. The renderer still
       // receives the URL and exercises the visible retry path.
-      if (acceptanceRunId) return { ...result, browserOpened: true };
-      try {
-        await shell.openExternal(result.authUrl, { activate: true });
-        return { ...result, browserOpened: true };
+        if (acceptanceRunId) return { ...result, browserOpened: true };
+        try {
+          await shell.openExternal(result.authUrl, { activate: true });
+          return { ...result, browserOpened: true };
+        } catch (error) {
+          return {
+            ...result,
+            browserOpened: false,
+            browserOpenError: error instanceof Error ? error.message : String(error)
+          };
+        }
       } catch (error) {
-        return {
-          ...result,
-          browserOpened: false,
-          browserOpenError: error instanceof Error ? error.message : String(error)
-        };
+        await cancelPendingChatGptLogin().catch(() => {});
+        throw error;
       }
     },
+    cancelChatGptLogin: async () => cancelPendingChatGptLogin(),
     models: async () => {
       const source = modelSourceState();
       if (source.kind === 'manualApi') {
@@ -2081,19 +2276,20 @@ function registerIPC(): void {
       validateManualApiConfig(config, false);
       return listManualApiModels(
         config,
-        manualModelApiKeyFor(config, typeof input.apiKey === 'string' ? input.apiKey : '')
+        manualModelApiKeyFor(config, typeof input.apiKey === 'string' ? input.apiKey : ''),
+        { fetchImpl: scopedProxyFetch.fetchFor('model') }
       );
     },
     setModelSource: async kindValue => {
       const kind = modelSourceKindFrom(kindValue);
       if (kind !== kindValue) throw new Error('无效的模型来源');
       const current = modelSourceState();
-      if (
-        kind !== 'local' &&
-        runtime.homeSyncState.mode === 'follow' &&
-        runtime.homeSyncState.sourceDetected
-      ) {
-        throw new Error('持续跟随本机时只能使用本机 Codex 配置副本；请先切换到独立配置');
+      if (pendingChatGptLogin && kind !== 'chatgpt') {
+        throw new Error('ChatGPT 登录尚未完成');
+      }
+      if (kind === 'chatgpt' && current.kind !== 'chatgpt' &&
+          !pendingChatGptLogin?.completed) {
+        throw new Error('请先完成 ChatGPT 登录后再切换模型来源');
       }
       if (kind !== current.kind && host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再切换模型来源');
@@ -2101,6 +2297,9 @@ function registerIPC(): void {
       if (kind === 'manualApi' && !manualModelSourceAvailableForSwitch()) {
         throw new Error('请先保存手动 API 的服务名称、Base URL、API Key 和至少一个模型');
       }
+      const configPath = join(store.directory, 'codex-home', 'config.toml');
+      const previousProviderId = await readConfiguredModelProviderId(configPath);
+      const previousStandardProviderId = standardModelProviderId;
       store.setSetting('modelSource', kind);
       let catalogRefresh: ModelCatalogRefresh | null = null;
       try {
@@ -2114,52 +2313,20 @@ function registerIPC(): void {
             : null;
           if (!account?.requiresLogin) throw error;
         }
+        if (kind === 'chatgpt') pendingChatGptLogin = null;
       } catch (error) {
-        await restoreRuntimeForModelSource(current.kind);
+        await restoreRuntimeForModelSource(
+          current.kind,
+          pendingChatGptLogin?.previousProviderId ?? previousProviderId,
+          pendingChatGptLogin?.previousStandardModelProviderId ?? previousStandardProviderId
+        );
+        pendingChatGptLogin = null;
         throw new Error(`模型来源切换失败，已保留原来源：${
           error instanceof Error ? error.message : String(error)
         }`);
       }
       host.changed();
       return { ...modelSourceState(), catalogRefresh };
-    },
-    setCodexHomeSyncMode: async (modeValue: CodexHomeSyncMode) => {
-      if (modeValue !== 'follow' && modeValue !== 'independent') {
-        throw new Error('无效的 Codex Home 同步模式');
-      }
-      if (modeValue === 'follow' && host.hasPendingWork()) {
-        throw new Error('有任务执行中，请先停止任务再应用 Codex 配置同步');
-      }
-      const currentSource = modelSourceState();
-      const previousMode = runtime.homeSyncState.mode;
-      if (modeValue === 'follow' && !runtime.homeSyncState.sourceDetected) {
-        throw new Error('未检测到本机 Codex，不能开启持续跟随');
-      }
-      if (modeValue === 'follow') {
-        try {
-          // Follow is a mode, not a third model source. Deactivate a selected
-          // ChatGPT/manual source while retaining its credentials for later.
-          if (currentSource.kind !== 'local') {
-            store.setSetting('modelSource', 'local');
-            await applyModelSourceRuntimeConfig();
-          }
-          const state = await runtime.setHomeSyncMode('follow');
-          const catalogRefresh = await syncCurrentModelCatalog();
-          host.changed();
-          return { ...state, catalogRefresh };
-        } catch (error) {
-          if (previousMode === 'independent') {
-            await runtime.setHomeSyncMode('independent', false).catch(() => {});
-          }
-          await restoreRuntimeForModelSource(currentSource.kind);
-          throw new Error(`无法开启持续跟随，已保留原配置：${
-            error instanceof Error ? error.message : String(error)
-          }`);
-        }
-      }
-      const state = await runtime.setHomeSyncMode(modeValue);
-      host.changed();
-      return { ...state, catalogRefresh: null };
     },
     setVoiceWakeSettings: (inputValue: unknown): VoiceWakeSettings => {
       const input = object(inputValue);
@@ -2184,7 +2351,11 @@ function registerIPC(): void {
       if (host.hasPendingWork()) {
         throw new Error('有任务执行中，请先停止任务再保存手动 API 配置');
       }
+      if (pendingChatGptLogin) throw new Error('ChatGPT 登录尚未完成');
       const input = object(inputValue);
+      const configPath = join(store.directory, 'codex-home', 'config.toml');
+      const previousProviderId = await readConfiguredModelProviderId(configPath);
+      const previousStandardProviderId = standardModelProviderId;
       const {
         previousKind,
         previousSettings,
@@ -2196,11 +2367,16 @@ function registerIPC(): void {
         await applyModelSourceRuntimeConfig();
         await restartRuntimeForModelSource();
         const catalogRefresh = applyModelCatalog(models, defaultModel);
+        pendingChatGptLogin = null;
         host.changed();
         return { ...modelSourceState(), catalogRefresh };
       } catch (error) {
         restoreManualModelSettings(previousSettings);
-        await restoreRuntimeForModelSource(previousKind);
+        await restoreRuntimeForModelSource(
+          previousKind,
+          previousProviderId,
+          previousStandardProviderId
+        );
         throw new Error(`手动 API 配置保存失败，已保留原来源：${
           error instanceof Error ? error.message : String(error)
         }`);
@@ -2214,6 +2390,7 @@ function registerIPC(): void {
       host.changed();
       return catalogRefresh;
     },
+    refreshCurrentModelConfiguration: () => refreshCurrentModelConfiguration(),
     testModelConnection: source => testModelConnection(source),
     startVoice: (chatId, offerSdp) => host.startVoice(
       id(chatId),
@@ -2368,20 +2545,43 @@ else {
       });
     }
     // The packaged ICNS is already declared as the app icon in its bundle.
-    // Electron's dock image loader cannot decode that ICNS path; use the source PNG only in dev.
-    if (!app.isPackaged) app.dock?.setIcon(join(app.getAppPath(), 'assets/branding/app-logo-source.png'));
+    // Electron's dock image loader cannot decode that ICNS path; use the rounded PNG only in dev.
+    if (!app.isPackaged) app.dock?.setIcon(join(app.getAppPath(), 'assets/branding/app-logo-rounded.png'));
     store = new Store(app.getPath('userData'));
     startComposerAttachmentCleanup();
     connectorCredentials = new ConnectorCredentials(app.getPath('userData'));
     manualModelCredentials = connectorCredentials;
     directMcpRegistry = new DirectMcpRegistry(store, connectorCredentials);
     const initialSettings = store.settings();
-    const mailAdapterDependencies = {
-      proxyFor: (host: string, port: number) => mailProxyUrlForHost(
+    scopedProxyFetch = new ScopedProxyFetch(
+      session.defaultSession,
+      scope => session.fromPartition(`rambo-${scope}-proxy`),
+      currentRuntimeProxySettings
+    );
+    const systemMailProxyFor = (host: string, port: number) => mailProxyUrlForHost(
+      host,
+      port,
+      url => session.defaultSession.resolveProxy(url)
+    );
+    const gmailMailProxyFor = (host: string, port: number) => {
+      const settings = currentRuntimeProxySettings();
+      return mailProxyUrlForHost(
         host,
         port,
-        url => session.defaultSession.resolveProxy(url)
-      ),
+        url => session.defaultSession.resolveProxy(url),
+        {
+          enabled: settings.scopes.includes('gmail'),
+          value: settings.proxy,
+          label: 'Gmail'
+        }
+      );
+    };
+    const qqMailAdapterDependencies = {
+      proxyFor: systemMailProxyFor,
+      socksModule: mailSocks
+    };
+    const gmailImapAdapterDependencies = {
+      proxyFor: gmailMailProxyFor,
       socksModule: mailSocks
     };
     mailRuntime = new MailRuntime(new SecureMailAdapterRegistry(
@@ -2389,13 +2589,14 @@ else {
       connectionId => store.connectorCredentialRef(connectionId),
       {
         qqmail: (connection, credentials) =>
-          qqMailAdapterFactory(connection, credentials, mailAdapterDependencies),
+          qqMailAdapterFactory(connection, credentials, qqMailAdapterDependencies),
         gmail: (connection, credentials) => {
           if (credentials.kind === 'imap-password') {
-            return gmailImapAdapterFactory(connection, credentials, mailAdapterDependencies);
+            return gmailImapAdapterFactory(connection, credentials, gmailImapAdapterDependencies);
           }
           if (credentials.kind === 'oauth-token') {
             return gmailMailAdapterFactory(connection, credentials, {
+              fetch: scopedProxyFetch.fetchFor('gmail'),
               saveToken: (connectionId, token) => {
                 connectorCredentials.replace(store.connectorCredentialRef(connectionId), token);
               }
@@ -2423,7 +2624,7 @@ else {
       : '';
     runtime = new CodexRuntime(root, store.directory, undefined, {
       ownedThreadIds: () => store.ownedCodexThreadIds(),
-      proxyUrl: initialSettings.runtimeProxy?.trim() || null,
+      proxyUrl: runtimeProxyForModel(currentRuntimeProxySettings()),
       latestRuntimeRelease: acceptanceUpdateVersion && acceptanceUpdateUrl && acceptanceUpdateSha256
         ? async () => ({
             version: acceptanceUpdateVersion,
@@ -2433,6 +2634,37 @@ else {
           })
         : undefined
     });
+    runtime.on('notification', (method: string, params: unknown) => {
+      if (method !== 'account/login/completed' || !pendingChatGptLogin) return;
+      const values = params && typeof params === 'object'
+        ? params as Record<string, unknown>
+        : {};
+      const loginId = typeof values.loginId === 'string' && values.loginId.trim()
+        ? values.loginId.trim()
+        : null;
+      if (pendingChatGptLogin.loginId && loginId && pendingChatGptLogin.loginId !== loginId) return;
+      pendingChatGptLogin.completedLoginId = loginId;
+      pendingChatGptLogin.completed = true;
+    });
+    const modelConfigPath = join(store.directory, 'codex-home', 'config.toml');
+    try {
+      await runtime.prepareCodexHome();
+      const configuredProviderId = await readConfiguredModelProviderId(modelConfigPath);
+      standardModelProviderId = configuredProviderId !== null &&
+        configuredProviderId !== RAMBO_MANUAL_PROVIDER_ID &&
+        configuredProviderId !== 'openai'
+        ? configuredProviderId
+        : null;
+      if (standardModelProviderId) {
+        runtime.setModelSourceConfig([], {});
+      } else {
+        await applyModelSourceRuntimeConfig();
+      }
+    } catch (error) {
+      standardModelProviderId = null;
+      runtime.setModelSourceConfig([], {});
+      console.error('[Rambo] model source configuration is unavailable', error);
+    }
     const workerTransport = new ElectronWechatWorkerTransport(
       join(__dirname, 'wechat-worker.js'),
       (modulePath, args, options) => utilityProcess.fork(modulePath, args, options)
@@ -2475,25 +2707,22 @@ else {
       undefined,
       { tempDirectory: join(app.getPath('userData'), 'composer-attachments') }
     );
+    const baseInstructionsPath = join(app.getAppPath(), 'resources/prompts/rambo-base.md');
+    const baseInstructions = readFileSync(baseInstructionsPath, 'utf8').trim();
+    if (!baseInstructions) {
+      throw new Error('Rambo 基础说明为空，已停止启动聊天');
+    }
+    if (Buffer.byteLength(baseInstructions, 'utf8') > MAX_BASE_INSTRUCTIONS_BYTES) {
+      throw new Error('Rambo 基础说明超过大小限制，已停止启动聊天');
+    }
     host = new Host(
       store, runtime, emit, mailRuntime, connectorCredentials,
       undefined, undefined, wechatReader, wechatMediaProcessor,
       () => modelSourceState(),
       () => testModelConnection(),
-      cloakbrowserConnector
+      cloakbrowserConnector,
+      baseInstructions
     );
-    runtime.on('homeSync', (state: CodexHomeSyncState) => {
-      emit({ type: 'codexHomeSync', state });
-      void applyPendingCodexHomeSync();
-    });
-    try {
-      if (modelSourceState().kind !== 'local') {
-        await runtime.setHomeSyncMode('independent', false);
-      }
-      await applyModelSourceRuntimeConfig();
-    } catch (error) {
-      console.error('[Rambo] model source configuration is unavailable', error);
-    }
     void refreshNotificationRuntimeState().then(syncNotificationRuntimeState);
     if (!initialSettings.globalResourceIds) {
       const discovered = new Set(host.snapshot().botResources.map(resource => resource.id));
@@ -2528,9 +2757,8 @@ else {
             }
             model = defaults[0].id;
           }
-          const permission = resolvedDefaultPermission(store.settings().defaultBotPermission);
-          store.materializeBotExecutionDefaults(model, permission, permission);
-          store.setExecutionDefaults({ model, permission });
+          store.materializeBotExecutionDefaults(model);
+          store.setExecutionDefaults({ model });
           host.changed();
         } catch (error) {
           const message = error instanceof Error ? error.message : '无法初始化模型配置';
@@ -2541,11 +2769,8 @@ else {
       });
     } else if (!initialSettings.botExecutionDefaultsMigratedV1) {
       try {
-        const permission = resolvedDefaultPermission(initialSettings.defaultBotPermission);
         store.materializeBotExecutionDefaults(
-          initialSettings.defaultBotModel.trim(),
-          permission,
-          permission
+          initialSettings.defaultBotModel.trim()
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : '无法迁移 Bot 执行配置';
@@ -2580,6 +2805,11 @@ else {
     void runtime.start().then(() => {
       void host.syncMcpMetadata().catch(error => {
         console.error('[Rambo] MCP metadata refresh failed after runtime start', error);
+      });
+      void syncCurrentModelCatalog().then(() => {
+        host.changed();
+      }).catch(() => {
+        // A missing login or unavailable upstream must not block application startup.
       });
     }).catch(error => {
       console.error('[Rambo] Codex runtime start failed', error);

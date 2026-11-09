@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { cleanupReleaseArtifacts } from '../../.agents/skills/rambo-release/scripts/cleanup-release.mjs';
 import {
   detectBinaryArchitecture,
   parseReleaseTargets,
@@ -124,6 +125,64 @@ test('packaged runtime must match one fixed App Server target', async () => {
       }),
       /版本或目标不匹配/u
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('release cleanup removes only known generated dist artifacts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rambo-release-cleanup-'));
+  try {
+    const dist = join(root, 'dist');
+    await mkdir(join(dist, 'release', 'v0.1.0'), { recursive: true });
+    await mkdir(join(dist, 'mac-arm64'), { recursive: true });
+    await mkdir(join(dist, 'keep'), { recursive: true });
+    await writeFile(join(dist, 'release', 'v0.1.0', 'Rambo-v0.1.0-macOS-arm64.zip'), 'zip');
+    await writeFile(join(dist, 'Rambo-v0.1.0-Windows-x64.exe'), 'exe');
+    await writeFile(join(dist, 'builder-debug.yml'), 'builder');
+    await writeFile(join(dist, 'keep', 'note.txt'), 'keep');
+    await writeFile(join(root, 'user-data.txt'), 'keep');
+
+    const dryRun = await cleanupReleaseArtifacts({ repoRoot: root, dryRun: true });
+    assert.deepEqual(dryRun.wouldRemove, [
+      'Rambo-v0.1.0-Windows-x64.exe',
+      'builder-debug.yml',
+      'mac-arm64',
+      'release'
+    ]);
+    assert.deepEqual(dryRun.removed, []);
+    assert.deepEqual(dryRun.retained, ['keep']);
+    assert.ok((await stat(join(dist, 'release'))).isDirectory());
+
+    const result = await cleanupReleaseArtifacts({ repoRoot: root });
+    assert.deepEqual(result.removed, [
+      'Rambo-v0.1.0-Windows-x64.exe',
+      'builder-debug.yml',
+      'mac-arm64',
+      'release'
+    ]);
+    await assert.rejects(stat(join(dist, 'release')), { code: 'ENOENT' });
+    await assert.rejects(stat(join(dist, 'mac-arm64')), { code: 'ENOENT' });
+    assert.ok((await stat(join(dist, 'keep', 'note.txt'))).isFile());
+    assert.ok((await stat(join(root, 'user-data.txt'))).isFile());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('release cleanup rejects a dist directory that is itself a symlink', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rambo-release-cleanup-link-'));
+  try {
+    const outside = join(root, 'outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'keep.txt'), 'keep');
+    await symlink(outside, join(root, 'dist'), 'dir');
+
+    await assert.rejects(
+      cleanupReleaseArtifacts({ repoRoot: root }),
+      /拒绝清理符号链接 dist 目录/u
+    );
+    assert.ok((await stat(join(outside, 'keep.txt'))).isFile());
   } finally {
     await rm(root, { recursive: true, force: true });
   }

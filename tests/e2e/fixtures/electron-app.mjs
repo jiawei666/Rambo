@@ -88,7 +88,8 @@ function scheduleFixtureLogin() {
   if (!loginStatePath) return;
   setTimeout(() => {
     writeFileSync(loginStatePath, 'connected');
-  }, 300).unref();
+    notify('account/login/completed', { loginId: 'rambo-fixture-login' });
+  }, 2_500).unref();
 }
 
 function completeTurn(threadId, turnId, status = 'completed', delay = 30) {
@@ -113,6 +114,25 @@ function modelCatalog() {
     config = readFileSync(join(process.env.CODEX_HOME || '', 'config.toml'), 'utf8');
   } catch {
     config = '';
+  }
+  const catalogMatch = config.match(/^\\s*model_catalog_json\\s*=\\s*("(?:\\\\.|[^"])*")/mu);
+  if (catalogMatch) {
+    try {
+      const catalogPath = JSON.parse(catalogMatch[1]);
+      const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
+      const selected = config.match(/^\\s*model\\s*=\\s*("(?:\\\\.|[^"])*")/mu);
+      const selectedModel = selected ? JSON.parse(selected[1]) : null;
+      if (Array.isArray(catalog?.models)) {
+        return catalog.models
+          .filter(model => typeof model.slug === 'string' && model.slug)
+          .map(model => ({
+            id: model.slug,
+            model: model.slug,
+            displayName: model.display_name || model.slug,
+            isDefault: model.slug === selectedModel
+          }));
+      }
+    } catch {}
   }
   if (/^\\s*model\\s*=\\s*"local-fixture-model"\\s*$/mu.test(config)) {
     return [{
@@ -172,7 +192,10 @@ function resultFor(method, params) {
   }
   if (method === 'account/login/start') {
     scheduleFixtureLogin();
-    return { authUrl: 'https://example.com/rambo-fixture-login' };
+    return {
+      loginId: 'rambo-fixture-login',
+      authUrl: 'https://example.com/rambo-fixture-login'
+    };
   }
   if (method === 'skills/extraRoots/set') return {};
   if (method === 'skills/list') {
